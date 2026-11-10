@@ -1,0 +1,11 @@
+# build products
+build*/
+*.o
+*.mod
+/nujuliet
+/nujuliet_*
+# calculations, interaction files (symlinks), editor backups
+/runs/
+/runs_scratch
+/NN+NNN files
+*.orig_*
