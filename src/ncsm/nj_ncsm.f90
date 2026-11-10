@@ -426,6 +426,8 @@ contains
             call eng_store(P,Nn,B,H,EH,Single,MemGB,Fits)
             call timer_report(t0,'stored matrix')
             if (.not. Fits) then
+                ! Matrix = 'stored' insists on the stored form (on-the-fly products may take days in large spaces) ...
+                if (trim(Mode) == 'stored') call fatal('NCSM ... stored matrix exceeds Matrix_GB (Matrix = ''stored'': no on-the-fly fallback)')
                 write(*,'(a)') TAB // 'stored matrix exceeds Matrix_GB ... on-the-fly products instead'
                 Mode = 'otf'
             else
