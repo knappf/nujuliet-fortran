@@ -208,6 +208,11 @@ module nj_params
                                                  ! Nmax_List(i) particles outside the lowest A m-states, both parities)
         character(len=8) :: Basis = 'HO'         ! 'HO' or 'HF' (EMPM Hamiltonian kept in the HF orbitals, N_cm transformed; npnh
                                                  ! then counted w.r.t. the HF reference as in the EMPM)
+        real(dp) :: Ecut_npnh(16) = -1.0_dp      ! 'npnh' & Basis 'HF' only: energy cuts (MeV) on the unperturbed HF excitation
+                                                 ! energy sum(e_particles) - sum(e_holes) of the proton x neutron configurations,
+                                                 ! Ecut_npnh(n) for the n-particle n-hole part (n = 1, 2, ...), e.g.
+                                                 ! Ecut_npnh = 80, 70, 60, 50 (1p1h .. 4p4h); n beyond the last value given
+                                                 ! repeat it (Ecut_npnh = 60: all n), a value < 0: no cut of that part
     end type ncsm_params_t
 
     type, public :: calculation_params_t

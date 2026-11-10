@@ -99,6 +99,8 @@ module nj_ncsm
         integer, allocatable :: occ(:,:), q(:), m2(:)
         ! h(s) particles outside the reference (the lowest Nt m-states), L(s) the sector label: q (Trunc 'Nmax') or 2h + mod(q,2) ('npnh') ...
         integer, allocatable :: h(:), L(:)
+        ! ex(s) unperturbed HF excitation energy sum(e_occ) - sum(e_ref) (MeV) ... only with the energy cut (Ecut_npnh) ...
+        real(dp), allocatable :: ex(:)
         type(hashmap_t) :: Map
         integer(i8), allocatable :: Jo(:,:)   ! 64-bit offsets (> 2^31 jumps, e.g. 16O 4p4h in 5 shells)
         integer, allocatable :: Jt(:), Jc(:), Ja(:)
@@ -111,10 +113,13 @@ module nj_ncsm
     end type col_t
 
     ! Many-body basis ... state c = (proton SD sp(c), neutron SD sn(c)), St(sp,qn) the first index of the sector of sp &
-        ! the neutron block (M - M_P, qn) (-1 if absent), Lc(sn) the position of sn in its block ...
+        ! the neutron block (M - M_P, qn) (-1 if absent), Lc(sn) the position of sn in its block ... with the energy cut
+        ! the blocks are in ascending neutron excitation energy & the sector (sp,qn) holds the first Nc(sp,qn) of them
+        ! (E_P + E_N <= Ecut_npnh(h_P + h_N)) ... dim_all the number of products of the kept SDs before the pair cut ...
     type :: mb_t
         integer :: dim = 0, M2 = 0, Nmax = 0
-        integer, allocatable :: sp(:), sn(:), St(:,:), Lc(:)
+        integer(i8) :: dim_all = 0
+        integer, allocatable :: sp(:), sn(:), St(:,:), Lc(:), Nc(:,:)
     end type mb_t
 
     ! Operator engine ... species matrices Mp, Mn & optionally the stored lower half (columns Ptr(c) .. Ptr(c+1)-1, rows
@@ -122,6 +127,11 @@ module nj_ncsm
     ! Truncation & basis of the current run ... Trunc 'Nmax' or 'npnh', Uhf(a,b,t) the HF coefficients (Basis 'HF') ...
     character(len=8), save :: Trunc = 'Nmax'
     real(dp), allocatable, save :: Uhf(:,:,:)
+    ! Energy cut of the current run ('npnh', Basis 'HF') ... Ecn(n) the cut of the npnh configurations (huge = none) ...
+    logical, save :: UseCut = .false.
+    real(dp), allocatable, save :: Ecn(:)
+    ! HF single-particle energies e(a,t) (diagonal of h_HF, set by hamiltonian_empm) ...
+    real(dp), allocatable, save :: EpsHF(:,:)
 
     type :: eng_t
         type(col_t), allocatable :: Mp(:), Mn(:)
@@ -247,7 +257,9 @@ contains
         real(dp) :: Beta, MemGB
         logical :: Fits
         character(len=8) :: Mode
-        character(len=:), allocatable :: Fn
+        character(len=:), allocatable :: Fn, Tag, Hdr
+        real(dp), allocatable :: EpsP(:), EpsN(:), ExmP(:), ExmN(:)
+        integer :: Lg, n
 
         A = Params%Calc%A
         Z = Params%Calc%Z
@@ -264,6 +276,60 @@ contains
             Qcap = 100000
             Hcap = Nmax
         end if
+        ! Energy cut ('npnh', Basis 'HF') ... Ecn(n) = Ecut_npnh(min(n, last given)), Ecn(0) none; e = HF single-particle
+            ! energies (diagonal of h_HF); SDs pruned by their own excitation energy when every species has
+            ! a gap (all reference e below all others: E_other >= 0) ...
+        Tag = ''
+        UseCut = Trunc == 'npnh' .and. any(Params%Calc%NCSM%Ecut_npnh >= 0.0_dp)
+        if (UseCut) then
+            if (Params%Calc%NCSM%Basis /= 'HF') call fatal('NCSM ... Ecut_npnh needs Trunc npnh & Basis HF')
+            Lg = 0
+            do n = 1, size(Params%Calc%NCSM%Ecut_npnh)
+                if (Params%Calc%NCSM%Ecut_npnh(n) >= 0.0_dp) Lg = n
+            end do
+            if (allocated(Ecn)) deallocate(Ecn)
+            allocate(Ecn(0:Nmax), ExmP(0:Nmax), ExmN(0:Nmax), EpsP(SPS%ns), EpsN(SPS%ns))
+            Ecn(0) = huge(1.0_dp)
+            do n = 1, Nmax
+                Ecn(n) = Params%Calc%NCSM%Ecut_npnh(min(n,Lg))
+                if (Ecn(n) < 0.0_dp) Ecn(n) = huge(1.0_dp)
+            end do
+            do k = 1, SPS%ns
+                EpsP(k) = EpsHF(SPS%a(k),1)
+                EpsN(k) = EpsHF(SPS%a(k),2)
+            end do
+            do k = 0, Nmax
+                ExmP(k) = maxval(Ecn(k:Nmax))
+            end do
+            ExmN = ExmP
+            if (.not. (gap(EpsP,Z) .and. gap(EpsN,Nneu))) then
+                write(*,'(a)') TAB // 'Warning ... no HF gap (a reference e above a particle e): SDs not pruned by energy'
+                ExmP = huge(1.0_dp)
+                ExmN = huge(1.0_dp)
+            end if
+            Tag = '_Ec'
+            do n = 1, Nmax
+                if (n > 1) Tag = Tag // '-'
+                if (Ecn(n) >= huge(1.0_dp)) then
+                    Tag = Tag // 'x'
+                else
+                    Tag = Tag // istr(nint(Ecn(n)))
+                end if
+            end do
+            if (all(Ecn(1:Nmax) == Ecn(1))) then     ! one cut for all n: _Ec<E>
+                if (Ecn(1) >= huge(1.0_dp)) then
+                    Tag = '_Ecx'
+                else
+                    Tag = '_Ec' // istr(nint(Ecn(1)))
+                end if
+            end if
+            write(*,'(a)') TAB // 'energy cut ... E_P + E_N <= Ecut(n) for npnh, n = 1 .. ' // istr(Nmax) // ' (' // Tag(4:) // &
+                           ' MeV), HF e: reference <= ' // cfmt_f(max(maxval(EpsP(1:Z)),maxval(EpsN(1:Nneu))),0,3) // &
+                           ', particles >= ' // cfmt_f(min(minval(EpsP(Z+1:)),minval(EpsN(Nneu+1:))),0,3) // ' MeV'
+            call sd_make(SPS,Z,Qcap,Hcap,P,EpsP,ExmP)
+            call sd_make(SPS,Nneu,Qcap,Hcap,Nn,EpsN,ExmN)
+            call timer_report(t0,'proton & neutron SDs & jumps (energy cut)')
+        else
         call sd_make(SPS,Z,Qcap,Hcap,P)
         if (Nneu == Z) then
             Nn = P            ! identical SDs & jumps (same s.p. space & truncation)
@@ -271,12 +337,15 @@ contains
         else
             call sd_make(SPS,Nneu,Qcap,Hcap,Nn)
         end if
+        end if
         Par = mod(P%N0 + Nn%N0 + Nmax,2)
         if (Trunc == 'npnh') Par = ParIn
         write(*,'(a)') TAB // istr(SPS%ns) // ' m-states per species, ' // istr(P%nsd) // ' proton & ' // istr(Nn%nsd) // &
                        ' neutron SDs, parity ' // merge('-','+',Par == 1) // ', 2M = ' // istr(M2)
         call basis_make(P,Nn,M2,Nmax,mod(Par + P%N0 + Nn%N0,2),B)
         write(*,'(a)') TAB // 'm-scheme dimension ' // istr(B%dim)
+        if (UseCut) write(*,'(a)') TAB // '  (energy cut: ' // cfmt_f(100.0_dp*real(B%dim,dp)/real(max(B%dim_all,1_i8),dp),0,2) // &
+                                   ' % of the ' // istr8(B%dim_all) // ' products of the SDs kept)'
         call timer_report(t0,'basis & one-body jumps')
         if (B%dim == 0) return
 
@@ -353,15 +422,21 @@ contains
         call timer_report(t0,'<N_cm> & <J^2>')
 
         Fn = io_path(Params,'/NCSM/NCSM_' // trim(Params%Calc%NCSM%Hamiltonian) // '_Nmax' // istr(Nmax))
+        ! Nmax in the HF basis (quanta e = 2n + l of the HF orbitals, i.e. HF major shells) ... NCSM_EMPM_HF_Nmax<N> ...
+        if (Params%Calc%NCSM%Basis == 'HF') Fn = io_path(Params,'/NCSM/NCSM_' // trim(Params%Calc%NCSM%Hamiltonian) // &
+                                                          '_HF_Nmax' // istr(Nmax))
         if (Trunc == 'npnh') Fn = io_path(Params,'/NCSM/NCSM_' // trim(Params%Calc%NCSM%Hamiltonian) // '_' // &
                                           trim(Params%Calc%NCSM%Basis) // '_' // istr(Nmax) // 'p' // istr(Nmax) // 'h' // merge('m','p',Par == 1))
+        Fn = Fn // Tag
+        Hdr = ''
+        if (UseCut) Hdr = ' Ecut_npnh = ' // Tag(4:) // ' (n = 1..' // istr(Nmax) // ')'
         if (Beta /= 0.0_dp) Fn = Fn // '_B' // istr(nint(Beta))
         Fn = Fn // '.dat'
         open(newunit=u, file=Fn, status='replace', action='write')
         write(u,'(a)') '# NCSM ' // trim(Params%Calc%NCSM%Hamiltonian) // ' A = ' // istr(A) // ' Z = ' // istr(Z) // &
                        ' hw = ' // jstr(Params%Calc%hw) // ' ' // merge('npnh','Nmax',Trunc == 'npnh') // ' = ' // istr(Nmax) // &
                        ' basis ' // trim(Params%Calc%NCSM%Basis) // ' parity ' // merge('-','+',Par == 1) // &
-                       ' 2M = ' // istr(M2) // ' dim = ' // istr(B%dim) // ' Beta_CM = ' // jstr(Beta) // ' E_HF = ' // jstr(E_HF)
+                       ' 2M = ' // istr(M2) // ' dim = ' // istr(B%dim) // ' Beta_CM = ' // jstr(Beta) // ' E_HF = ' // jstr(E_HF) // Hdr
         write(u,'(a)') '# k   E (MeV)   E - E_HF   J   <J^2>   <N_cm>   residual'
         write(*,'(a)') TAB // '  k        E (MeV)     E - E_HF       J      <J^2>     <N_cm>   residual'
         do k = 1, Ne
@@ -400,6 +475,14 @@ contains
             real(dp), intent(in) :: x
             jval = 0.5_dp*(-1.0_dp + sqrt(max(1.0_dp + 4.0_dp*x,0.0_dp)))
         end function jval
+
+        ! all reference energies e(1:nt) <= all others ...
+        logical function gap(e,nt)
+            real(dp), intent(in) :: e(:)
+            integer, intent(in) :: nt
+            gap = .true.
+            if (nt < size(e)) gap = maxval(e(1:nt)) <= minval(e(nt+1:))
+        end function gap
 
     end subroutine run_nmax
 
@@ -484,9 +567,13 @@ contains
         E_HF = read_ehf(io_path(Params,'/HF/HF_Summary.dat'))
         a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
         allocate(occ(a_max,2), uF(a_max,a_max,2))
+        if (allocated(EpsHF)) deallocate(EpsHF)
+        allocate(EpsHF(a_max,2))
         do a = 1, a_max
             occ(a,1) = Rho%p(a,a)
             occ(a,2) = Rho%n(a,a)
+            EpsHF(a,1) = h%p(a,a)
+            EpsHF(a,2) = h%n(a,a)
         end do
 
         ! u = e - sum_c n_c sum_J (2J+1)/(2j_a+1) V^J(ac,bc), C0 = -sum (2j+1) n e + 1/2 sum n n (2J+1) V^J ...
@@ -1021,10 +1108,16 @@ contains
         xs = 1 - 2*mod(ii - 1 + nb2,2)
     end function sd_tgt
 
-    subroutine sd_make(SPS,Nt,Nmax,Hcap,SDX)
+    ! Eps (optional, energy cut): HF single-particle energies of the m-states of this species, Exmax(h) the largest
+        ! excitation energy sum(Eps(occ)) - sum(Eps(1:Nt)) kept for SDs with h particles outside the reference ...
+    subroutine sd_make(SPS,Nt,Nmax,Hcap,SDX,Eps,Exmax)
         type(sp_t), intent(in) :: SPS
         integer, intent(in) :: Nt, Nmax, Hcap
         type(sd_t), intent(out) :: SDX
+        real(dp), intent(in), optional :: Eps(:), Exmax(0:)
+        logical :: Cut
+        real(dp) :: Eref, exv
+        real(dp), allocatable :: epl(:), exm(:)
         integer, allocatable :: o(:), Cnt(:)
         integer :: Pass, n, s, i, kc, ka, d, sp, x
         integer(i8) :: j, Tot, tt
@@ -1037,10 +1130,18 @@ contains
         if (Nt > KBIN) call fatal('NCSM ... SD keys overflow (more than KBIN particles of a species)')
         if (SPS%Bin(SPS%ns,Nt) < 0) call fatal('NCSM ... SD keys overflow (C(ns,Nt) too large)')
         allocate(o(Nt))
+        Cut = present(Eps)
+        Eref = 0.0_dp
+        if (Cut) then
+            epl = Eps
+            exm = Exmax
+            Eref = sum(epl(1:Nt))
+        end if
         do Pass = 1, 2
             n = 0
             call rec(1,1,0)
             if (Pass == 1) allocate(SDX%occ(Nt,n), SDX%q(n), SDX%m2(n), SDX%h(n), SDX%L(n))
+            if (Pass == 1 .and. Cut) allocate(SDX%ex(n))
         end do
         SDX%nsd = n
         call timer_report(tt,'  SDs: generation')
@@ -1135,8 +1236,13 @@ contains
             integer :: kk
             if (pos > Nt) then
                 if (qs - SDX%N0 <= Nmax .and. count(o > Nt) <= Hcap) then
+                    if (Cut) then
+                        exv = sum(epl(o)) - Eref
+                        if (exv > exm(count(o > Nt)) + 1.0e-9_dp) return
+                    end if
                     n = n + 1
                     if (Pass == 2) then
+                        if (Cut) SDX%ex(n) = exv
                         SDX%occ(:,n) = o
                         SDX%q(n) = qs - SDX%N0
                         SDX%m2(n) = sum(SPS%m2(o))
@@ -1184,44 +1290,68 @@ contains
         end do
     end subroutine isort
 
+    ! Idx = permutation sorting x ascending (stable bottom-up merge sort) ...
+    subroutine argsort_r(x,Idx)
+        real(dp), intent(in) :: x(:)
+        integer, intent(out) :: Idx(:)
+        integer, allocatable :: W(:)
+        integer :: n, w_, lo, mi, hi, i, j, k
+        n = size(x)
+        do i = 1, n            ! explicit loops: no array-constructor temporaries on the stack (ifx, > 8 MB) ...
+            Idx(i) = i
+        end do
+        allocate(W(n))
+        w_ = 1
+        do while (w_ < n)
+            do lo = 1, n, 2*w_
+                mi = min(lo + w_ - 1, n)
+                hi = min(lo + 2*w_ - 1, n)
+                if (mi >= hi) then
+                    W(lo:hi) = Idx(lo:hi)
+                    cycle
+                end if
+                i = lo
+                j = mi + 1
+                do k = lo, hi
+                    if (j > hi) then
+                        W(k) = Idx(i); i = i + 1
+                    else if (i > mi) then
+                        W(k) = Idx(j); j = j + 1
+                    else if (x(Idx(j)) < x(Idx(i))) then
+                        W(k) = Idx(j); j = j + 1
+                    else
+                        W(k) = Idx(i); i = i + 1
+                    end if
+                end do
+            end do
+            do i = 1, n
+                Idx(i) = W(i)
+            end do
+            w_ = 2*w_
+        end do
+    end subroutine argsort_r
+
     subroutine basis_make(P,Nn,M2,Nmax,ParIn,B)
         type(sd_t), intent(in) :: P, Nn
         integer, intent(in) :: M2, Nmax, ParIn
         type(mb_t), intent(out) :: B
-        integer :: Mmax, sp, sn, qn, Mn, c, Par, Lmax
-        integer, allocatable :: Cnt(:,:), First(:,:), Lst(:)
+        integer :: Mmax, sp, sn, qn, Mn, c, Par, Lmax, i, f0, nc_, lo, hi, mid
+        integer, allocatable :: Cnt(:,:), First(:,:), Lst(:), Ord(:)
         integer(i8) :: dim8
+        real(dp) :: thr
         B%M2 = M2
         B%Nmax = Nmax
         Par = mod(Nmax,2)
         if (Trunc == 'npnh') Par = ParIn
         Lmax = max(maxval(Nn%L), maxval(P%L))
         Mmax = max(maxval(abs(Nn%m2)), maxval(abs(P%m2))) + abs(M2)
-        allocate(Cnt(-Mmax:Mmax,0:Lmax), B%Lc(Nn%nsd))
+        ! neutron blocks (M_N, L_N), each in ascending excitation energy with the energy cut (else in SD order), Lc(sn) the
+        ! position of sn in its block ...
+        allocate(Cnt(-Mmax:Mmax,0:Lmax), B%Lc(Nn%nsd), First(-Mmax:Mmax,0:Lmax), Lst(Nn%nsd), Ord(Nn%nsd))
         Cnt = 0
         do sn = 1, Nn%nsd
             Cnt(Nn%m2(sn),Nn%L(sn)) = Cnt(Nn%m2(sn),Nn%L(sn)) + 1
-            B%Lc(sn) = Cnt(Nn%m2(sn),Nn%L(sn))
         end do
-        allocate(B%St(P%nsd,0:Lmax))
-        B%St = -1
-        dim8 = 0
-        do sp = 1, P%nsd
-            Mn = M2 - P%m2(sp)
-            if (abs(Mn) > Mmax) cycle
-            do qn = 0, Lmax
-                if (.not. accept(P%L(sp),qn)) cycle
-                if (Cnt(Mn,qn) == 0) cycle
-                B%St(sp,qn) = int(dim8)
-                dim8 = dim8 + Cnt(Mn,qn)
-            end do
-        end do
-        if (dim8 > huge(1)) call fatal('NCSM ... dimension exceeds 32-bit indices')
-        B%dim = int(dim8)
-        ! Inverse map ... states by sector ...
-        allocate(B%sp(B%dim), B%sn(B%dim))
-        allocate(First(-Mmax:Mmax,0:Lmax), Lst(Nn%nsd))
-        First = 0
         c = 0
         do qn = 0, Lmax
             do Mn = -Mmax, Mmax
@@ -1229,17 +1359,65 @@ contains
                 c = c + Cnt(Mn,qn)
             end do
         end do
+        if (UseCut) then
+            call argsort_r(Nn%ex,Ord)
+        else
+            do sn = 1, Nn%nsd
+                Ord(sn) = sn
+            end do
+        end if
         Cnt = 0
-        do sn = 1, Nn%nsd
+        do i = 1, Nn%nsd
+            sn = Ord(i)
             Cnt(Nn%m2(sn),Nn%L(sn)) = Cnt(Nn%m2(sn),Nn%L(sn)) + 1
-            Lst(First(Nn%m2(sn),Nn%L(sn)) + Cnt(Nn%m2(sn),Nn%L(sn))) = sn
+            B%Lc(sn) = Cnt(Nn%m2(sn),Nn%L(sn))
+            Lst(First(Nn%m2(sn),Nn%L(sn)) + B%Lc(sn)) = sn
         end do
+        ! sectors (sp, qn) ... with the energy cut the first Nc of the block (binary search, E_N <= Ecn(h_P + h_N) - E_P) ...
+        allocate(B%St(P%nsd,0:Lmax), B%Nc(P%nsd,0:Lmax))
+        B%St = -1
+        B%Nc = 0
+        dim8 = 0
+        B%dim_all = 0
+        do sp = 1, P%nsd
+            Mn = M2 - P%m2(sp)
+            if (abs(Mn) > Mmax) cycle
+            do qn = 0, Lmax
+                if (.not. accept(P%L(sp),qn)) cycle
+                nc_ = Cnt(Mn,qn)
+                if (nc_ == 0) cycle
+                B%dim_all = B%dim_all + nc_
+                if (UseCut) then
+                    thr = Ecn(P%L(sp)/2 + qn/2) - P%ex(sp) + 1.0e-9_dp
+                    f0 = First(Mn,qn)
+                    lo = 0
+                    hi = nc_
+                    do while (lo < hi)
+                        mid = (lo + hi + 1)/2
+                        if (Nn%ex(Lst(f0 + mid)) <= thr) then
+                            lo = mid
+                        else
+                            hi = mid - 1
+                        end if
+                    end do
+                    nc_ = lo
+                    if (nc_ == 0) cycle
+                end if
+                B%St(sp,qn) = int(dim8)
+                B%Nc(sp,qn) = nc_
+                dim8 = dim8 + nc_
+            end do
+        end do
+        if (dim8 > huge(1)) call fatal('NCSM ... dimension exceeds 32-bit indices')
+        B%dim = int(dim8)
+        ! Inverse map ... states by sector ...
+        allocate(B%sp(B%dim), B%sn(B%dim))
         do sp = 1, P%nsd
             Mn = M2 - P%m2(sp)
             if (abs(Mn) > Mmax) cycle
             do qn = 0, Lmax
                 if (B%St(sp,qn) < 0) cycle
-                do c = 1, Cnt(Mn,qn)
+                do c = 1, B%Nc(sp,qn)
                     B%sp(B%St(sp,qn) + c) = sp
                     B%sn(B%St(sp,qn) + c) = Lst(First(Mn,qn) + c)
                 end do
@@ -1394,6 +1572,9 @@ contains
         do j = 1, size(Eng%Mp(sp)%r)
             st = B%St(Eng%Mp(sp)%r(j),Nn%L(sn))
             if (st < 0) cycle
+            if (UseCut) then
+                if (B%Lc(sn) > B%Nc(Eng%Mp(sp)%r(j),Nn%L(sn))) cycle
+            end if
             r = st + B%Lc(sn)
             if (Build) then
                 call acc_add(Pos,Rl,Acc,nl,r,Eng%Mp(sp)%v(j))
@@ -1406,6 +1587,9 @@ contains
             sn2 = Eng%Mn(sn)%r(j)
             st = B%St(sp,Nn%L(sn2))
             if (st < 0) cycle
+            if (UseCut) then
+                if (B%Lc(sn2) > B%Nc(sp,Nn%L(sn2))) cycle
+            end if
             r = st + B%Lc(sn2)
             if (Build) then
                 call acc_add(Pos,Rl,Acc,nl,r,Eng%Mn(sn)%v(j))
@@ -1425,6 +1609,9 @@ contains
                     sn2 = Nn%Jt(jn)
                     st = B%St(sp2,Nn%L(sn2))
                     if (st < 0) cycle
+                    if (UseCut) then
+                        if (B%Lc(sn2) > B%Nc(sp2,Nn%L(sn2))) cycle
+                    end if
                     p1 = Pr(3)%id(kc,Nn%Jc(jn))
                     if (p1 == 0) cycle
                     p2 = Pr(3)%id(ka,Nn%Ja(jn))

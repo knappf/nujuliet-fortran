@@ -82,7 +82,7 @@ contains
         ! &ncsm ...
         integer :: Nmax_List(16), M2, N_Eig, Lanczos_Max, Lanczos_Basis
         character(len=8) :: Hamiltonian, Matrix, Trunc, Basis
-        real(dp) :: Lanczos_Tol, Beta_CM, Matrix_GB
+        real(dp) :: Lanczos_Tol, Beta_CM, Matrix_GB, Ecut_npnh(16)
         logical :: Single
         ! &run ...
         character(len=64) :: Solvers(Max_Actions)
@@ -104,7 +104,7 @@ contains
         namelist /qrpa/ Ortho
         namelist /empm/ pHole, pPart, nHole, nPart, Ortho, E2max, JP2, Mem_GB, E1max, Legacy_Order, Dry_Run, Spur_Rows, Legacy_Spur, Full_H, D_Spectrum, Cache_GB, &
                        E3max, JP3, E4max, JP4, Full_N, JPF, Save_X, Ind_First, States_Dir, CM_Exact, CM_Tol, CM_Dump, Ind_Greedy, CM_Variants, CM_Keep, Full_Diag, Full_Svd, CM_Ncm, CM_Beta, D_Disk_GB, Dens_Share
-        namelist /ncsm/ Nmax_List, Hamiltonian, M2, N_Eig, Lanczos_Max, Lanczos_Tol, Beta_CM, Matrix, Single, Lanczos_Basis, Matrix_GB, Trunc, Basis
+        namelist /ncsm/ Nmax_List, Hamiltonian, M2, N_Eig, Lanczos_Max, Lanczos_Tol, Beta_CM, Matrix, Single, Lanczos_Basis, Matrix_GB, Trunc, Basis, Ecut_npnh
         namelist /run/ Solvers
         namelist /transition_densities/ JP, nu_list, File_Name
         namelist /transition_currents/ JP, M, nu_list, File_Name, xN_grid, zN_grid
@@ -309,10 +309,11 @@ contains
         Single = C0%NCSM%Single
         Lanczos_Basis = C0%NCSM%Lanczos_Basis
         Matrix_GB = C0%NCSM%Matrix_GB
+        Ecut_npnh = C0%NCSM%Ecut_npnh
         rewind(u)
         read(u, nml=ncsm, iostat=Ios, iomsg=Msg)
         call check(Ios,'ncsm')
-        Inp%Params%Calc%NCSM = ncsm_params_t(Nmax_List,Hamiltonian,M2,N_Eig,Lanczos_Max,Lanczos_Tol,Beta_CM,Matrix,Single,Lanczos_Basis,Matrix_GB,Trunc,Basis)
+        Inp%Params%Calc%NCSM = ncsm_params_t(Nmax_List,Hamiltonian,M2,N_Eig,Lanczos_Max,Lanczos_Tol,Beta_CM,Matrix,Single,Lanczos_Basis,Matrix_GB,Trunc,Basis,Ecut_npnh)
 
         ! &run ...
         Solvers = ''
