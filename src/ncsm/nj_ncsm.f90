@@ -142,10 +142,14 @@ module nj_ncsm
     ! Stored lower half ... per thread a list of segments (SEG entries each: rows r, values vs or vd), the columns of the
         ! thread (chunks of CHK columns, chunk k to thread mod(k,nt) + 1) in order, a column entirely within a segment
         ! (a new segment is started when it does not fit), Cnt(c) entries of column c ...
-    integer, parameter :: SEG = 2**22, CHK = 1024
+    ! Rows of a column ascending, as gaps: d = r - r_previous (r_previous = c - 1 at the start) - GOFF in 2 bytes for
+        ! gaps 1 .. 65535, d = -GOFF marks a larger gap: the row is the next entry of the escape list e (ESEG per segment)
+        ! ... Cnt(c) < 0: the column starts a new segment ...
+    integer, parameter :: SEG = 2**22, ESEG = SEG/16, CHK = 1024, GOFF = 32768
     type :: seg_t
         integer :: n = 0
-        integer, allocatable :: r(:)
+        integer(i2), allocatable :: d(:)
+        integer, allocatable :: e(:)
         real(dp), allocatable :: vd(:)
         real(f4), allocatable :: vs(:)
     end type seg_t
@@ -170,7 +174,7 @@ module nj_ncsm
         logical :: Stored = .false., Single = .false.
         integer(i8) :: nnz = 0
         integer :: nt = 0
-        integer, allocatable :: Cnt(:)
+        integer, allocatable :: Cnt(:), ChT(:), ChS(:), ChP(:), ChE(:)   ! chunk k: owner thread, segment & positions (entries, escapes) at its start
         type(tstore_t), allocatable :: Ts(:)
         real(dp), allocatable :: Yb(:,:)
     end type eng_t
@@ -540,6 +544,7 @@ contains
         if (allocated(Eng%Mp)) deallocate(Eng%Mp)
         if (allocated(Eng%Mn)) deallocate(Eng%Mn)
         if (allocated(Eng%Cnt)) deallocate(Eng%Cnt)
+        if (allocated(Eng%ChT)) deallocate(Eng%ChT, Eng%ChS, Eng%ChP, Eng%ChE)
         if (allocated(Eng%Ts)) deallocate(Eng%Ts)
         if (allocated(Eng%Yb)) deallocate(Eng%Yb)
         Eng%Stored = .false.
@@ -1954,20 +1959,28 @@ contains
         real(dp), allocatable :: Acc(:)
         real(dp) :: Xd(1,1), Sd(1), Yd(1), Dg, segGB, Gb
         integer :: nt, tid, nchunk, k, c, c0, c1, nl, m, j, cur, ps, maxseg, myseg, nseg, slots, ntr
-        integer(i8) :: nnz
+        integer(i8) :: nnz, h1, h2, h3
+        integer :: prev, d, pe, ne
         logical :: Abort, ab
         nt = omp_get_max_threads()
         Eng%nt = nt
         Eng%Single = Single
-        allocate(Eng%Cnt(B%dim), Eng%Ts(nt))
-        Eng%Cnt = 0
         nchunk = (B%dim + CHK - 1)/CHK
-        segGB = real(SEG,dp)*merge(8.0_dp,12.0_dp,Single)/1.0e9_dp
+        allocate(Eng%Cnt(B%dim), Eng%Ts(nt), Eng%ChT(nchunk), Eng%ChS(nchunk), Eng%ChP(nchunk), Eng%ChE(nchunk))
+        Eng%Cnt = 0
+        Eng%ChT = 1
+        Eng%ChS = 0
+        Eng%ChP = SEG
+        Eng%ChE = 0
+        h1 = 0
+        h2 = 0
+        h3 = 0
+        segGB = (real(SEG,dp)*merge(6.0_dp,10.0_dp,Single) + 4.0_dp*real(ESEG,dp))/1.0e9_dp
         maxseg = int(max(MemGB - 8.0e-9_dp*real(B%dim,dp)*real(nt + 1,dp), 0.0_dp)/segGB)
         slots = min(maxseg, 4*(maxseg/nt) + 16)
         nseg = 0
         Abort = .false.
-        !$omp parallel private(tid,k,c,c0,c1,nl,m,j,cur,ps,myseg,Pos,Rl,Acc,Sd,Dg,ab,ntr)
+        !$omp parallel private(tid,k,c,c0,c1,nl,m,j,cur,ps,myseg,Pos,Rl,Acc,Sd,Dg,ab,ntr,prev,d,pe,ne) reduction(+:h1,h2,h3)
         tid = omp_get_thread_num() + 1
         ntr = omp_get_num_threads()
         if (ntr /= nt) then
@@ -1979,10 +1992,16 @@ contains
         Pos = 0
         cur = 0
         ps = SEG
-        do k = tid - 1, nchunk - 1, nt
+        pe = 0
+        !$omp do schedule(dynamic,1)
+        do k = 0, nchunk - 1
             !$omp atomic read
             ab = Abort
-            if (ab) exit
+            if (ab) cycle
+            Eng%ChT(k+1) = tid
+            Eng%ChS(k+1) = cur
+            Eng%ChP(k+1) = ps
+            Eng%ChE(k+1) = pe
             c0 = k*CHK + 1
             c1 = min(B%dim, c0 + CHK - 1)
             do c = c0, c1
@@ -1998,7 +2017,25 @@ contains
                 end do
                 if (m > SEG) call fatal('NCSM ... a column exceeds the segment size')
                 if (m == 0) cycle
-                if (SEG - ps < m) then
+                call sort2(m,Rl,Acc)
+                prev = c - 1
+                ne = 0
+                do j = 1, m
+                    d = Rl(j) - prev
+                    prev = Rl(j)
+                    if (d <= 255) then
+                        h1 = h1 + 1
+                    else if (d <= 65535) then
+                        h2 = h2 + 1
+                    else
+                        h3 = h3 + 1
+                        ne = ne + 1
+                    end if
+                end do
+                if (ne > ESEG) call fatal('NCSM ... a column exceeds the escape list of a segment')
+                Eng%Cnt(c) = m
+                if (SEG - ps < m .or. ESEG - pe < ne) then
+                    Eng%Cnt(c) = -m
                     !$omp atomic capture
                     nseg = nseg + 1
                     myseg = nseg
@@ -2010,7 +2047,8 @@ contains
                     end if
                     cur = cur + 1
                     ps = 0
-                    allocate(Eng%Ts(tid)%S(cur)%r(SEG))
+                    pe = 0
+                    allocate(Eng%Ts(tid)%S(cur)%d(SEG), Eng%Ts(tid)%S(cur)%e(ESEG))
                     if (Single) then
                         allocate(Eng%Ts(tid)%S(cur)%vs(SEG))
                     else
@@ -2018,8 +2056,18 @@ contains
                     end if
                     Eng%Ts(tid)%ns = cur
                 end if
-                Eng%Cnt(c) = m
-                Eng%Ts(tid)%S(cur)%r(ps+1:ps+m) = Rl(1:m)
+                prev = c - 1
+                do j = 1, m
+                    d = Rl(j) - prev
+                    prev = Rl(j)
+                    if (d <= 65535) then
+                        Eng%Ts(tid)%S(cur)%d(ps+j) = int(d - GOFF,i2)
+                    else
+                        Eng%Ts(tid)%S(cur)%d(ps+j) = int(-GOFF,i2)
+                        pe = pe + 1
+                        Eng%Ts(tid)%S(cur)%e(pe) = Rl(j)
+                    end if
+                end do
                 if (Single) then
                     Eng%Ts(tid)%S(cur)%vs(ps+1:ps+m) = real(Acc(1:m),f4)
                 else
@@ -2029,6 +2077,7 @@ contains
                 Eng%Ts(tid)%S(cur)%n = ps
             end do
         end do
+        !$omp end do
         deallocate(Pos, Rl, Acc)
         !$omp end parallel
         if (Abort) then
@@ -2038,12 +2087,15 @@ contains
                            ' GB (limit ' // cfmt_f(MemGB,0,1) // ' GB)'
             return
         end if
-        nnz = sum(int(Eng%Cnt,i8))
+        nnz = sum(int(abs(Eng%Cnt),i8))
         Gb = real(nseg,dp)*segGB + 8.0e-9_dp*real(B%dim,dp)*real(nt + 1,dp)
         write(*,'(a)') TAB // 'stored H: ' // istr8(nnz) // ' entries in the lower half (' // &
                        cfmt_f(real(2*nnz - B%dim,dp)/B%dim,0,1) // ' per column), ' // istr(nseg) // ' segments, ' // &
                        cfmt_f(Gb,0,2) // ' GB (' // merge('single','double',Single) // ' precision, incl. ' // istr(nt) // &
                        ' product buffers), limit ' // cfmt_f(MemGB,0,1) // ' GB'
+        write(*,'(a)') TAB // '  row gaps (sorted columns): ' // cfmt_f(100.0_dp*real(h1,dp)/real(max(nnz,1_i8),dp),0,2) // ' % <= 255, ' // &
+                       cfmt_f(100.0_dp*real(h2,dp)/real(max(nnz,1_i8),dp),0,2) // ' % in 2 bytes, ' // &
+                       cfmt_f(100.0_dp*real(h3,dp)/real(max(nnz,1_i8),dp),0,2) // ' % larger'
         Eng%nnz = nnz
         Eng%Stored = .true.
         Fits = .true.
@@ -2056,40 +2108,58 @@ contains
         integer, intent(in) :: n
         real(dp), intent(in) :: x(n)
         real(dp), intent(out) :: y(n)
-        integer :: nt, tid, nchunk, k, c, c0, c1, m, cur, ps, j, r, i0, i1, t
+        integer :: nt, tid, nchunk, k, c, c0, c1, m, cur, ps, j, r, i0, i1, t, ow, pe, dl
         real(dp) :: s, xc, v
         nt = Eng%nt
         nchunk = (n + CHK - 1)/CHK
         if (.not. allocated(Eng%Yb)) allocate(Eng%Yb(n,nt))
-        !$omp parallel private(tid,k,c,c0,c1,m,cur,ps,j,r,s,xc,v,i0,i1,t)
+        !$omp parallel private(tid,k,c,c0,c1,m,cur,ps,j,r,s,xc,v,i0,i1,t,ow,pe,dl)
         tid = omp_get_thread_num() + 1
-        if (omp_get_num_threads() /= nt) call fatal('NCSM ... the number of threads changed after the stored matrix')
+        if (omp_get_num_threads() > nt) call fatal('NCSM ... more threads than at the build of the stored matrix')
         Eng%Yb(:,tid) = 0.0_dp
-        cur = 1
-        ps = 0
-        do k = tid - 1, nchunk - 1, nt
+        !$omp do schedule(dynamic,4)
+        do k = 0, nchunk - 1
+            ow = Eng%ChT(k+1)
+            cur = Eng%ChS(k+1)
+            ps = Eng%ChP(k+1)
+            pe = Eng%ChE(k+1)
             c0 = k*CHK + 1
             c1 = min(n, c0 + CHK - 1)
             do c = c0, c1
                 m = Eng%Cnt(c)
                 if (m == 0) cycle
-                if (SEG - ps < m) then
+                if (m < 0) then
+                    m = -m
                     cur = cur + 1
                     ps = 0
+                    pe = 0
                 end if
+                r = c - 1
                 xc = x(c)
                 s = 0.0_dp
-                associate(Sg => Eng%Ts(tid)%S(cur))
+                associate(Sg => Eng%Ts(ow)%S(cur))
                     if (Eng%Single) then
                         do j = ps + 1, ps + m
-                            r = Sg%r(j)
+                            dl = int(Sg%d(j)) + GOFF
+                            if (dl == 0) then
+                                pe = pe + 1
+                                r = Sg%e(pe)
+                            else
+                                r = r + dl
+                            end if
                             v = real(Sg%vs(j),dp)
                             s = s + v*x(r)
                             if (r /= c) Eng%Yb(r,tid) = Eng%Yb(r,tid) + v*xc
                         end do
                     else
                         do j = ps + 1, ps + m
-                            r = Sg%r(j)
+                            dl = int(Sg%d(j)) + GOFF
+                            if (dl == 0) then
+                                pe = pe + 1
+                                r = Sg%e(pe)
+                            else
+                                r = r + dl
+                            end if
                             v = Sg%vd(j)
                             s = s + v*x(r)
                             if (r /= c) Eng%Yb(r,tid) = Eng%Yb(r,tid) + v*xc
@@ -2100,7 +2170,7 @@ contains
                 ps = ps + m
             end do
         end do
-        !$omp barrier
+        !$omp end do
         !$omp do schedule(static)
         do i0 = 1, n, 4096
             i1 = min(n, i0 + 4095)
@@ -2258,6 +2328,68 @@ contains
         Out = Out + Mr*(Mr + 1.0_dp)
     end subroutine j2_expect
 
+    ! Sorts k(1:n) ascending with the payload v (quicksort, insertion sort below 16) ...
+    subroutine sort2(n,k,v)
+        integer, intent(in) :: n
+        integer, intent(inout) :: k(:)
+        real(dp), intent(inout) :: v(:)
+        integer :: Stk(2,64), top, lo, hi, i, j, pv, tk
+        real(dp) :: tv
+        top = 1
+        Stk(1,1) = 1
+        Stk(2,1) = n
+        do while (top > 0)
+            lo = Stk(1,top)
+            hi = Stk(2,top)
+            top = top - 1
+            do while (hi - lo >= 16)
+                pv = k((lo + hi)/2)
+                i = lo
+                j = hi
+                do
+                    do while (k(i) < pv)
+                        i = i + 1
+                    end do
+                    do while (k(j) > pv)
+                        j = j - 1
+                    end do
+                    if (i <= j) then
+                        tk = k(i); k(i) = k(j); k(j) = tk
+                        tv = v(i); v(i) = v(j); v(j) = tv
+                        i = i + 1
+                        j = j - 1
+                    end if
+                    if (i > j) exit
+                end do
+                ! the larger part on the stack, the smaller next ...
+                if (j - lo < hi - i) then
+                    top = top + 1
+                    Stk(1,top) = i
+                    Stk(2,top) = hi
+                    hi = j
+                else
+                    top = top + 1
+                    Stk(1,top) = lo
+                    Stk(2,top) = j
+                    lo = i
+                end if
+            end do
+            do i = lo + 1, hi
+                tk = k(i)
+                tv = v(i)
+                j = i - 1
+                do while (j >= lo)
+                    if (k(j) <= tk) exit
+                    k(j+1) = k(j)
+                    v(j+1) = v(j)
+                    j = j - 1
+                end do
+                k(j+1) = tk
+                v(j+1) = tv
+            end do
+        end do
+    end subroutine sort2
+
     ! Accumulates x at row r of a column under construction (thread-local Pos, Rl, Acc, nl; Rl & Acc grown as needed) ...
     subroutine acc_add(Pos,Rl,Acc,nl,r,x)
         integer, intent(inout) :: Pos(:), nl
@@ -2332,6 +2464,7 @@ contains
         integer, intent(out) :: Nconv
         real(dp), allocatable :: Vk(:,:), w(:), h(:), g(:), T(:,:), th(:), Y(:,:), Rs(:)
         integer :: mb, k, j, jm, nmv, i, kk, nrs
+        real(dp) :: tw0, tmv, tor, t1
         real(dp) :: bet
         logical :: Inv, Early
         mb = Mb_in
@@ -2345,6 +2478,9 @@ contains
         end do
         Vk(:,1) = Vk(:,1) / norm2(Vk(:,1))
         T = 0.0_dp
+        tw0 = omp_get_wtime()
+        tmv = 0.0_dp
+        tor = 0.0_dp
         k = 0
         nmv = 0
         nrs = 0
@@ -2355,7 +2491,10 @@ contains
             Inv = .false.
             Early = .false.
             do j = k + 1, mb
+                t1 = omp_get_wtime()
                 call apply(Vk(:,j),w)
+                tmv = tmv + omp_get_wtime() - t1
+                t1 = omp_get_wtime()
                 nmv = nmv + 1
                 call dgemv('T',n,j,1.0_dp,Vk,n,w,1,0.0_dp,h,1)
                 call dgemv('N',n,j,-1.0_dp,Vk,n,h,1,1.0_dp,w,1)
@@ -2365,6 +2504,7 @@ contains
                 T(1:j,j) = h(1:j)
                 T(j,1:j) = h(1:j)
                 bet = norm2(w)
+                tor = tor + omp_get_wtime() - t1
                 jm = j
                 if (bet <= 1.0e-12_dp*max(1.0_dp,abs(h(j)))) then
                     Inv = .true.
@@ -2383,7 +2523,7 @@ contains
             call ritz(jm)
             write(*,'(a)') TAB // 'Lanczos restart ' // istr(nrs) // ', products ' // istr(nmv) // ' ... E_1 = ' // &
                            cfmt_f(th(1),0,8) // ', E_' // istr(min(Ne,jm)) // ' = ' // cfmt_f(th(min(Ne,jm)),0,6) // &
-                           ', converged ' // istr(Nconv) // ' of ' // istr(Ne)
+                           ', converged ' // istr(Nconv) // ' of ' // istr(Ne) // ', ' // cfmt_f(omp_get_wtime() - tw0,0,1) // ' s'
             if (Nconv >= Ne .or. nmv >= Mmax .or. Inv .or. Early) exit
             ! thick restart ...
             kk = min(Ne + (mb - Ne)/2, mb - 5)
@@ -2396,6 +2536,8 @@ contains
             k = kk
             nrs = nrs + 1
         end do
+        write(*,'(a)') TAB // '  Lanczos time: products ' // cfmt_f(tmv,0,1) // ' s (' // cfmt_f(tmv/max(nmv,1),0,3) // ' s each), orthogonalization ' // &
+                       cfmt_f(tor,0,1) // ' s, total ' // cfmt_f(omp_get_wtime() - tw0,0,1) // ' s'
         k = min(Ne,jm)
         allocate(E(k), Res(k))
         E = th(1:k)
