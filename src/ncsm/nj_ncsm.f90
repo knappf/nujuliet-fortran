@@ -1116,8 +1116,8 @@ contains
         type(sd_t), intent(out) :: SDX
         real(dp), intent(in), optional :: Eps(:), Exmax(0:)
         logical :: Cut
-        real(dp) :: Eref, exv
-        real(dp), allocatable :: epl(:), exm(:)
+        real(dp) :: Eref, exv, eminp
+        real(dp), allocatable :: epl(:), exm(:), cum(:)
         integer, allocatable :: o(:), Cnt(:)
         integer :: Pass, n, s, i, kc, ka, d, sp, x
         integer(i8) :: j, Tot, tt
@@ -1136,6 +1136,14 @@ contains
             epl = Eps
             exm = Exmax
             Eref = sum(epl(1:Nt))
+            ! early pruning: cum(k) = sum of the reference energies e(1:k), eminp the lowest particle energy ...
+            allocate(cum(0:Nt))
+            cum(0) = 0.0_dp
+            do i = 1, Nt
+                cum(i) = cum(i-1) + epl(i)
+            end do
+            eminp = huge(1.0_dp)
+            if (Nt < SPS%ns) eminp = minval(epl(Nt+1:))
         end if
         do Pass = 1, 2
             n = 0
@@ -1231,9 +1239,27 @@ contains
         !$omp end parallel
         call timer_report(tt,'  SDs: jumps pass 2 (fill), ' // istr8(Tot) // ' jumps')
     contains
+        ! Occupations ascending (reference m-states 1..Nt first, then particles) ... with the energy cut every partial
+            ! occupation is bounded from below: holes known so far (reference states skipped), particles chosen so far &
+            ! the lowest particle energy for each slot still to fill by a particle; pruned if above Exmax(holes) (Exmax
+            ! is non-increasing in h & every further particle-hole pair costs >= 0 with an HF gap) ...
         recursive subroutine rec(pos,kmin,qs)
             integer, intent(in) :: pos, kmin, qs
-            integer :: kk
+            integer :: kk, nref, nh, ii
+            real(dp) :: spart, sref, lb
+            if (Cut .and. pos <= Nt) then
+                nref = 0
+                spart = 0.0_dp
+                sref = 0.0_dp
+                do ii = 1, pos - 1
+                    if (o(ii) <= Nt) then
+                        nref = nref + 1
+                        sref = sref + epl(o(ii))
+                    else
+                        spart = spart + epl(o(ii))
+                    end if
+                end do
+            end if
             if (pos > Nt) then
                 if (qs - SDX%N0 <= Nmax .and. count(o > Nt) <= Hcap) then
                     if (Cut) then
@@ -1257,6 +1283,16 @@ contains
                 if (count(o(1:pos-1) > Nt) + merge(1,0,kk > Nt) > Hcap) exit
                 ! remaining particles at least at the quanta of kk ...
                 if (qs + SPS%e(kk)*(Nt - pos + 1) - SDX%N0 > Nmax) exit
+                if (Cut) then
+                    if (kk > Nt) then       ! all reference decisions made: holes known, the other slots particles
+                        nh = Nt - nref
+                        lb = spart + epl(kk) + real(Nt - pos,dp)*eminp - (Eref - sref)
+                    else                    ! holes so far: reference states below kk not taken
+                        nh = kk - pos
+                        lb = real(nh,dp)*eminp - (cum(kk-1) - sref)
+                    end if
+                    if (lb > exm(min(nh,ubound(exm,1))) + 1.0e-9_dp) cycle
+                end if
                 o(pos) = kk
                 call rec(pos + 1,kk + 1,qs + SPS%e(kk))
             end do
