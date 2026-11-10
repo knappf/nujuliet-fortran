@@ -64,13 +64,21 @@ module nj_ncsm
     end interface
 
     ! HO m-states k ... orbital a, 2m, quanta e, l, 2j, radial n ...
+    ! One-body jump types (kc, ka) = a+_kc a_ka in buckets b = 2 (dm + dmax/2) + pt + 1, dm = (m2_kc - m2_ka)/2, pt the
+        ! parity of l_kc + l_ka ... Bk(kc,ka) the bucket, Ix(kc,ka) the index within it, Tkc(b)%v, Tka(b)%v its types,
+        ! Bp(b) the partner bucket of the pn coupling (dm -> -dm, same pt), b0 = dmax + 1 the diagonal bucket (dm = 0, pt 0) ...
     type :: sp_t
         integer :: ns = 0
         integer, allocatable :: a(:), m2(:), e(:), l(:), j2(:), n(:)
         ! binomials C(n,k), n = 0..ns, k = 0..KBIN, -1 where > huge(i8)/KBIN ... SD keys = combinatorial rank
         integer(i8), allocatable :: Bin(:,:)
+        integer :: nbk = 0, dmax = 0, b0 = 0
+        integer, allocatable :: Bk(:,:), Ix(:,:), Nty(:), Bp(:)
+        type(ivec_t), allocatable :: Tkc(:), Tka(:)
     end type sp_t
     integer, parameter :: KBIN = 32
+    integer, parameter :: i2 = selected_int_kind(4)
+    integer, parameter :: IXOFF = 32768          ! Jx = Ix - IXOFF (2 bytes, up to 65535 types per bucket)
 
     ! Pairs of a kind (1 pp k1 < k2, 2 nn k1 < k2, 3 pn k1 proton, k2 neutron) within the quanta cut, by blocks (2M, P) ...
     type :: pairs_t
@@ -84,18 +92,23 @@ module nj_ncsm
         type(rmat_t), allocatable :: B(:)
     end type tabs_t
 
-    ! Operator in the plain form ... u(k,k',t) & the 2-body tables per pair kind ...
+    ! Operator in the plain form ... u(k,k',t) & the 2-body tables per pair kind ... jump-type tables (pn_tables): W(b)%v
+        ! (ixn, ixp) = v_pn(kc kc', ka ka') for the proton type ixp of bucket b & the neutron type ixn of Bp(b), uT(ix,t) the
+        ! one-body u of the types of the diagonal bucket ...
     type :: op_t
         real(dp) :: C0 = 0.0_dp
         real(dp), allocatable :: u(:,:,:)
         type(tabs_t) :: T(3)
+        type(rmat_t), allocatable :: W(:)
+        real(dp), allocatable :: uT(:,:)
+        integer, allocatable :: Bp(:)
     end type op_t
 
     ! Slater determinants of one species ... occupied m-states (ascending), quanta above N0, 2M, the one-body jumps
-        ! a+_kc a_ka |s> = sg |s'> (incl. kc = ka) bucketed by 2 dm = 2(m_kc - m_ka): jumps of s with bucket d at
-        ! Jo(d,s) .. Jo(d+1,s)-1 ...
+        ! a+_kc a_ka |s> = sg |s'> (incl. kc = ka) in the type buckets b of SPS: jumps of s with bucket b at
+        ! Jo(b,s) .. Jo(b+1,s)-1, Jt = sg s' (the sign in the sign of the target), Jx = Ix(kc,ka) - IXOFF ...
     type :: sd_t
-        integer :: Nt = 0, nsd = 0, N0 = 0, nd = 0, dmax = 0
+        integer :: Nt = 0, nsd = 0, N0 = 0, nd = 0
         integer, allocatable :: occ(:,:), q(:), m2(:)
         ! h(s) particles outside the reference (the lowest Nt m-states), L(s) the sector label: q (Trunc 'Nmax') or 2h + mod(q,2) ('npnh') ...
         integer, allocatable :: h(:), L(:)
@@ -103,27 +116,46 @@ module nj_ncsm
         real(dp), allocatable :: ex(:)
         type(hashmap_t) :: Map
         integer(i8), allocatable :: Jo(:,:)   ! 64-bit offsets (> 2^31 jumps, e.g. 16O 4p4h in 5 shells)
-        integer, allocatable :: Jt(:), Jc(:), Ja(:)
-        integer(i1), allocatable :: Js(:)
+        integer, allocatable :: Jt(:)
+        integer(i2), allocatable :: Jx(:)
     end type sd_t
 
+    ! Species matrix column: partners r (lower half by the ranks) & values v (double) or vs (single) ...
     type :: col_t
         integer, allocatable :: r(:)
         real(dp), allocatable :: v(:)
+        real(f4), allocatable :: vs(:)
     end type col_t
 
     ! Many-body basis ... state c = (proton SD sp(c), neutron SD sn(c)), St(sp,qn) the first index of the sector of sp &
         ! the neutron block (M - M_P, qn) (-1 if absent), Lc(sn) the position of sn in its block ... with the energy cut
         ! the blocks are in ascending neutron excitation energy & the sector (sp,qn) holds the first Nc(sp,qn) of them
         ! (E_P + E_N <= Ecut_npnh(h_P + h_N)) ... dim_all the number of products of the kept SDs before the pair cut ...
+        ! Rn(sn) the rank of the neutron SD in the order of the sectors (blocks by L, then by position): for one sp the state
+        ! index grows with Rn ... states are in ascending sp, so r >= c iff sp_r > sp_c or (sp_r = sp_c & Rn(sn_r) >= Rn(sn_c)) ...
     type :: mb_t
         integer :: dim = 0, M2 = 0, Nmax = 0
         integer(i8) :: dim_all = 0
-        integer, allocatable :: sp(:), sn(:), St(:,:), Lc(:), Nc(:,:)
+        integer, allocatable :: sp(:), sn(:), St(:,:), Lc(:), Nc(:,:), Rn(:)
     end type mb_t
 
-    ! Operator engine ... species matrices Mp, Mn & optionally the stored lower half (columns Ptr(c) .. Ptr(c+1)-1, rows
-        ! Row, values Vd or Vs) with the thread buffers Yb of the product ...
+    ! Stored lower half ... per thread a list of segments (SEG entries each: rows r, values vs or vd), the columns of the
+        ! thread (chunks of CHK columns, chunk k to thread mod(k,nt) + 1) in order, a column entirely within a segment
+        ! (a new segment is started when it does not fit), Cnt(c) entries of column c ...
+    integer, parameter :: SEG = 2**22, CHK = 1024
+    type :: seg_t
+        integer :: n = 0
+        integer, allocatable :: r(:)
+        real(dp), allocatable :: vd(:)
+        real(f4), allocatable :: vs(:)
+    end type seg_t
+    type :: tstore_t
+        integer :: ns = 0
+        type(seg_t), allocatable :: S(:)
+    end type tstore_t
+
+    ! Operator engine ... species matrices Mp, Mn (lower halves) & optionally the stored lower half with the thread
+        ! buffers Yb of the symmetric products ...
     ! Truncation & basis of the current run ... Trunc 'Nmax' or 'npnh', Uhf(a,b,t) the HF coefficients (Basis 'HF') ...
     character(len=8), save :: Trunc = 'Nmax'
     real(dp), allocatable, save :: Uhf(:,:,:)
@@ -137,10 +169,10 @@ module nj_ncsm
         type(col_t), allocatable :: Mp(:), Mn(:)
         logical :: Stored = .false., Single = .false.
         integer(i8) :: nnz = 0
-        integer(i8), allocatable :: Ptr(:)
-        integer, allocatable :: Row(:)
-        real(dp), allocatable :: Vd(:), Yb(:,:)
-        real(f4), allocatable :: Vs(:)
+        integer :: nt = 0
+        integer, allocatable :: Cnt(:)
+        type(tstore_t), allocatable :: Ts(:)
+        real(dp), allocatable :: Yb(:,:)
     end type eng_t
 
     ! Context of the H product passed to lanczos_tr (apply_h) ... module-level pointers instead of an internal procedure
@@ -247,15 +279,16 @@ contains
         integer :: Qcap, Hcap
         type(pairs_t), target :: Pr(3)
         type(op_t), target :: H
-        type(op_t) :: J2o, Ncm
+        type(op_t) :: Ncm
         type(mb_t), target :: B
+        type(mb_t) :: B2
         type(eng_t), target :: EH
         type(eng_t) :: EO
-        real(dp), allocatable :: E(:), Zv(:,:), Jv(:), Nv(:), Ev(:), Res(:)
+        real(dp), allocatable :: E(:), Zv(:,:), Jv(:), Nv(:), Ev(:), Res(:), Xt(:,:)
         integer :: Z, Nneu, A, M2, Epair(3), t, k, Ne, Par, u, Nconv
         integer(i8) :: t0
         real(dp) :: Beta, MemGB
-        logical :: Fits
+        logical :: Fits, Single
         character(len=8) :: Mode
         character(len=:), allocatable :: Fn, Tag, Hdr
         real(dp), allocatable :: EpsP(:), EpsN(:), ExmP(:), ExmN(:)
@@ -346,7 +379,10 @@ contains
         write(*,'(a)') TAB // 'm-scheme dimension ' // istr(B%dim)
         if (UseCut) write(*,'(a)') TAB // '  (energy cut: ' // cfmt_f(100.0_dp*real(B%dim,dp)/real(max(B%dim_all,1_i8),dp),0,2) // &
                                    ' % of the ' // istr8(B%dim_all) // ' products of the SDs kept)'
+        ! the basis of 2M + 2 (same sectors) for <J^2> = |J_+ z|^2 + M (M + 1) ...
+        call basis_make(P,Nn,M2 + 2,Nmax,mod(Par + P%N0 + Nn%N0,2),B2)
         call timer_report(t0,'basis & one-body jumps')
+        call mem_report('SDs, jumps & basis')
         if (B%dim == 0) return
 
         ! Pair blocks within the quanta cut: the largest quanta of two nucleons in the basis ...
@@ -365,8 +401,17 @@ contains
         call op_from_coupled(SPS,Orb,Pr,V,Orb_NN,uH,C0,H)
         call op_ncm(SPS,Pr,A,Ncm)
         if (Beta /= 0.0_dp) call op_axpy(H,Beta,Ncm)
-        call eng_make(SPS,P,Nn,Pr,H,EH)
-        call timer_report(t0,'m-scheme tables & species matrices of H + Beta N_cm')
+        call pn_tables(SPS,Pr(3),H)
+        call timer_report(t0,'m-scheme tables of H + Beta N_cm')
+        call timer_start(t0)
+        Single = Params%Calc%NCSM%Single
+        if (UseCut) then
+            call eng_make(SPS,P,Nn,Pr,H,B,EH,Single,Qcap,Hcap,EpsP,EpsN,ExmP,ExmN)
+        else
+            call eng_make(SPS,P,Nn,Pr,H,B,EH,Single,Qcap,Hcap)
+        end if
+        call timer_report(t0,'species matrices of H + Beta N_cm')
+        call mem_report('species matrices')
 
         ! Stored or on the fly ...
         Mode = Params%Calc%NCSM%Matrix
@@ -374,16 +419,19 @@ contains
         if (MemGB <= 0.0_dp) MemGB = 0.7_dp*mem_available_gb()
         if (trim(Mode) /= 'otf') then
             call timer_start(t0)
-            call eng_store(P,Nn,Pr,B,H,EH,Params%Calc%NCSM%Single,MemGB,Fits)
+            call eng_store(P,Nn,B,H,EH,Single,MemGB,Fits)
             call timer_report(t0,'stored matrix')
             if (.not. Fits) then
                 write(*,'(a)') TAB // 'stored matrix exceeds Matrix_GB ... on-the-fly products instead'
                 Mode = 'otf'
             else
                 Mode = 'stored'
+                deallocate(EH%Mp, EH%Mn)      ! not needed by the stored products
+                call op_free(H)
             end if
         end if
         write(*,'(a)') TAB // 'products of H + Beta N_cm: ' // trim(Mode)
+        call mem_report('before Lanczos')
 
         ! Lanczos for H + Beta N_cm ...
         Ne = min(Params%Calc%NCSM%N_Eig, B%dim)
@@ -398,26 +446,26 @@ contains
                         Params%Calc%NCSM%Lanczos_Tol,E,Zv,Res,Nconv)
         nullify(cP, cNn, cPr, cB, cH, cEH)
         call timer_report(t0,'Lanczos')
+        call mem_report('Lanczos')
         Ne = size(E)
-        if (allocated(EH%Ptr)) deallocate(EH%Ptr)
-        if (allocated(EH%Row)) deallocate(EH%Row)
-        if (allocated(EH%Yb)) deallocate(EH%Yb)
-        if (allocated(EH%Vd)) deallocate(EH%Vd)
-        if (allocated(EH%Vs)) deallocate(EH%Vs)
-        deallocate(EH%Mp, EH%Mn)
+        call eng_free(EH)
         call op_free(H)
 
-        ! <N_cm> & <J^2> on the fly ...
+        ! <N_cm> (2-body, lower-half expectation pass) & <J^2> (one-body: |J_+ z|^2 + M (M + 1)) ...
         call timer_start(t0)
-        allocate(Ev(Ne), Jv(Ne), Nv(Ne))
-        call eng_make(SPS,P,Nn,Pr,Ncm,EO)
-        call expect(Ncm,EO,Nv)
+        allocate(Ev(Ne), Jv(Ne), Nv(Ne), Xt(Ne,B%dim))
+        Xt = transpose(Zv)
+        call pn_tables(SPS,Pr(3),Ncm)
+        if (UseCut) then
+            call eng_make(SPS,P,Nn,Pr,Ncm,B,EO,.false.,Qcap,Hcap,EpsP,EpsN,ExmP,ExmN)
+        else
+            call eng_make(SPS,P,Nn,Pr,Ncm,B,EO,.false.,Qcap,Hcap)
+        end if
+        call eng_expect(P,Nn,B,Ncm,EO,Ne,Xt,Nv)
         call op_free(Ncm)
-        deallocate(EO%Mp, EO%Mn)
-        call op_j2(SPS,Pr,J2o)
-        call eng_make(SPS,P,Nn,Pr,J2o,EO)
-        call expect(J2o,EO,Jv)
-        call op_free(J2o)
+        call eng_free(EO)
+        call j2_expect(SPS,P,Nn,B,B2,Ne,Xt,Jv)
+        deallocate(Xt)
         Ev = E - Beta*Nv
         call timer_report(t0,'<N_cm> & <J^2>')
 
@@ -450,27 +498,6 @@ contains
 
     contains
 
-        ! <z_k|Op|z_k> for all k, blocks of 16 vectors ...
-        subroutine expect(Op,Eng,Out)
-            type(op_t), intent(in) :: Op
-            type(eng_t), intent(in) :: Eng
-            real(dp), intent(out) :: Out(:)
-            real(dp), allocatable :: Xt(:,:), Yt(:,:)
-            integer :: k0, k1, m, c
-            do k0 = 1, Ne, 16
-                k1 = min(Ne,k0 + 15)
-                m = k1 - k0 + 1
-                allocate(Xt(m,B%dim), Yt(m,B%dim))
-                Xt = transpose(Zv(:,k0:k1))
-                call eng_mv_otf(P,Nn,Pr,B,Op,Eng,m,Xt,Yt)
-                Out(k0:k1) = 0.0_dp
-                do c = 1, B%dim
-                    Out(k0:k1) = Out(k0:k1) + Xt(:,c)*Yt(:,c)
-                end do
-                deallocate(Xt, Yt)
-            end do
-        end subroutine expect
-
         real(dp) function jval(x)
             real(dp), intent(in) :: x
             jval = 0.5_dp*(-1.0_dp + sqrt(max(1.0_dp + 4.0_dp*x,0.0_dp)))
@@ -493,7 +520,7 @@ contains
         if (cEH%Stored) then
             call eng_mv_stored(cEH,cB%dim,x,y)
         else
-            call eng_mv_otf(cP,cNn,cPr,cB,cH,cEH,1,x,y)
+            call eng_mv_otf(cP,cNn,cB,cH,cEH,x,y)
         end if
     end subroutine apply_h
 
@@ -501,10 +528,49 @@ contains
         type(op_t), intent(inout) :: Op
         integer :: t
         if (allocated(Op%u)) deallocate(Op%u)
+        if (allocated(Op%W)) deallocate(Op%W)
+        if (allocated(Op%uT)) deallocate(Op%uT)
         do t = 1, 3
             if (allocated(Op%T(t)%B)) deallocate(Op%T(t)%B)
         end do
     end subroutine op_free
+
+    subroutine eng_free(Eng)
+        type(eng_t), intent(inout) :: Eng
+        if (allocated(Eng%Mp)) deallocate(Eng%Mp)
+        if (allocated(Eng%Mn)) deallocate(Eng%Mn)
+        if (allocated(Eng%Cnt)) deallocate(Eng%Cnt)
+        if (allocated(Eng%Ts)) deallocate(Eng%Ts)
+        if (allocated(Eng%Yb)) deallocate(Eng%Yb)
+        Eng%Stored = .false.
+    end subroutine eng_free
+
+    ! Current & peak resident memory (VmRSS, VmHWM of /proc/self/status) ...
+    subroutine mem_report(Label)
+        character(len=*), intent(in) :: Label
+        integer :: u, Ios
+        character(len=256) :: Line
+        integer(i8) :: kb, Rss, Hwm
+        Rss = -1
+        Hwm = -1
+        open(newunit=u, file='/proc/self/status', status='old', action='read', iostat=Ios)
+        if (Ios /= 0) return
+        do
+            read(u,'(a)',iostat=Ios) Line
+            if (Ios /= 0) exit
+            if (index(Line,'VmRSS:') == 1) then
+                read(Line(7:),*,iostat=Ios) kb
+                if (Ios == 0) Rss = kb
+            else if (index(Line,'VmHWM:') == 1) then
+                read(Line(7:),*,iostat=Ios) kb
+                if (Ios == 0) Hwm = kb
+            end if
+        end do
+        close(u)
+        if (Rss < 0) return
+        write(*,'(a)') TAB // '  memory ... RSS ' // cfmt_f(real(Rss,dp)/976562.5_dp,0,1) // ' GB, peak ' // &
+                       cfmt_f(real(Hwm,dp)/976562.5_dp,0,1) // ' GB (' // Label // ')'
+    end subroutine mem_report
 
     function istr8(i) result(s)
         integer(i8), intent(in) :: i
@@ -736,6 +802,7 @@ contains
         do k = 2, SPS%ns
             if (SPS%e(k) < SPS%e(k-1)) call fatal('NCSM ... orbitals not ordered by HO quanta')
         end do
+        call jump_types(SPS)
         ! Pascal's triangle with an overflow marker (-1) ...
         allocate(SPS%Bin(0:SPS%ns,0:KBIN))
         SPS%Bin = 0
@@ -752,6 +819,42 @@ contains
             end do
         end do
     end subroutine sp_make
+
+    ! Jump types (kc, ka) in buckets (2 dm, parity type) ...
+    subroutine jump_types(SPS)
+        type(sp_t), intent(inout) :: SPS
+        integer :: kc, ka, b, d, pt, dn
+        SPS%dmax = 2*maxval(SPS%j2)
+        SPS%nbk = 2*(SPS%dmax + 1)
+        SPS%b0 = SPS%dmax + 1
+        allocate(SPS%Bk(SPS%ns,SPS%ns), SPS%Ix(SPS%ns,SPS%ns), SPS%Nty(SPS%nbk), SPS%Bp(SPS%nbk), SPS%Tkc(SPS%nbk), SPS%Tka(SPS%nbk))
+        SPS%Nty = 0
+        do ka = 1, SPS%ns
+            do kc = 1, SPS%ns
+                d = (SPS%m2(kc) - SPS%m2(ka) + SPS%dmax)/2 + 1
+                pt = mod(SPS%l(kc) + SPS%l(ka),2)
+                b = 2*(d - 1) + pt + 1
+                SPS%Bk(kc,ka) = b
+                SPS%Nty(b) = SPS%Nty(b) + 1
+                SPS%Ix(kc,ka) = SPS%Nty(b)
+            end do
+        end do
+        if (maxval(SPS%Nty) > 2*IXOFF - 1) call fatal('NCSM ... more than 65535 jump types in a bucket')
+        do b = 1, SPS%nbk
+            allocate(SPS%Tkc(b)%v(SPS%Nty(b)), SPS%Tka(b)%v(SPS%Nty(b)))
+            d = (b - 1)/2 + 1
+            pt = mod(b - 1,2)
+            dn = SPS%dmax + 2 - d
+            SPS%Bp(b) = 2*(dn - 1) + pt + 1
+        end do
+        do ka = 1, SPS%ns
+            do kc = 1, SPS%ns
+                b = SPS%Bk(kc,ka)
+                SPS%Tkc(b)%v(SPS%Ix(kc,ka)) = kc
+                SPS%Tka(b)%v(SPS%Ix(kc,ka)) = ka
+            end do
+        end do
+    end subroutine jump_types
 
     subroutine pairs_make(SPS,kind,Ecut,Pr)
         type(sp_t), intent(in) :: SPS
@@ -1162,12 +1265,12 @@ contains
         call timer_start(tt)
 
         ! One-body jumps ... a+_kc a_ka |s> for occupied ka & kc empty or = ka ... threaded over s: counts per bucket
-        ! (pass 1, into Jo(d+1,s)), prefix sum, fill (pass 2) ... Cnt & tmp private ...
-        SDX%dmax = 2*maxval(SPS%j2)
-        SDX%nd = SDX%dmax + 1
+        ! (pass 1, into Jo(b+1,s)), prefix sum, fill (pass 2) ... Cnt & tmp private ... with the energy cut a target
+        ! above Exmax(h') (or with h' > Hcap) is outside the list: skipped before the lookup ...
+        SDX%nd = SPS%nbk
         allocate(SDX%Jo(SDX%nd + 1,n))
         SDX%Jo = 0
-        !$omp parallel private(s,i,ka,kc,d,x,Cnt,tmp,Occ)
+        !$omp parallel private(s,i,ka,kc,d,x,Cnt,tmp,Occ,exv)
         allocate(Cnt(SDX%nd), tmp(Nt), Occ(SPS%ns))
         Occ = .false.
         !$omp do schedule(dynamic,256)
@@ -1180,8 +1283,11 @@ contains
                 ka = SDX%occ(i,s)
                 do kc = 1, SPS%ns
                     if (kc /= ka .and. Occ(kc)) cycle
+                    if (Cut .and. kc /= ka) then
+                        if (.not. inlist(s,ka,kc)) cycle
+                    end if
                     if (sd_tgt(SPS,SDX,Nmax,s,i,kc,x,tmp) < 0) cycle
-                    d = (SPS%m2(kc) - SPS%m2(ka) + SDX%dmax)/2 + 1
+                    d = SPS%Bk(kc,ka)
                     Cnt(d) = Cnt(d) + 1
                 end do
             end do
@@ -1205,8 +1311,8 @@ contains
         end do
         call timer_report(tt,'  SDs: jumps pass 1 (count) & prefix')
         call timer_start(tt)
-        allocate(SDX%Jt(Tot), SDX%Jc(Tot), SDX%Ja(Tot), SDX%Js(Tot))
-        !$omp parallel private(s,i,ka,kc,d,x,sp,j,Cnt,tmp,Occ)
+        allocate(SDX%Jt(Tot), SDX%Jx(Tot))
+        !$omp parallel private(s,i,ka,kc,d,x,sp,j,Cnt,tmp,Occ,exv)
         allocate(Cnt(SDX%nd), tmp(Nt), Occ(SPS%ns))
         Occ = .false.
         !$omp do schedule(dynamic,256)
@@ -1219,15 +1325,16 @@ contains
                 ka = SDX%occ(i,s)
                 do kc = 1, SPS%ns
                     if (kc /= ka .and. Occ(kc)) cycle
+                    if (Cut .and. kc /= ka) then
+                        if (.not. inlist(s,ka,kc)) cycle
+                    end if
                     sp = sd_tgt(SPS,SDX,Nmax,s,i,kc,x,tmp)
                     if (sp < 0) cycle
-                    d = (SPS%m2(kc) - SPS%m2(ka) + SDX%dmax)/2 + 1
+                    d = SPS%Bk(kc,ka)
                     j = SDX%Jo(d,s) + Cnt(d)
                     Cnt(d) = Cnt(d) + 1
-                    SDX%Jt(j) = sp
-                    SDX%Jc(j) = kc
-                    SDX%Ja(j) = ka
-                    SDX%Js(j) = int(x,i1)
+                    SDX%Jt(j) = x*sp
+                    SDX%Jx(j) = int(SPS%Ix(kc,ka) - IXOFF,i2)
                 end do
             end do
             do i = 1, Nt
@@ -1237,7 +1344,8 @@ contains
         !$omp end do
         deallocate(Cnt, tmp, Occ)
         !$omp end parallel
-        call timer_report(tt,'  SDs: jumps pass 2 (fill), ' // istr8(Tot) // ' jumps')
+        call timer_report(tt,'  SDs: jumps pass 2 (fill), ' // istr8(Tot) // ' jumps (' // &
+                             cfmt_f(6.0_dp*real(Tot,dp)/1.0e9_dp,0,2) // ' GB)')
     contains
         ! Occupations ascending (reference m-states 1..Nt first, then particles) ... with the energy cut every partial
             ! occupation is bounded from below: holes known so far (reference states skipped), particles chosen so far &
@@ -1309,6 +1417,16 @@ contains
                 key = key + SPS%Bin(oc(ii) - 1,ii)
             end do
         end function key
+
+        ! a+_kc a_ka |s> within the energy cut of the list (h' <= Hcap & ex' <= Exmax(h')) ...
+        logical function inlist(s_,ka_,kc_)
+            integer, intent(in) :: s_, ka_, kc_
+            integer :: hh
+            hh = SDX%h(s_) - merge(1,0,ka_ > Nt) + merge(1,0,kc_ > Nt)
+            inlist = .false.
+            if (hh > Hcap .or. hh > ubound(exm,1)) return
+            inlist = SDX%ex(s_) - epl(ka_) + epl(kc_) <= exm(hh) + 1.0e-9_dp
+        end function inlist
     end subroutine sd_make
 
     pure subroutine isort(x)
@@ -1409,6 +1527,10 @@ contains
             B%Lc(sn) = Cnt(Nn%m2(sn),Nn%L(sn))
             Lst(First(Nn%m2(sn),Nn%L(sn)) + B%Lc(sn)) = sn
         end do
+        allocate(B%Rn(Nn%nsd))
+        do i = 1, Nn%nsd
+            B%Rn(Lst(i)) = i
+        end do
         ! sectors (sp, qn) ... with the energy cut the first Nc of the block (binary search, E_N <= Ecn(h_P + h_N) - E_P) ...
         allocate(B%St(P%nsd,0:Lmax), B%Nc(P%nsd,0:Lmax))
         B%St = -1
@@ -1475,84 +1597,148 @@ contains
     ! ---------------------------------------------------------------------------------------------------------------
     ! Sparse matrices ...
 
-    ! Like-particle part of Op on the SDs of species t (columns, same 2M) ...
-    subroutine species_matrix(SPS,SDX,Pr,Op,t,Mt)
+    ! Like-particle part of Op on the SDs of species t, lower half: the partners s' with Rank(s') >= Rank(s) ... the
+        ! candidates of a pair move (k1 k2) -> (k3 k4) are checked against the SD list before the hash lookup: k3, k4
+        ! empty (occupation mask), quanta <= Nmaxq, h' <= Hcap & (energy cut) ex' <= Exmax(h'); with the cut the partner
+        ! pairs of a block are taken in ascending energy & the loop ends at the first pair above Exmax(1) ...
+        ! values single (vs) or double (v) ...
+    subroutine species_matrix(SPS,SDX,Pr,Op,t,Single,Rank,Nmaxq,Hcap,Mt,Eps,Exmax)
         type(sp_t), intent(in) :: SPS
         type(sd_t), intent(in) :: SDX
         type(pairs_t), intent(in) :: Pr
         type(op_t), intent(in) :: Op
-        integer, intent(in) :: t
+        integer, intent(in) :: t, Nmaxq, Hcap
+        logical, intent(in) :: Single
+        integer, intent(in) :: Rank(:)
         type(col_t), allocatable, intent(out) :: Mt(:)
+        real(dp), intent(in), optional :: Eps(:), Exmax(0:)
         integer, allocatable :: Pos(:), Rl(:), o(:)
-        real(dp), allocatable :: Acc(:)
-        integer :: s, d0, i1_, i2_, k1, k2, k3, k4, pid, b, q, pq, sp, nl, Nt, nb1, nb2
+        real(dp), allocatable :: Acc(:), Ep(:), Eb(:)
+        logical, allocatable :: Occ(:)
+        type(ivec_t), allocatable :: Ord(:)
+        logical :: Cut
+        real(dp) :: exlim, base, v, sg
+        integer :: s, i1_, i2_, k1, k2, k3, k4, pid, b, q, qq, pq, sp, nl, Nt, nb1, nb2, ii, p3, p4, hh, h2, qn, h0, rs, b0, nsel
         integer(i8) :: j
-        real(dp) :: v, sg
         Nt = SDX%Nt
+        Cut = present(Eps)
         allocate(Mt(SDX%nsd))
-        d0 = SDX%dmax/2 + 1
-        !$omp parallel private(Pos,Rl,Acc,o,j,i1_,i2_,k1,k2,k3,k4,pid,b,q,pq,sp,nl,v,sg,nb1,nb2)
-        allocate(Pos(SDX%nsd), Rl(SDX%nsd), Acc(SDX%nsd), o(Nt))
+        b0 = SPS%b0
+        exlim = huge(1.0_dp)
+        base = 0.0_dp
+        if (Cut) then
+            ! partner pairs of each block in ascending energy ...
+            allocate(Ep(Pr%np), Ord(Pr%nb))
+            do q = 1, Pr%np
+                Ep(q) = Eps(Pr%k1(q)) + Eps(Pr%k2(q))
+            end do
+            do b = 1, Pr%nb
+                nsel = size(Pr%mem(b)%v)
+                allocate(Ord(b)%v(nsel), Eb(nsel))
+                do q = 1, nsel
+                    Eb(q) = Ep(Pr%mem(b)%v(q))
+                end do
+                call argsort_r(Eb,Ord(b)%v)
+                deallocate(Eb)
+            end do
+            exlim = Exmax(min(1,ubound(Exmax,1)))
+        end if
+        !$omp parallel private(Pos,Rl,Acc,o,Occ,j,i1_,i2_,k1,k2,k3,k4,pid,b,q,qq,pq,sp,nl,v,sg,nb1,nb2,ii,p3,p4,hh,h2,qn,h0,rs) &
+        !$omp firstprivate(base)
+        allocate(Pos(SDX%nsd), Rl(4096), Acc(4096), o(Nt), Occ(SPS%ns))
         Pos = 0
+        Occ = .false.
         !$omp do schedule(dynamic,16)
         do s = 1, SDX%nsd
             nl = 0
-            ! one-body ...
-            do j = SDX%Jo(d0,s), SDX%Jo(d0+1,s) - 1
-                v = Op%u(SDX%Jc(j),SDX%Ja(j),t)
-                if (v /= 0.0_dp) call acc_add(Pos,Rl,Acc,nl,SDX%Jt(j), real(SDX%Js(j),dp)*v)
+            rs = Rank(s)
+            do ii = 1, Nt
+                Occ(SDX%occ(ii,s)) = .true.
+            end do
+            ! one-body (the diagonal bucket) ...
+            do j = SDX%Jo(b0,s), SDX%Jo(b0+1,s) - 1
+                sp = abs(SDX%Jt(j))
+                if (Rank(sp) < rs) cycle
+                v = Op%uT(int(SDX%Jx(j)) + IXOFF,t)
+                if (v /= 0.0_dp) call acc_add(Pos,Rl,Acc,nl,sp,v*real(sign(1,SDX%Jt(j)),dp))
             end do
             ! two-body ...
             if (Nt >= 2) then
+                h0 = SDX%h(s)
                 do i1_ = 1, Nt - 1
+                    k1 = SDX%occ(i1_,s)
                     do i2_ = i1_ + 1, Nt
-                        k1 = SDX%occ(i1_,s)
                         k2 = SDX%occ(i2_,s)
                         pid = Pr%id(k1,k2)
                         if (pid == 0) cycle
                         b = Pr%blk(pid)
-                        nb1 = count(SDX%occ(:,s) < k1) + count(SDX%occ(:,s) < k2) - 1
-                        do q = 1, size(Pr%mem(b)%v)
-                            pq = Pr%mem(b)%v(q)
-                            v = Op%T(t)%B(b)%v(q,Pr%loc(pid))
-                            if (v == 0.0_dp) cycle
+                        nb1 = i1_ + i2_ - 3
+                        hh = h0 - merge(1,0,k1 > Nt) - merge(1,0,k2 > Nt)
+                        qn = SDX%q(s) - SPS%e(k1) - SPS%e(k2)
+                        if (Cut) base = SDX%ex(s) - Eps(k1) - Eps(k2)
+                        do qq = 1, size(Pr%mem(b)%v)
+                            if (Cut) then
+                                q = Ord(b)%v(qq)
+                                pq = Pr%mem(b)%v(q)
+                                if (base + Ep(pq) > exlim + 1.0e-9_dp) exit
+                            else
+                                q = qq
+                                pq = Pr%mem(b)%v(q)
+                            end if
                             k3 = Pr%k1(pq)
                             k4 = Pr%k2(pq)
+                            if (k3 /= k1 .and. k3 /= k2) then
+                                if (Occ(k3)) cycle
+                            end if
+                            if (k4 /= k1 .and. k4 /= k2) then
+                                if (Occ(k4)) cycle
+                            end if
+                            if (qn + SPS%e(k3) + SPS%e(k4) > Nmaxq) cycle
+                            h2 = hh + merge(1,0,k3 > Nt) + merge(1,0,k4 > Nt)
+                            if (h2 > Hcap) cycle
+                            if (Cut) then
+                                if (base + Ep(pq) > Exmax(min(h2,ubound(Exmax,1))) + 1.0e-9_dp) cycle
+                            end if
+                            v = Op%T(t)%B(b)%v(q,Pr%loc(pid))
+                            if (v == 0.0_dp) cycle
                             o = SDX%occ(:,s)
                             o(i1_) = k3
                             o(i2_) = k4
-                            if (dup(o)) cycle
                             call isort(o)
                             sp = hashmap_lookup(SDX%Map,keyo(o))
                             if (sp < 0) cycle
-                            nb2 = count(o < k3) + count(o < k4) - 1
+                            if (Rank(sp) < rs) cycle
+                            p3 = 0
+                            p4 = 0
+                            do ii = 1, Nt
+                                if (o(ii) == k3) p3 = ii
+                                if (o(ii) == k4) p4 = ii
+                            end do
+                            nb2 = p3 + p4 - 3
                             sg = real(1 - 2*mod(nb1 + nb2,2),dp)
-                            call acc_add(Pos,Rl,Acc,nl,sp, sg*v)
+                            call acc_add(Pos,Rl,Acc,nl,sp,sg*v)
                         end do
                     end do
                 end do
             end if
-            allocate(Mt(s)%r(nl), Mt(s)%v(nl))
+            do ii = 1, Nt
+                Occ(SDX%occ(ii,s)) = .false.
+            end do
+            allocate(Mt(s)%r(nl))
             Mt(s)%r = Rl(1:nl)
-            Mt(s)%v = Acc(1:nl)
+            if (Single) then
+                allocate(Mt(s)%vs(nl))
+                Mt(s)%vs = real(Acc(1:nl),f4)
+            else
+                allocate(Mt(s)%v(nl))
+                Mt(s)%v = Acc(1:nl)
+            end if
             Pos(Rl(1:nl)) = 0
         end do
         !$omp end do
+        deallocate(Pos, Rl, Acc, o, Occ)
         !$omp end parallel
     contains
-        logical function dup(x)
-            integer, intent(in) :: x(:)
-            integer :: a1, a2
-            dup = .false.
-            do a1 = 1, size(x) - 1
-                do a2 = a1 + 1, size(x)
-                    if (x(a1) == x(a2)) then
-                        dup = .true.
-                        return
-                    end if
-                end do
-            end do
-        end function dup
         ! combinatorial rank of the ascending occupations oc (distinct, 1..ns) ...
         integer(i8) function keyo(oc)
             integer, intent(in) :: oc(:)
@@ -1564,260 +1750,531 @@ contains
         end function keyo
     end subroutine species_matrix
 
+    ! Jump-type tables of Op: W(b)%v(ixn,ixp) = v_pn(kc kc', ka ka') for the proton type (kc,ka) = ixp of bucket b & the
+        ! neutron type (kc',ka') = ixn of the partner bucket Bp(b) (zero outside the pair quanta cut), uT(ix,t) the
+        ! one-body u of the types of the diagonal bucket ...
+    subroutine pn_tables(SPS,Pr3,Op)
+        type(sp_t), intent(in) :: SPS
+        type(pairs_t), intent(in) :: Pr3
+        type(op_t), intent(inout) :: Op
+        integer :: b, bn, ixp, ixn, kc, ka, kcn, kan, p1, p2, bb, t
+        real(dp) :: v
+        integer(i8) :: tot
+        if (allocated(Op%W)) deallocate(Op%W)
+        if (allocated(Op%uT)) deallocate(Op%uT)
+        if (allocated(Op%Bp)) deallocate(Op%Bp)
+        allocate(Op%W(SPS%nbk), Op%Bp(SPS%nbk))
+        Op%Bp = SPS%Bp
+        tot = 0
+        do b = 1, SPS%nbk
+            bn = SPS%Bp(b)
+            allocate(Op%W(b)%v(SPS%Nty(bn),SPS%Nty(b)))
+            tot = tot + int(SPS%Nty(bn),i8)*int(SPS%Nty(b),i8)
+            !$omp parallel do schedule(dynamic,8) private(ixn,kc,ka,kcn,kan,p1,p2,bb,v)
+            do ixp = 1, SPS%Nty(b)
+                kc = SPS%Tkc(b)%v(ixp)
+                ka = SPS%Tka(b)%v(ixp)
+                do ixn = 1, SPS%Nty(bn)
+                    kcn = SPS%Tkc(bn)%v(ixn)
+                    kan = SPS%Tka(bn)%v(ixn)
+                    v = 0.0_dp
+                    p1 = Pr3%id(kc,kcn)
+                    p2 = Pr3%id(ka,kan)
+                    if (p1 > 0 .and. p2 > 0) then
+                        bb = Pr3%blk(p1)
+                        if (Pr3%blk(p2) == bb) v = Op%T(3)%B(bb)%v(Pr3%loc(p1),Pr3%loc(p2))
+                    end if
+                    Op%W(b)%v(ixn,ixp) = v
+                end do
+            end do
+            !$omp end parallel do
+        end do
+        allocate(Op%uT(SPS%Nty(SPS%b0),2))
+        do t = 1, 2
+            do ixp = 1, SPS%Nty(SPS%b0)
+                Op%uT(ixp,t) = Op%u(SPS%Tkc(SPS%b0)%v(ixp),SPS%Tka(SPS%b0)%v(ixp),t)
+            end do
+        end do
+        write(*,'(a)') TAB // '  pn jump-type tables: ' // istr8(tot) // ' entries (' // cfmt_f(8.0e-9_dp*real(tot,dp),0,2) // ' GB)'
+    end subroutine pn_tables
 
     ! ---------------------------------------------------------------------------------------------------------------
-    ! Operator engine ... column c of a symmetric operator (Op(r,c) for all r) from the species matrices Mp, Mn (like-
-        ! particle parts) & the pn jumps (proton jump x neutron jump of opposite 2 dm), either accumulated (build of the
-        ! stored matrix) or contracted on the fly with nb vectors: S(1:nb) = sum_r Op(r,c) X(1:nb,r) = (Op X)(c) ...
+    ! Operator engine ... column c of a symmetric operator, lower half (rows r >= c), from the species matrices (lower
+        ! halves by the ranks: partners sp' >= sp, Rn(sn') >= Rn(sn)) & the pn jumps (proton jump x neutron jump of the
+        ! partner buckets, value W(b)(ixn,ixp), rows sp' > sp or sp' = sp & Rn(sn') >= Rn(sn)) ...
+        ! Mode 1 (build): accumulated in Pos, Rl, Acc (nl entries) ... Mode 2 (expectation): S(1:nb) = sum_(r>=c) Op(r,c)
+        ! X(1:nb,r) & Dg = Op(c,c) ... Mode 3 (product): S(1) = sum_(r>=c) Op(r,c) X(1,r) & Yb(r) += Op(r,c) X(1,c), r > c ...
 
-    subroutine eng_make(SPS,P,Nn,Pr,Op,Eng)
+    subroutine eng_make(SPS,P,Nn,Pr,Op,B,Eng,Single,Nmaxq,Hcap,EpsP,EpsN,ExmP,ExmN)
         type(sp_t), intent(in) :: SPS
         type(sd_t), intent(in) :: P, Nn
         type(pairs_t), intent(in) :: Pr(3)
         type(op_t), intent(in) :: Op
+        type(mb_t), intent(in) :: B
         type(eng_t), intent(out) :: Eng
-        call species_matrix(SPS,P,Pr(1),Op,1,Eng%Mp)
-        call species_matrix(SPS,Nn,Pr(2),Op,2,Eng%Mn)
+        logical, intent(in) :: Single
+        integer, intent(in) :: Nmaxq, Hcap
+        real(dp), intent(in), optional :: EpsP(:), EpsN(:), ExmP(0:), ExmN(0:)
+        integer, allocatable :: Ip(:)
+        integer :: i
+        integer(i8) :: npp, nnn
+        allocate(Ip(P%nsd))
+        do i = 1, P%nsd
+            Ip(i) = i
+        end do
+        Eng%Single = Single
+        if (present(EpsP)) then
+            call species_matrix(SPS,P,Pr(1),Op,1,Single,Ip,Nmaxq,Hcap,Eng%Mp,EpsP,ExmP)
+            call species_matrix(SPS,Nn,Pr(2),Op,2,Single,B%Rn,Nmaxq,Hcap,Eng%Mn,EpsN,ExmN)
+        else
+            call species_matrix(SPS,P,Pr(1),Op,1,Single,Ip,Nmaxq,Hcap,Eng%Mp)
+            call species_matrix(SPS,Nn,Pr(2),Op,2,Single,B%Rn,Nmaxq,Hcap,Eng%Mn)
+        end if
+        npp = 0
+        do i = 1, P%nsd
+            npp = npp + size(Eng%Mp(i)%r)
+        end do
+        nnn = 0
+        do i = 1, Nn%nsd
+            nnn = nnn + size(Eng%Mn(i)%r)
+        end do
+        write(*,'(a)') TAB // '  species matrices (lower halves): ' // istr8(npp) // ' proton & ' // istr8(nnn) // &
+                       ' neutron entries, ' // cfmt_f(merge(8.0_dp,12.0_dp,Single)*real(npp + nnn,dp)/1.0e9_dp,0,2) // ' GB'
     end subroutine eng_make
 
-    subroutine col_gen(c,P,Nn,Pr,B,Op,Eng,Build,Pos,Rl,Acc,nl,nb,X,S)
-        integer, intent(in) :: c, nb
+    subroutine col_gen(c,P,Nn,B,Op,Eng,Mode,Pos,Rl,Acc,nl,nb,X,S,Dg,Yb)
+        integer, intent(in) :: c, Mode, nb
         type(sd_t), intent(in) :: P, Nn
-        type(pairs_t), intent(in) :: Pr(3)
         type(mb_t), intent(in) :: B
         type(op_t), intent(in) :: Op
         type(eng_t), intent(in) :: Eng
-        logical, intent(in) :: Build
-        integer, intent(inout) :: Pos(:), Rl(:), nl
-        real(dp), intent(inout) :: Acc(:)
+        integer, intent(inout) :: Pos(:), nl
+        integer, allocatable, intent(inout) :: Rl(:)
+        real(dp), allocatable, intent(inout) :: Acc(:)
         real(dp), intent(in) :: X(nb,*)
-        real(dp), intent(inout) :: S(nb)
-        integer :: sp, sn, j, d, dn, st, p1, p2, sp2, sn2, bb, kc, ka, r
+        real(dp), intent(inout) :: S(nb), Dg, Yb(*)
+        integer :: sp, sn, j, bk, bn, st, sp2, sn2, r, Ln, L2, rn, ixp
         integer(i8) :: jp, jn
-        real(dp) :: v
+        real(dp) :: v, xc, sgp
         sp = B%sp(c)
         sn = B%sn(c)
-        if (Op%C0 /= 0.0_dp) then
-            if (Build) then
-                call acc_add(Pos,Rl,Acc,nl,c,Op%C0)
-            else
-                S = S + Op%C0*X(:,c)
-            end if
-        end if
-        ! protons ...
+        Ln = Nn%L(sn)
+        rn = B%Rn(sn)
+        xc = 0.0_dp
+        if (Mode == 3) xc = X(1,c)
+        if (Op%C0 /= 0.0_dp) call put(c,Op%C0)
+        ! protons (partners sp2 >= sp) ...
         do j = 1, size(Eng%Mp(sp)%r)
-            st = B%St(Eng%Mp(sp)%r(j),Nn%L(sn))
+            sp2 = Eng%Mp(sp)%r(j)
+            st = B%St(sp2,Ln)
             if (st < 0) cycle
             if (UseCut) then
-                if (B%Lc(sn) > B%Nc(Eng%Mp(sp)%r(j),Nn%L(sn))) cycle
+                if (B%Lc(sn) > B%Nc(sp2,Ln)) cycle
             end if
             r = st + B%Lc(sn)
-            if (Build) then
-                call acc_add(Pos,Rl,Acc,nl,r,Eng%Mp(sp)%v(j))
+            if (Eng%Single) then
+                v = real(Eng%Mp(sp)%vs(j),dp)
             else
-                S = S + Eng%Mp(sp)%v(j)*X(:,r)
+                v = Eng%Mp(sp)%v(j)
             end if
+            call put(r,v)
         end do
-        ! neutrons ...
+        ! neutrons (partners Rn(sn2) >= Rn(sn)) ...
         do j = 1, size(Eng%Mn(sn)%r)
             sn2 = Eng%Mn(sn)%r(j)
-            st = B%St(sp,Nn%L(sn2))
+            L2 = Nn%L(sn2)
+            st = B%St(sp,L2)
             if (st < 0) cycle
             if (UseCut) then
-                if (B%Lc(sn2) > B%Nc(sp,Nn%L(sn2))) cycle
+                if (B%Lc(sn2) > B%Nc(sp,L2)) cycle
             end if
             r = st + B%Lc(sn2)
-            if (Build) then
-                call acc_add(Pos,Rl,Acc,nl,r,Eng%Mn(sn)%v(j))
+            if (Eng%Single) then
+                v = real(Eng%Mn(sn)%vs(j),dp)
             else
-                S = S + Eng%Mn(sn)%v(j)*X(:,r)
+                v = Eng%Mn(sn)%v(j)
             end if
+            call put(r,v)
         end do
         ! proton-neutron ...
-        do d = 1, P%nd
-            dn = P%nd + 1 - d
-            if (dn < 1 .or. dn > Nn%nd) cycle
-            do jp = P%Jo(d,sp), P%Jo(d+1,sp) - 1
-                sp2 = P%Jt(jp)
-                kc = P%Jc(jp)
-                ka = P%Ja(jp)
-                do jn = Nn%Jo(dn,sn), Nn%Jo(dn+1,sn) - 1
-                    sn2 = Nn%Jt(jn)
-                    st = B%St(sp2,Nn%L(sn2))
+        do bk = 1, P%nd
+            if (P%Jo(bk+1,sp) == P%Jo(bk,sp)) cycle
+            bn = Op%Bp(bk)
+            if (Nn%Jo(bn+1,sn) == Nn%Jo(bn,sn)) cycle
+            do jp = P%Jo(bk,sp), P%Jo(bk+1,sp) - 1
+                sp2 = abs(P%Jt(jp))
+                if (sp2 < sp) cycle
+                sgp = real(sign(1,P%Jt(jp)),dp)
+                ixp = int(P%Jx(jp)) + IXOFF
+                do jn = Nn%Jo(bn,sn), Nn%Jo(bn+1,sn) - 1
+                    v = Op%W(bk)%v(int(Nn%Jx(jn)) + IXOFF,ixp)
+                    if (v == 0.0_dp) cycle
+                    sn2 = abs(Nn%Jt(jn))
+                    L2 = Nn%L(sn2)
+                    st = B%St(sp2,L2)
                     if (st < 0) cycle
                     if (UseCut) then
-                        if (B%Lc(sn2) > B%Nc(sp2,Nn%L(sn2))) cycle
+                        if (B%Lc(sn2) > B%Nc(sp2,L2)) cycle
                     end if
-                    p1 = Pr(3)%id(kc,Nn%Jc(jn))
-                    if (p1 == 0) cycle
-                    p2 = Pr(3)%id(ka,Nn%Ja(jn))
-                    if (p2 == 0) cycle
-                    bb = Pr(3)%blk(p1)
-                    if (Pr(3)%blk(p2) /= bb) cycle
-                    v = Op%T(3)%B(bb)%v(Pr(3)%loc(p1),Pr(3)%loc(p2))
-                    if (v == 0.0_dp) cycle
-                    v = real(P%Js(jp)*Nn%Js(jn),dp)*v
+                    if (sp2 == sp) then
+                        if (B%Rn(sn2) < rn) cycle
+                    end if
                     r = st + B%Lc(sn2)
-                    if (Build) then
-                        call acc_add(Pos,Rl,Acc,nl,r,v)
-                    else
-                        S = S + v*X(:,r)
-                    end if
+                    call put(r,v*sgp*real(sign(1,Nn%Jt(jn)),dp))
                 end do
             end do
         end do
+    contains
+        subroutine put(r,v)
+            integer, intent(in) :: r
+            real(dp), intent(in) :: v
+            if (Mode == 1) then
+                call acc_add(Pos,Rl,Acc,nl,r,v)
+            else if (Mode == 2) then
+                S = S + v*X(:,r)
+                if (r == c) Dg = Dg + v
+            else
+                S(1) = S(1) + v*X(1,r)
+                if (r /= c) Yb(r) = Yb(r) + v*xc
+            end if
+        end subroutine put
     end subroutine col_gen
 
-    ! Stored form ... lower half (r >= c) by columns, two passes (count, fill) ... Fits = .false. if larger than MemGB ...
-    subroutine eng_store(P,Nn,Pr,B,Op,Eng,Single,MemGB,Fits)
+    ! Stored lower half ... one pass: the columns of each thread (chunks of CHK, cyclic) into its segments ... Fits =
+        ! .false. (everything freed) when the segments would exceed MemGB (the product buffers Yb & y reserved) ...
+    subroutine eng_store(P,Nn,B,Op,Eng,Single,MemGB,Fits)
         type(sd_t), intent(in) :: P, Nn
-        type(pairs_t), intent(in) :: Pr(3)
         type(mb_t), intent(in) :: B
         type(op_t), intent(in) :: Op
         type(eng_t), intent(inout) :: Eng
         logical, intent(in) :: Single
         real(dp), intent(in) :: MemGB
         logical, intent(out) :: Fits
-        integer, allocatable :: Pos(:), Rl(:), Cnt(:)
+        integer, allocatable :: Pos(:), Rl(:)
         real(dp), allocatable :: Acc(:)
-        real(dp) :: Xd(1), Sd(1), Gb
-        integer :: c, j, nl, k, nt
-        integer(i8) :: q, nnz
+        real(dp) :: Xd(1,1), Sd(1), Yd(1), Dg, segGB, Gb
+        integer :: nt, tid, nchunk, k, c, c0, c1, nl, m, j, cur, ps, maxseg, myseg, nseg, slots, ntr
+        integer(i8) :: nnz
+        logical :: Abort, ab
         nt = omp_get_max_threads()
-        allocate(Cnt(B%dim))
-        do k = 1, 2
-            !$omp parallel private(Pos,Rl,Acc,nl,j,q,Xd,Sd)
-            allocate(Pos(B%dim), Rl(B%dim), Acc(B%dim))
-            Pos = 0
-            !$omp do schedule(dynamic,64)
-            do c = 1, B%dim
+        Eng%nt = nt
+        Eng%Single = Single
+        allocate(Eng%Cnt(B%dim), Eng%Ts(nt))
+        Eng%Cnt = 0
+        nchunk = (B%dim + CHK - 1)/CHK
+        segGB = real(SEG,dp)*merge(8.0_dp,12.0_dp,Single)/1.0e9_dp
+        maxseg = int(max(MemGB - 8.0e-9_dp*real(B%dim,dp)*real(nt + 1,dp), 0.0_dp)/segGB)
+        slots = min(maxseg, 4*(maxseg/nt) + 16)
+        nseg = 0
+        Abort = .false.
+        !$omp parallel private(tid,k,c,c0,c1,nl,m,j,cur,ps,myseg,Pos,Rl,Acc,Sd,Dg,ab,ntr)
+        tid = omp_get_thread_num() + 1
+        ntr = omp_get_num_threads()
+        if (ntr /= nt) then
+            !$omp atomic write
+            Abort = .true.
+        end if
+        allocate(Eng%Ts(tid)%S(slots))
+        allocate(Pos(B%dim), Rl(65536), Acc(65536))
+        Pos = 0
+        cur = 0
+        ps = SEG
+        do k = tid - 1, nchunk - 1, nt
+            !$omp atomic read
+            ab = Abort
+            if (ab) exit
+            c0 = k*CHK + 1
+            c1 = min(B%dim, c0 + CHK - 1)
+            do c = c0, c1
                 nl = 0
-                call col_gen(c,P,Nn,Pr,B,Op,Eng,.true.,Pos,Rl,Acc,nl,1,Xd,Sd)
-                if (k == 1) then
-                    Cnt(c) = count(Rl(1:nl) >= c .and. Acc(1:nl) /= 0.0_dp)
-                else
-                    q = Eng%Ptr(c)
-                    do j = 1, nl
-                        if (Rl(j) < c .or. Acc(j) == 0.0_dp) cycle
-                        Eng%Row(q) = Rl(j)
-                        if (Single) then
-                            Eng%Vs(q) = real(Acc(j),f4)
-                        else
-                            Eng%Vd(q) = Acc(j)
-                        end if
-                        q = q + 1
-                    end do
-                end if
+                call col_gen(c,P,Nn,B,Op,Eng,1,Pos,Rl,Acc,nl,1,Xd,Sd,Dg,Yd)
                 Pos(Rl(1:nl)) = 0
-            end do
-            !$omp end do
-            deallocate(Pos, Rl, Acc)
-            !$omp end parallel
-            if (k == 1) then
-                nnz = sum(int(Cnt,i8))
-                Gb = (real(nnz,dp)*merge(8.0_dp,12.0_dp,Single) + 8.0_dp*real(B%dim,dp)*(1 + nt)) / 1.0e9_dp
-                write(*,'(a)') TAB // 'stored H: ' // istr8(nnz) // ' entries in the lower half (' // &
-                               cfmt_f(real(2*nnz - B%dim,dp)/B%dim,0,1) // ' per column), ' // cfmt_f(Gb,0,2) // ' GB (' // &
-                               merge('single','double',Single) // ' precision, incl. ' // istr(nt) // ' thread buffers), limit ' // &
-                               cfmt_f(MemGB,0,1) // ' GB'
-                Fits = (Gb <= MemGB)
-                if (.not. Fits) return
-                allocate(Eng%Ptr(B%dim + 1), Eng%Row(nnz))
-                if (Single) then
-                    allocate(Eng%Vs(nnz))
-                else
-                    allocate(Eng%Vd(nnz))
-                end if
-                Eng%Ptr(1) = 1
-                do c = 1, B%dim
-                    Eng%Ptr(c+1) = Eng%Ptr(c) + Cnt(c)
+                m = 0
+                do j = 1, nl
+                    if (Acc(j) == 0.0_dp) cycle
+                    m = m + 1
+                    Rl(m) = Rl(j)
+                    Acc(m) = Acc(j)
                 end do
-            end if
+                if (m > SEG) call fatal('NCSM ... a column exceeds the segment size')
+                if (m == 0) cycle
+                if (SEG - ps < m) then
+                    !$omp atomic capture
+                    nseg = nseg + 1
+                    myseg = nseg
+                    !$omp end atomic
+                    if (myseg > maxseg .or. cur + 1 > slots) then
+                        !$omp atomic write
+                        Abort = .true.
+                        exit
+                    end if
+                    cur = cur + 1
+                    ps = 0
+                    allocate(Eng%Ts(tid)%S(cur)%r(SEG))
+                    if (Single) then
+                        allocate(Eng%Ts(tid)%S(cur)%vs(SEG))
+                    else
+                        allocate(Eng%Ts(tid)%S(cur)%vd(SEG))
+                    end if
+                    Eng%Ts(tid)%ns = cur
+                end if
+                Eng%Cnt(c) = m
+                Eng%Ts(tid)%S(cur)%r(ps+1:ps+m) = Rl(1:m)
+                if (Single) then
+                    Eng%Ts(tid)%S(cur)%vs(ps+1:ps+m) = real(Acc(1:m),f4)
+                else
+                    Eng%Ts(tid)%S(cur)%vd(ps+1:ps+m) = Acc(1:m)
+                end if
+                ps = ps + m
+                Eng%Ts(tid)%S(cur)%n = ps
+            end do
         end do
+        deallocate(Pos, Rl, Acc)
+        !$omp end parallel
+        if (Abort) then
+            deallocate(Eng%Ts, Eng%Cnt)
+            Fits = .false.
+            write(*,'(a)') TAB // 'stored H: more than ' // istr(maxseg) // ' segments of ' // cfmt_f(segGB,0,3) // &
+                           ' GB (limit ' // cfmt_f(MemGB,0,1) // ' GB)'
+            return
+        end if
+        nnz = sum(int(Eng%Cnt,i8))
+        Gb = real(nseg,dp)*segGB + 8.0e-9_dp*real(B%dim,dp)*real(nt + 1,dp)
+        write(*,'(a)') TAB // 'stored H: ' // istr8(nnz) // ' entries in the lower half (' // &
+                       cfmt_f(real(2*nnz - B%dim,dp)/B%dim,0,1) // ' per column), ' // istr(nseg) // ' segments, ' // &
+                       cfmt_f(Gb,0,2) // ' GB (' // merge('single','double',Single) // ' precision, incl. ' // istr(nt) // &
+                       ' product buffers), limit ' // cfmt_f(MemGB,0,1) // ' GB'
         Eng%nnz = nnz
         Eng%Stored = .true.
-        Eng%Single = Single
+        Fits = .true.
     end subroutine eng_store
 
-    ! y = Op x with the stored lower half ... thread-private partial sums of the transposed part ...
+    ! y = Op x with the stored lower half ... each thread its own columns (gather) & the transposed part into its buffer
+        ! Yb(:,tid) (scatter), then the sum of the buffers ...
     subroutine eng_mv_stored(Eng,n,x,y)
         type(eng_t), intent(inout) :: Eng
         integer, intent(in) :: n
         real(dp), intent(in) :: x(n)
         real(dp), intent(out) :: y(n)
-        integer :: c, r, tid, nt, i
-        integer(i8) :: j
+        integer :: nt, tid, nchunk, k, c, c0, c1, m, cur, ps, j, r, i0, i1, t
         real(dp) :: s, xc, v
-        nt = omp_get_max_threads()
+        nt = Eng%nt
+        nchunk = (n + CHK - 1)/CHK
         if (.not. allocated(Eng%Yb)) allocate(Eng%Yb(n,nt))
-        !$omp parallel private(c,r,tid,j,s,xc,v,i)
+        !$omp parallel private(tid,k,c,c0,c1,m,cur,ps,j,r,s,xc,v,i0,i1,t)
         tid = omp_get_thread_num() + 1
+        if (omp_get_num_threads() /= nt) call fatal('NCSM ... the number of threads changed after the stored matrix')
         Eng%Yb(:,tid) = 0.0_dp
-        if (Eng%Single) then
-            !$omp do schedule(dynamic,512)
-            do c = 1, n
+        cur = 1
+        ps = 0
+        do k = tid - 1, nchunk - 1, nt
+            c0 = k*CHK + 1
+            c1 = min(n, c0 + CHK - 1)
+            do c = c0, c1
+                m = Eng%Cnt(c)
+                if (m == 0) cycle
+                if (SEG - ps < m) then
+                    cur = cur + 1
+                    ps = 0
+                end if
                 xc = x(c)
                 s = 0.0_dp
-                do j = Eng%Ptr(c), Eng%Ptr(c+1) - 1
-                    r = Eng%Row(j)
-                    v = real(Eng%Vs(j),dp)
-                    s = s + v*x(r)
-                    if (r /= c) Eng%Yb(r,tid) = Eng%Yb(r,tid) + v*xc
-                end do
+                associate(Sg => Eng%Ts(tid)%S(cur))
+                    if (Eng%Single) then
+                        do j = ps + 1, ps + m
+                            r = Sg%r(j)
+                            v = real(Sg%vs(j),dp)
+                            s = s + v*x(r)
+                            if (r /= c) Eng%Yb(r,tid) = Eng%Yb(r,tid) + v*xc
+                        end do
+                    else
+                        do j = ps + 1, ps + m
+                            r = Sg%r(j)
+                            v = Sg%vd(j)
+                            s = s + v*x(r)
+                            if (r /= c) Eng%Yb(r,tid) = Eng%Yb(r,tid) + v*xc
+                        end do
+                    end if
+                end associate
                 Eng%Yb(c,tid) = Eng%Yb(c,tid) + s
+                ps = ps + m
             end do
-            !$omp end do
-        else
-            !$omp do schedule(dynamic,512)
-            do c = 1, n
-                xc = x(c)
-                s = 0.0_dp
-                do j = Eng%Ptr(c), Eng%Ptr(c+1) - 1
-                    r = Eng%Row(j)
-                    v = Eng%Vd(j)
-                    s = s + v*x(r)
-                    if (r /= c) Eng%Yb(r,tid) = Eng%Yb(r,tid) + v*xc
-                end do
-                Eng%Yb(c,tid) = Eng%Yb(c,tid) + s
-            end do
-            !$omp end do
-        end if
+        end do
+        !$omp barrier
         !$omp do schedule(static)
-        do i = 1, n
-            y(i) = sum(Eng%Yb(i,1:nt))
+        do i0 = 1, n, 4096
+            i1 = min(n, i0 + 4095)
+            y(i0:i1) = Eng%Yb(i0:i1,1)
+            do t = 2, nt
+                y(i0:i1) = y(i0:i1) + Eng%Yb(i0:i1,t)
+            end do
         end do
         !$omp end do
         !$omp end parallel
     end subroutine eng_mv_stored
 
-    ! Y(1:nb,:) = Op X(1:nb,:) on the fly ...
-    subroutine eng_mv_otf(P,Nn,Pr,B,Op,Eng,nb,X,Y)
+    ! y = Op x on the fly (symmetric: the lower half of every column, the transposed part into the thread buffers) ...
+    subroutine eng_mv_otf(P,Nn,B,Op,Eng,x,y)
         type(sd_t), intent(in) :: P, Nn
-        type(pairs_t), intent(in) :: Pr(3)
+        type(mb_t), intent(in) :: B
+        type(op_t), intent(in) :: Op
+        type(eng_t), intent(inout) :: Eng
+        real(dp), intent(in) :: x(B%dim)
+        real(dp), intent(out) :: y(B%dim)
+        integer :: nt, tid, c, nl, i0, i1, t, n
+        integer :: Pos1(1)
+        integer, allocatable :: Rl1(:)
+        real(dp), allocatable :: Acc1(:)
+        real(dp) :: S1(1), Dg
+        n = B%dim
+        nt = omp_get_max_threads()
+        if (allocated(Eng%Yb)) then
+            if (size(Eng%Yb,2) /= nt) deallocate(Eng%Yb)
+        end if
+        if (.not. allocated(Eng%Yb)) allocate(Eng%Yb(n,nt))
+        !$omp parallel private(tid,c,nl,S1,Dg,Pos1,Rl1,Acc1,i0,i1,t)
+        tid = omp_get_thread_num() + 1
+        allocate(Rl1(1), Acc1(1))
+        Eng%Yb(:,tid) = 0.0_dp
+        !$omp do schedule(dynamic,256)
+        do c = 1, n
+            S1 = 0.0_dp
+            Dg = 0.0_dp
+            call col_gen(c,P,Nn,B,Op,Eng,3,Pos1,Rl1,Acc1,nl,1,x,S1,Dg,Eng%Yb(:,tid))
+            Eng%Yb(c,tid) = Eng%Yb(c,tid) + S1(1)
+        end do
+        !$omp end do
+        !$omp do schedule(static)
+        do i0 = 1, n, 4096
+            i1 = min(n, i0 + 4095)
+            y(i0:i1) = Eng%Yb(i0:i1,1)
+            do t = 2, nt
+                y(i0:i1) = y(i0:i1) + Eng%Yb(i0:i1,t)
+            end do
+        end do
+        !$omp end do
+        deallocate(Rl1, Acc1)
+        !$omp end parallel
+    end subroutine eng_mv_otf
+
+    ! Out(k) = <x_k|Op|x_k> for the nb vectors X(k,:) ... from the lower halves: sum_c x(c) (2 S(c) - Op(c,c) x(c)) ...
+    subroutine eng_expect(P,Nn,B,Op,Eng,nb,X,Out)
+        type(sd_t), intent(in) :: P, Nn
         type(mb_t), intent(in) :: B
         type(op_t), intent(in) :: Op
         type(eng_t), intent(in) :: Eng
         integer, intent(in) :: nb
         real(dp), intent(in) :: X(nb,B%dim)
-        real(dp), intent(out) :: Y(nb,B%dim)
-        integer :: c, nl, Pos(1), Rl(1)
-        real(dp) :: Acc(1), S(nb)
-        !$omp parallel do schedule(dynamic,256) private(S,nl,Pos,Rl,Acc)
+        real(dp), intent(out) :: Out(nb)
+        integer :: c, nl
+        integer :: Pos1(1)
+        integer, allocatable :: Rl1(:)
+        real(dp), allocatable :: Acc1(:), Ot(:), S(:)
+        real(dp) :: Dg, Yd(1)
+        Out = 0.0_dp
+        !$omp parallel private(c,nl,S,Dg,Pos1,Rl1,Acc1,Ot)
+        allocate(Rl1(1), Acc1(1), Ot(nb), S(nb))
+        Ot = 0.0_dp
+        !$omp do schedule(dynamic,256)
         do c = 1, B%dim
             S = 0.0_dp
-            call col_gen(c,P,Nn,Pr,B,Op,Eng,.false.,Pos,Rl,Acc,nl,nb,X,S)
-            Y(:,c) = S
+            Dg = 0.0_dp
+            call col_gen(c,P,Nn,B,Op,Eng,2,Pos1,Rl1,Acc1,nl,nb,X,S,Dg,Yd)
+            Ot = Ot + X(:,c)*(2.0_dp*S - Dg*X(:,c))
         end do
-        !$omp end parallel do
-    end subroutine eng_mv_otf
+        !$omp end do
+        !$omp critical
+        Out = Out + Ot
+        !$omp end critical
+        deallocate(Rl1, Acc1, Ot, S)
+        !$omp end parallel
+    end subroutine eng_expect
 
-    ! Accumulates x at row r of a column under construction (thread-local Pos, Rl, Acc, nl) ...
-    pure subroutine acc_add(Pos,Rl,Acc,nl,r,x)
-        integer, intent(inout) :: Pos(:), Rl(:), nl
-        real(dp), intent(inout) :: Acc(:)
+    ! Out(k) = <x_k|J^2|x_k> = |J_+ x_k|^2 + M (M + 1) ... J_+ x in the basis B2 (2M + 2) gathered from the reverse jumps
+        ! (bucket dm = -1, parity type 0) of its states: <c'|a+_ka a_kc|c> = sign of the jump a+_kc a_ka of c' to c ...
+    subroutine j2_expect(SPS,P,Nn,B,B2,nb,X,Out)
+        type(sp_t), intent(in) :: SPS
+        type(sd_t), intent(in) :: P, Nn
+        type(mb_t), intent(in) :: B, B2
+        integer, intent(in) :: nb
+        real(dp), intent(in) :: X(nb,B%dim)
+        real(dp), intent(out) :: Out(nb)
+        real(dp), allocatable :: jT(:), y(:), Ot(:)
+        integer :: br, ix, kc, ka, cc, spp, snp, s, st, c, L2
+        integer(i8) :: j
+        real(dp) :: v, Mr
+        br = SPS%dmax - 1
+        allocate(jT(SPS%Nty(br)))
+        do ix = 1, SPS%Nty(br)
+            kc = SPS%Tkc(br)%v(ix)
+            ka = SPS%Tka(br)%v(ix)
+            jT(ix) = 0.0_dp
+            if (SPS%a(kc) == SPS%a(ka)) jT(ix) = 0.5_dp*sqrt(real(SPS%j2(kc)*(SPS%j2(kc) + 2) - SPS%m2(kc)*(SPS%m2(kc) + 2),dp))
+        end do
+        Out = 0.0_dp
+        !$omp parallel private(cc,spp,snp,s,st,c,L2,j,v,y,Ot)
+        allocate(y(nb), Ot(nb))
+        Ot = 0.0_dp
+        !$omp do schedule(dynamic,256)
+        do cc = 1, B2%dim
+            spp = B2%sp(cc)
+            snp = B2%sn(cc)
+            y = 0.0_dp
+            L2 = Nn%L(snp)
+            do j = P%Jo(br,spp), P%Jo(br+1,spp) - 1
+                v = jT(int(P%Jx(j)) + IXOFF)
+                if (v == 0.0_dp) cycle
+                s = abs(P%Jt(j))
+                st = B%St(s,L2)
+                if (st < 0) cycle
+                if (UseCut) then
+                    if (B%Lc(snp) > B%Nc(s,L2)) cycle
+                end if
+                c = st + B%Lc(snp)
+                y = y + v*real(sign(1,P%Jt(j)),dp)*X(:,c)
+            end do
+            do j = Nn%Jo(br,snp), Nn%Jo(br+1,snp) - 1
+                v = jT(int(Nn%Jx(j)) + IXOFF)
+                if (v == 0.0_dp) cycle
+                s = abs(Nn%Jt(j))
+                L2 = Nn%L(s)
+                st = B%St(spp,L2)
+                if (st < 0) cycle
+                if (UseCut) then
+                    if (B%Lc(s) > B%Nc(spp,L2)) cycle
+                end if
+                c = st + B%Lc(s)
+                y = y + v*real(sign(1,Nn%Jt(j)),dp)*X(:,c)
+            end do
+            Ot = Ot + y*y
+        end do
+        !$omp end do
+        !$omp critical
+        Out = Out + Ot
+        !$omp end critical
+        deallocate(y, Ot)
+        !$omp end parallel
+        Mr = 0.5_dp*real(B%M2,dp)
+        Out = Out + Mr*(Mr + 1.0_dp)
+    end subroutine j2_expect
+
+    ! Accumulates x at row r of a column under construction (thread-local Pos, Rl, Acc, nl; Rl & Acc grown as needed) ...
+    subroutine acc_add(Pos,Rl,Acc,nl,r,x)
+        integer, intent(inout) :: Pos(:), nl
+        integer, allocatable, intent(inout) :: Rl(:)
+        real(dp), allocatable, intent(inout) :: Acc(:)
         integer, intent(in) :: r
         real(dp), intent(in) :: x
+        integer, allocatable :: Ri(:)
+        real(dp), allocatable :: Ai(:)
         if (Pos(r) == 0) then
+            if (nl == size(Rl)) then
+                allocate(Ri(2*nl), Ai(2*nl))
+                Ri(1:nl) = Rl(1:nl)
+                Ai(1:nl) = Acc(1:nl)
+                call move_alloc(Ri,Rl)
+                call move_alloc(Ai,Acc)
+            end if
             nl = nl + 1
             Pos(r) = nl
             Rl(nl) = r
