@@ -752,17 +752,19 @@ contains
         write(*,'(/,a)') 'Importing the n-phonon states (Bin/EMPM_S<n>_*.bin) ...'
         J_all = Ph%J_max
         if (Nf >= 2) then
-            call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2)
+            call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2,No_Xt=.true.)
             if (S2%N == 0) call fatal('EMPM_FULL ... no 2-phonon states in Bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X first')
             J_all = max(J_all, S2%J_max)
         end if
         if (Nf >= 3) then
-            call EMPM_states_read(states_prefix(Params,3),3*Ph%J_max,S2%N,Ph%N,S3)
+            call EMPM_states_read(states_prefix(Params,3),3*Ph%J_max,S2%N,Ph%N,S3,No_Xt=.true.)
             if (S3%N == 0) call fatal('EMPM_FULL ... no 3-phonon states in Bin/EMPM_S3_*.bin, run EMPM_3PH first')
             J_all = max(J_all, S3%J_max)
         end if
         if (Nf >= 4) then
-            call EMPM_states_read(states_prefix(Params,4),4*Ph%J_max,S3%N,Ph%N,S4)
+            ! Lazy ... X of the 4-phonon states per channel only when needed (EMPM_states_load_X): X(J,P) while J^P is built
+                ! & coupled to N_cm, X(Jt,Pt) of one intermediate channel at a time in EMPM_cm_blocks ...
+            call EMPM_states_read(states_prefix(Params,4),4*Ph%J_max,S3%N,Ph%N,S4,Lazy=.true.,No_Xt=.true.)
             if (S4%N == 0) call fatal('EMPM_FULL ... no 4-phonon states in Bin/EMPM_S4_*.bin, run EMPM_4PH first')
             J_all = max(J_all, S4%J_max)
         end if
@@ -935,6 +937,8 @@ contains
                 Hf(o3+1:o3+n3,o2+1:o2+n2) = mtm(S3%X(J,P)%v(:,1:n3),Vc)
                 deallocate(Vc)
             end if
+            ! X of the 4-phonon states of J^P (Lazy) ...
+            if (Nf >= 4 .and. n4 > 0) call load_x4(J,P)
             ! 4 <- 3 ...
             if (n3 > 0 .and. n4 > 0) then
                 allocate(Vc(S4%Bs(J,P)%N_full,n3))
@@ -983,6 +987,7 @@ contains
             ! completeness of the intermediate channels: N_cm (& proj) of J^P need the states of J' = J-1 .. J+1 (opposite
                 ! parity) on every level q = 2 .. Full_N; a channel of level q whose file is missing although it can be built
                 ! from the loaded level q-1 & the phonons was not computed (JP<q>) -> warning ...
+            if (Nf >= 4 .and. .not. CMa) call EMPM_states_free_X(S4,J,P)
             if (CMa) call check_channels()
             ! N_cm on the channel basis, Mcm = G2/(A (2J+1)) sum_J' B^T B with B = <J' states||L||J states> ...
             if (CMa) then
@@ -1001,7 +1006,9 @@ contains
                 Pt = 3 - P
                 do Jt = max(J - 1, 0), J + 1
                     if (J == 0 .and. Jt == 0) cycle
+                    if (Nf >= 4) call load_x4(Jt,Pt)
                     call EMPM_cm_blocks(Ph,Cm,S1,S2,S3,S4,Dl,Nf,J,P,Jt,Pt,Bph,Bhp,Bd,CMn)
+                    if (Nf >= 4) call EMPM_states_free_X(S4,Jt,Pt)
                     if (size(Bph,1) == 0) cycle
                     Bt = Sg_ph(Jt-J)*Bph + Sg_hp(Jt-J)*Bhp + Sg_d(Jt-J)*Bd
                     if (CMp) then
@@ -1021,6 +1028,7 @@ contains
                         close(uC)
                     end if
                 end do
+                if (Nf >= 4) call EMPM_states_free_X(S4,J,P)
                 if (CMn) Mcm = Mcm * Cm%G2 / real(Cm%A*(2*J + 1),dp)
                 if (CMp) Ml = Ml * Cm%G2 / real(Cm%A*(2*J + 1),dp)
                 ! top-level completion: the part of N_cm from the intermediate states of level Full_N + 1 ...
@@ -1094,6 +1102,7 @@ contains
             if (allocated(Mcm)) deallocate(Mcm)
             if (allocated(Ml)) deallocate(Ml)
             deallocate(Hf, I1)
+            if (Nf >= 4) call EMPM_states_free_X(S4,J,P)
         end do
         do nn = 1, Nf
             if (DoU) close(uS(nn))
@@ -1103,6 +1112,18 @@ contains
         write(*,'(/,a,/)') 'Full EMPM Hamiltonian has finished ...'
 
     contains
+
+        ! X of the 4-phonon states of channel (Jx,Px) from the state file (Lazy S4), with time & size in the log ...
+        subroutine load_x4(Jx,Px)
+            integer, intent(in) :: Jx, Px
+            integer(i8) :: tx
+            if (Jx > ubound(S4%N_ch,1)) return
+            if (S4%N_ch(Jx,Px) == 0 .or. size(S4%X(Jx,Px)%v) > 0) return
+            call timer_start(tx)
+            call EMPM_states_load_X(S4,Jx,Px)
+            call timer_report(tx,'X of the 4-phonon states J^P = ' // jp_str(Jx,Px) // ' loaded (' // &
+                              cfmt_f(8.0_dp*real(size(S4%X(Jx,Px)%v,kind=i8),dp)/1.0e9_dp,0,3) // ' GB)')
+        end subroutine load_x4
 
         ! warning for intermediate channels (J' = J-1 .. J+1, opposite parity) of the levels 2 .. Full_N that were not computed ...
         subroutine check_channels()

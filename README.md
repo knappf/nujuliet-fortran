@@ -414,6 +414,16 @@ The pn blocks of `V2B_HF.dat` & of the full N x N pn matrices of `Bin/V2B_*.bin`
 lower triangle also for Ket > Bra (wrong upper triangle) until Nov 2026; the solvers were not affected, the import now reads
 the lower triangle only, so older files remain valid.
 
+**Memory of the state sets (2026-11-10).** `EMPM_states_read` has two optional switches: `No_Xt` (no transposed copy Xt,
+which only the row construction of EMPM_nPH uses) & `Lazy` (X not read, only its stream position; `EMPM_states_load_X` /
+`EMPM_states_free_X` load & release X of one channel). EMPM_FULL reads the 2- & 3-phonon sets with `No_Xt` and the
+4-phonon set with `Lazy`: X(J,P) is loaded before the 4 <- 3 coupling & released after the N_cm loop, X(Jt,Pt) of the
+intermediate channel only around `EMPM_cm_blocks` (one at a time), each load logged with its size & time ... at most two
+4-phonon channels in memory instead of all of them twice. Results unchanged: 4He 3 shells, FULL4 all J^P with
+`Full_Diag = 'both'` & `CM_Ncm`, all outputs bit-identical, memory 0.7 vs 1.3 GB. 4He NN only, 5 shells (S4 3.5 TB on
+disk): FULL4 had run out of memory (1.5 TB) while importing the states; with `Lazy` the peak is ~1.3 TB (3+/3-: two X of
+466 GB) and a J^P channel takes up to ~5.5 h on 96 threads (N_cm & b_cm parts up to 4.7 h, H 1 h, diagonalizations 0.5 h).
+
 ## NCSM (`src/ncsm/`, action `NCSM`)
 
 No-core shell model in the m-scheme HO basis with the same matrix elements, as a reference for the EMPM (light nuclei;

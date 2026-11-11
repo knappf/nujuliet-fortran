@@ -63,6 +63,12 @@ module nj_empm_eqm3
         type(rmat_t), allocatable :: Cc(:,:), X(:,:), Rc(:,:)
         ! Xt ... X transposed (n x N_full, rows X(k,:) contiguous for the exchange term of the rows; EMPM_states_read) ...
         type(rmat_t), allocatable :: Xt(:,:)
+        ! Lazy ... X not read by EMPM_states_read (X(J,P)%v of size 0 x 0), loaded per channel by EMPM_states_load_X from
+            ! <Prefix><J><P>.bin at the stream position Xpos(J,P) & released by EMPM_states_free_X (EMPM_FULL, 4-phonon sets
+            ! of several TB) ...
+        logical :: Lazy = .false.
+        character(len=:), allocatable :: Prefix
+        integer(i8), allocatable :: Xpos(:,:)
     end type empm_states2_t
 
     ! 1-phonon densities R, transposed densities Rt & redefined interactions V of all phonons ...
@@ -90,7 +96,8 @@ module nj_empm_eqm3
     end type greedy_res_t
 
     public :: EMPM_states1_make, EMPM_cache1_make, EMPM_basis3_make, EMPM_densityN, EMPM_eqm3_build, EMPM_D3_build, EMPM_H3_ind, EMPM_ind_greedy, &
-              EMPM_ind_greedy_H, EMPM_ind_greedy_multi, EMPM_AD3_rows, EMPM_states_write, EMPM_states_write_D, EMPM_states_write_Df, EMPM_states_read
+              EMPM_ind_greedy_H, EMPM_ind_greedy_multi, EMPM_AD3_rows, EMPM_states_write, EMPM_states_write_D, EMPM_states_write_Df, EMPM_states_read, &
+              EMPM_states_load_X, EMPM_states_free_X
 
 contains
 
@@ -1931,17 +1938,30 @@ contains
 
     ! Set of n-phonon states of all channels J = 0 .. J_max from the files Prefix // '<JP>.bin' of EMPM_states_write (J outer,
         ! P inner, as numbered when written) ... N_low (n-1)-phonon & N1 1-phonon states for the index K(a,lambda) of the bases ...
-    subroutine EMPM_states_read(Prefix,J_max,N_low,N1,S)
+    ! Lazy (optional) ... X not read, only its stream position (EMPM_states_load_X / EMPM_states_free_X per channel; new
+        ! formats -2 & -3 only, the first format is read completely) ... No_Xt (optional) ... no transposed copy Xt (not
+        ! needed by EMPM_FULL) ...
+    subroutine EMPM_states_read(Prefix,J_max,N_low,N1,S,Lazy,No_Xt)
         character(len=*), intent(in) :: Prefix
         integer, intent(in) :: J_max, N_low, N1
         type(empm_states2_t), intent(out) :: S
+        logical, intent(in), optional :: Lazy, No_Xt
         type(rvec_t), allocatable :: Ech(:,:)
         integer :: J, P, u, N_full, n, i, k, Fmt, N_ind, Np
+        integer(i8) :: Pos
         real(dp), allocatable :: Cf(:,:)
         logical, allocatable :: Nz(:)
-        logical :: Ex
+        logical :: Ex, Lz, Lx
         character(len=:), allocatable :: File
 
+        Lz = .false.
+        if (present(Lazy)) Lz = Lazy
+        Lx = .false.
+        if (present(No_Xt)) Lx = No_Xt
+        S%Lazy = Lz
+        S%Prefix = Prefix
+        allocate(S%Xpos(0:J_max,2))
+        S%Xpos = 0_i8
         S%J_max = 0
         allocate(S%N_ch(0:J_max,2), S%First(0:J_max,2), S%Bs(0:J_max,2), S%Kc(0:J_max,2), S%Cc(0:J_max,2), S%X(0:J_max,2), &
                  Ech(0:J_max,2), S%N_phys(0:J_max,2), S%Rc(0:J_max,2))
@@ -1974,7 +1994,7 @@ contains
                 end if
                 associate(Bs => S%Bs(J,P))
                     Bs%N_full = N_full
-                    allocate(Bs%Al(N_full), Bs%La(N_full), Bs%K(N_low,N1), Ech(J,P)%v(n), S%X(J,P)%v(N_full,n))
+                    allocate(Bs%Al(N_full), Bs%La(N_full), Bs%K(N_low,N1), Ech(J,P)%v(n))
                     read(u) Bs%Al, Bs%La
                     read(u) Ech(J,P)%v
                     if (Fmt < 0) then
@@ -1990,9 +2010,19 @@ contains
                         S%Cc(J,P)%v = Cf(S%Kc(J,P)%v,:)
                         deallocate(Cf)
                     end if
-                    read(u) S%X(J,P)%v
-                    allocate(S%Rc(J,P)%v(Np,n-Np))
-                    if (Fmt == States_Format) read(u) S%Rc(J,P)%v
+                    inquire(u, pos=Pos)
+                    S%Xpos(J,P) = Pos
+                    if (Lz .and. Fmt < 0) then
+                        ! X skipped ... loaded per channel by EMPM_states_load_X ...
+                        allocate(S%X(J,P)%v(0,0))
+                        allocate(S%Rc(J,P)%v(Np,n-Np))
+                        if (Fmt == States_Format) read(u, pos=Pos + 8_i8*int(N_full,i8)*int(n,i8)) S%Rc(J,P)%v
+                    else
+                        allocate(S%X(J,P)%v(N_full,n))
+                        read(u) S%X(J,P)%v
+                        allocate(S%Rc(J,P)%v(Np,n-Np))
+                        if (Fmt == States_Format) read(u) S%Rc(J,P)%v
+                    end if
                     Bs%K = 0
                     do k = 1, N_full
                         Bs%K(Bs%Al(k),Bs%La(k)) = k
@@ -2004,22 +2034,24 @@ contains
                 if (n > 0) S%J_max = J
             end do
         end do
-        ! X transposed ...
-        allocate(S%Xt(0:J_max,2))
-        do J = 0, J_max
-            do P = 1, 2
-                associate(Xv => S%X(J,P)%v)
-                    allocate(S%Xt(J,P)%v(size(Xv,2),size(Xv,1)))
-                    !$omp parallel do private(k)
-                    do i = 1, size(Xv,2)
-                        do k = 1, size(Xv,1)
-                            S%Xt(J,P)%v(i,k) = Xv(k,i)
+        ! X transposed (not with No_Xt or Lazy) ...
+        if (.not. (Lx .or. Lz)) then
+            allocate(S%Xt(0:J_max,2))
+            do J = 0, J_max
+                do P = 1, 2
+                    associate(Xv => S%X(J,P)%v)
+                        allocate(S%Xt(J,P)%v(size(Xv,2),size(Xv,1)))
+                        !$omp parallel do private(k)
+                        do i = 1, size(Xv,2)
+                            do k = 1, size(Xv,1)
+                                S%Xt(J,P)%v(i,k) = Xv(k,i)
+                            end do
                         end do
-                    end do
-                    !$omp end parallel do
-                end associate
+                        !$omp end parallel do
+                    end associate
+                end do
             end do
-        end do
+        end if
         S%N = sum(S%N_ch)
         allocate(S%J(S%N), S%P(S%N), S%E(S%N), S%Spur(S%N))
         i = 0
@@ -2035,6 +2067,35 @@ contains
             end do
         end do
     end subroutine EMPM_states_read
+
+    ! X(J,P) of a Lazy state set from its file (no-op if not Lazy, already loaded or an empty channel) ...
+    subroutine EMPM_states_load_X(S,J,P)
+        type(empm_states2_t), intent(inout) :: S
+        integer, intent(in) :: J, P
+        integer :: u, n, Nf
+        if (.not. S%Lazy) return
+        if (J < 0 .or. J > ubound(S%N_ch,1)) return
+        n = S%N_ch(J,P)
+        Nf = S%Bs(J,P)%N_full
+        if (n == 0 .or. size(S%X(J,P)%v) > 0) return
+        deallocate(S%X(J,P)%v)
+        allocate(S%X(J,P)%v(Nf,n))
+        open(newunit=u, file=S%Prefix // istr(J) // merge('+','-',P == 1) // '.bin', access='stream', form='unformatted', &
+             status='old', action='read')
+        read(u, pos=S%Xpos(J,P)) S%X(J,P)%v
+        close(u)
+    end subroutine EMPM_states_load_X
+
+    ! Release X(J,P) of a Lazy state set (no-op if not Lazy) ...
+    subroutine EMPM_states_free_X(S,J,P)
+        type(empm_states2_t), intent(inout) :: S
+        integer, intent(in) :: J, P
+        if (.not. S%Lazy) return
+        if (J < 0 .or. J > ubound(S%N_ch,1)) return
+        if (size(S%X(J,P)%v) == 0) return
+        deallocate(S%X(J,P)%v)
+        allocate(S%X(J,P)%v(0,0))
+    end subroutine EMPM_states_free_X
 
     ! Wall-clock seconds since t0 ...
     real(dp) function elapsed_s(t0)
