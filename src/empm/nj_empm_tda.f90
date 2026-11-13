@@ -15,7 +15,7 @@ module nj_empm_tda
     implicit none
     private
 
-    public :: EMPM_TDA_phonons, EMPM_TDA_allocate, EMPM_TDA_diagonalize
+    public :: EMPM_TDA_phonons, EMPM_TDA_allocate, EMPM_TDA_diagonalize, EMPM_TDA_strengths
 
 contains
 
@@ -185,5 +185,61 @@ contains
         end function spurious_state
 
     end subroutine EMPM_TDA_diagonalize
+
+    ! B(EL; 0 -> nu) of the TDA phonons in the window, L = 0..3 (E0 r^2, E1, E2, E3 of nj_tr1b) ... M_t = sum_ph
+        ! <p||Q_L||h> X_ph (as HF_RPA_rM), B_ph = M_p^2, B_is = |M_p + M_n|^2/4, B_iv = |e_p M_p - e_n M_n|^2 (E1) or
+        ! |M_p - M_n|^2/4 ... EMPM/Transitions/TDA_E<L>.dat (E, B_ph, B_is, B_iv as HF_RPA) ...
+    subroutine EMPM_TDA_strengths(Params,Space,N_nu,Orb_Phonon,Phonon,TrOp,E_TDA,X_TDA)
+        type(params_t), intent(in) :: Params
+        type(empm_space_t), intent(in) :: Space
+        integer, intent(in) :: N_nu(0:,:)
+        type(ivec_t), intent(in) :: Orb_Phonon(0:,:)
+        type(phstate_t), intent(in) :: Phonon(:)
+        type(tr1b_t), intent(in) :: TrOp
+        type(rvec_t), intent(in) :: E_TDA(0:,:)
+        type(rmat_t), intent(in) :: X_TDA(0:,:)
+        real(dp) :: e_p, e_n, Mp, Mn, O, Biv
+        integer :: L, P, nu, ph, i_ph, a_p, a_h, u
+        e_p = real(Params%Calc%A - Params%Calc%Z,dp)/real(Params%Calc%A,dp)
+        e_n = real(Params%Calc%Z,dp)/real(Params%Calc%A,dp)
+        do L = 0, 3
+            P = mod(L,2) + 1
+            if (.not. is_dir(io_path(Params,'/EMPM/Transitions'))) call make_dir(io_path(Params,'/EMPM/Transitions'))
+            open(newunit=u, file=io_path(Params,'/EMPM/Transitions/TDA_E' // istr(L) // '.dat'), status='replace', action='write')
+            write(u,'(4a21)') 'E                    ', 'B_ph                 ', 'B_is                 ', 'B_iv                 '
+            do nu = 1, N_nu(L,P)
+                Mp = 0.0_dp
+                Mn = 0.0_dp
+                do ph = 1, N_nu(L,P)
+                    i_ph = Orb_Phonon(L,P)%v(ph)
+                    a_p = Space%Lev(Phonon(i_ph)%p)%a
+                    a_h = Space%Lev(Phonon(i_ph)%h)%a
+                    select case (L)
+                    case (0)
+                        O = merge(TrOp%E0%p(a_p,a_h), TrOp%E0%n(a_p,a_h), Phonon(i_ph)%tz == -1)
+                    case (1)
+                        O = merge(TrOp%E1%p(a_p,a_h), TrOp%E1%n(a_p,a_h), Phonon(i_ph)%tz == -1)
+                    case (2)
+                        O = merge(TrOp%E2%p(a_p,a_h), TrOp%E2%n(a_p,a_h), Phonon(i_ph)%tz == -1)
+                    case default
+                        O = merge(TrOp%E3%p(a_p,a_h), TrOp%E3%n(a_p,a_h), Phonon(i_ph)%tz == -1)
+                    end select
+                    if (Phonon(i_ph)%tz == -1) then
+                        Mp = Mp + O*X_TDA(L,P)%v(ph,nu)
+                    else
+                        Mn = Mn + O*X_TDA(L,P)%v(ph,nu)
+                    end if
+                end do
+                if (L == 1) then
+                    Biv = (e_p*Mp - e_n*Mn)**2
+                else
+                    Biv = 0.25_dp*(Mp - Mn)**2
+                end if
+                write(u,'(4f21.8)') E_TDA(L,P)%v(nu), Mp**2, 0.25_dp*(Mp + Mn)**2, Biv
+            end do
+            close(u)
+        end do
+        write(*,'(a)') TAB // 'TDA transition strengths B(E0..E3) written to EMPM/Transitions/TDA_E<L>.dat'
+    end subroutine EMPM_TDA_strengths
 
 end module nj_empm_tda

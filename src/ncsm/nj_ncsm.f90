@@ -31,6 +31,8 @@ module nj_ncsm
     use nj_o2b, only : O2b_import, O2b_transformation, O2b_pp, O2b_pn, O2b_nn
     use nj_v2b, only : V2b_read
     use nj_linalg, only : eig_sym
+    use nj_tr1b, only : tr1b_t, Tr1b_initialize, Tr1b_transformation
+    use nj_empm_space, only : empm_space_t, EMPM_space_make
     use omp_lib
     implicit none
     private
@@ -118,6 +120,15 @@ module nj_ncsm
         integer(i8), allocatable :: Jo(:,:)   ! 64-bit offsets (> 2^31 jumps, e.g. 16O 4p4h in 5 shells)
         integer, allocatable :: Jt(:)
         integer(i2), allocatable :: Jx(:)
+        ! Hole-particle form (Trunc 'npnh'): reference m-states RefL (ranks Rr), particle m-states ParL (ranks Rp), inactive
+            ! m-states (Rr = Rp = 0, e.g. outside the window or of the other species) never occupied ... key = Off(h) +
+            ! rank(holes) C(npar,h) + rank(particles), ranks combinatorial (Ck(n,k) = C(n,k), k <= Hk) ... Pt(k) particle
+            ! m-state, Ac(k) active ... otherwise (HP false) the reference is 1..Nt & the key the rank of all occupations ...
+        logical :: HP = .false.
+        integer :: nref = 0, npar = 0, Hk = 0
+        integer, allocatable :: Rr(:), Rp(:), RefL(:), ParL(:)
+        integer(i8), allocatable :: Ck(:,:), Off(:)
+        logical, allocatable :: Pt(:), Ac(:)
     end type sd_t
 
     ! Species matrix column: partners r (lower half by the ranks) & values v (double) or vs (single) ...
@@ -187,6 +198,26 @@ module nj_ncsm
     type(op_t), pointer, save :: cH => null()
     type(eng_t), pointer, save :: cEH => null()
 
+    ! Transitions (&ncsm Transitions) ... QL(a,b,t,L) = <a||Q_L||b> (Edmonds, t = 1 p, 2 n, L = 0..3: r^2 Y_0, r Y_1, r^2 Y_2,
+        ! r^3 Y_3 of nj_tr1b) in the orbitals of the run (HF: transformed with C_HF), QH the same in the HO basis (convention
+        ! check), the ground state Xg (lowest state of parity +, M = 0) in its basis Bg & its energy Eg, kept for the parity - run
+        ! (the SDs of 'npnh' do not depend on the parity: Bg indexes the same proton & neutron SDs) ...
+    real(dp), allocatable, save :: QL(:,:,:,:), QH(:,:,:,:)
+    type(mb_t), save :: Bg
+    real(dp), allocatable, save :: Xg(:)
+    real(dp), save :: Eg = 0.0_dp, Jg = 0.0_dp, Bosc = 0.0_dp
+    ! Tr_Gs_Nmax > 0: the g.s. of the <= Tr_Gs_Nmax p-h run by its SD occupations (Gp, Gn: proton & neutron occ of the
+        ! components, Gx the amplitudes) ... mapped into the SDs of the larger runs (gs_remap) ... CurNmax the current run ...
+    integer, allocatable, save :: Gp(:,:), Gn(:,:)
+    real(dp), allocatable, save :: Gx(:)
+    integer, save :: CurNmax = 0
+    logical, save :: HfBasis = .false.
+    ! Reference & active orbitals per species (a, t = 1 p, 2 n): the HF occupations (Basis 'HF') or the &empm window
+        ! (Window: frozen core below the hole window, particles above the particle window dropped) ... unallocated: the
+        ! lowest Nt m-states ...
+    logical, allocatable, save :: RefO(:,:), ActO(:,:)
+    logical, save :: UseWin = .false.
+
 contains
 
     subroutine NCSM(Params)
@@ -218,6 +249,10 @@ contains
 
         ! Hamiltonian in the J-coupled HO storage, u(a,b,t) on the orbitals & C0 ...
         Orb = orbitals_make(Params)
+        UseWin = Params%Calc%NCSM%Window
+        if (allocated(RefO)) deallocate(RefO)
+        if (allocated(ActO)) deallocate(ActO)
+        if (UseWin) call window_make(Params,Orb)
         call timer_start(t0)
         E_HF = 0.0_dp
         select case (trim(Ham))
@@ -229,14 +264,25 @@ contains
             call fatal('NCSM ... unknown Hamiltonian ' // trim(Ham) // ' (NN or EMPM)')
         end select
         call timer_report(t0,'Hamiltonian in the J-coupled HO basis')
+        if (Params%Calc%NCSM%Transitions) call trans_init(Params,Orb)
 
         do iN = 1, size(Params%Calc%NCSM%Nmax_List)
             Nmax = Params%Calc%NCSM%Nmax_List(iN)
             if (Nmax < 0) exit
             if (Trunc == 'npnh') then
                 ! all m-states of the model space, at most Nmax particles outside the reference, both parities ...
-                call sp_make(Orb,Params%Calc%Nmax,SPS)
+                if (UseWin) then
+                    call sp_make(Orb,Params%Calc%Nmax,SPS,ActO(:,1) .or. ActO(:,2))
+                else
+                    call sp_make(Orb,Params%Calc%Nmax,SPS)
+                end if
                 do Par = 0, 1
+                    if (Params%Calc%NCSM%Parity >= 0 .and. Par /= Params%Calc%NCSM%Parity) cycle
+                    ! Tr_Gs_Nmax: the g.s. run parity + only, the larger runs the other parities (from the kept g.s.) ...
+                    if (Params%Calc%NCSM%Transitions .and. Params%Calc%NCSM%Tr_From == 'gs' .and. Params%Calc%NCSM%Tr_Gs_Nmax > 0) then
+                        if (Nmax == Params%Calc%NCSM%Tr_Gs_Nmax .and. Par == 1) cycle
+                        if (Nmax /= Params%Calc%NCSM%Tr_Gs_Nmax .and. Par == 0 .and. Params%Calc%NCSM%Parity < 0) cycle
+                    end if
                     write(*,'(/,a)') '=== NCSM ' // istr(Nmax) // 'p' // istr(Nmax) // 'h, parity ' // merge('-','+',Par == 1) // &
                                      ' ... ' // trim(Params%Calc%NCSM%Basis) // ' m-states with e <= ' // istr(Params%Calc%Nmax)
                     call run_nmax(Params,Orb,SPS,V,Orb_NN,uH,C0,E_HF,Nmax,Par)
@@ -296,7 +342,8 @@ contains
         character(len=8) :: Mode
         character(len=:), allocatable :: Fn, Tag, Hdr
         real(dp), allocatable :: EpsP(:), EpsN(:), ExmP(:), ExmN(:)
-        integer :: Lg, n
+        integer :: Lg, n, NtP, NtN, KpM(2), KpP
+        logical, allocatable :: RfS(:,:), AcS(:,:)
 
         A = Params%Calc%A
         Z = Params%Calc%Z
@@ -304,6 +351,37 @@ contains
         M2 = Params%Calc%NCSM%M2
         if (M2 < 0) M2 = mod(A,2)
         Beta = Params%Calc%NCSM%Beta_CM
+        CurNmax = Nmax
+        ! reference & active m-states per species (HF occupations or the window), else the lowest Z, N m-states ...
+        allocate(RfS(SPS%ns,2), AcS(SPS%ns,2))
+        do k = 1, SPS%ns
+            RfS(k,1) = k <= Z
+            RfS(k,2) = k <= Nneu
+        end do
+        AcS = .true.
+        if (allocated(RefO) .and. Trunc == 'npnh') then
+            do t = 1, 2
+                do k = 1, SPS%ns
+                    RfS(k,t) = RefO(SPS%a(k),t)
+                    AcS(k,t) = ActO(SPS%a(k),t) .or. RfS(k,t)
+                end do
+            end do
+        end if
+        NtP = count(RfS(:,1))
+        NtN = count(RfS(:,2))
+        ! SDs with h = Hcap pair only with the other reference (h = 0, M = 0, parity +): kept for 2M, 2M + 2 (<J^2>) & the
+            ! parity of the run (not with transitions from the parity + g.s., which share the SDs of both parities) ...
+        KpM = [M2, M2 + 2]
+        KpP = -1
+        if (Trunc == 'npnh') then
+            KpP = mod(ParIn + sum(SPS%e,RfS(:,1)) + sum(SPS%e,RfS(:,2)),2)
+            ! (the larger runs of Tr_Gs_Nmax keep the pruning: the kept g.s. has no SD with h = Hcap > Tr_Gs_Nmax) ...
+            if (Params%Calc%NCSM%Transitions .and. Params%Calc%NCSM%Tr_From /= 'HF' .and. &
+                .not. (Params%Calc%NCSM%Tr_Gs_Nmax > 0 .and. Nmax > Params%Calc%NCSM%Tr_Gs_Nmax)) KpP = -1
+        end if
+        if (UseWin) write(*,'(a)') TAB // 'window: ' // istr(NtP) // ' proton & ' // istr(NtN) // ' neutron active holes (m-states), ' // &
+            istr(count(AcS(:,1) .and. .not. RfS(:,1))) // ' & ' // istr(count(AcS(:,2) .and. .not. RfS(:,2))) // &
+            ' particle m-states (frozen core: ' // istr(Z - NtP) // ' p, ' // istr(Nneu - NtN) // ' n)'
 
         ! Slater determinants ...
         call timer_start(t0)
@@ -339,7 +417,7 @@ contains
                 ExmP(k) = maxval(Ecn(k:Nmax))
             end do
             ExmN = ExmP
-            if (.not. (gap(EpsP,Z) .and. gap(EpsN,Nneu))) then
+            if (.not. (gapm(EpsP,RfS(:,1),AcS(:,1)) .and. gapm(EpsN,RfS(:,2),AcS(:,2)))) then
                 write(*,'(a)') TAB // 'Warning ... no HF gap (a reference e above a particle e): SDs not pruned by energy'
                 ExmP = huge(1.0_dp)
                 ExmN = huge(1.0_dp)
@@ -361,18 +439,19 @@ contains
                 end if
             end if
             write(*,'(a)') TAB // 'energy cut ... E_P + E_N <= Ecut(n) for npnh, n = 1 .. ' // istr(Nmax) // ' (' // Tag(4:) // &
-                           ' MeV), HF e: reference <= ' // cfmt_f(max(maxval(EpsP(1:Z)),maxval(EpsN(1:Nneu))),0,3) // &
-                           ', particles >= ' // cfmt_f(min(minval(EpsP(Z+1:)),minval(EpsN(Nneu+1:))),0,3) // ' MeV'
-            call sd_make(SPS,Z,Qcap,Hcap,P,EpsP,ExmP)
-            call sd_make(SPS,Nneu,Qcap,Hcap,Nn,EpsN,ExmN)
+                           ' MeV), HF e: reference <= ' // cfmt_f(max(maxval(EpsP,RfS(:,1)),maxval(EpsN,RfS(:,2))),0,3) // &
+                           ', particles >= ' // cfmt_f(min(minval(EpsP,AcS(:,1) .and. .not. RfS(:,1)), &
+                                                           minval(EpsN,AcS(:,2) .and. .not. RfS(:,2))),0,3) // ' MeV'
+            call sd_make(SPS,NtP,Qcap,Hcap,P,EpsP,ExmP,RfS(:,1),AcS(:,1),KpM,KpP)
+            call sd_make(SPS,NtN,Qcap,Hcap,Nn,EpsN,ExmN,RfS(:,2),AcS(:,2),KpM,KpP)
             call timer_report(t0,'proton & neutron SDs & jumps (energy cut)')
         else
-        call sd_make(SPS,Z,Qcap,Hcap,P)
-        if (Nneu == Z) then
+        call sd_make(SPS,NtP,Qcap,Hcap,P,Ref=RfS(:,1),Act=AcS(:,1),KeepM=KpM,KeepP=KpP)
+        if (Nneu == Z .and. all(RfS(:,1) .eqv. RfS(:,2)) .and. all(AcS(:,1) .eqv. AcS(:,2))) then
             Nn = P            ! identical SDs & jumps (same s.p. space & truncation)
             call timer_report(t0,'proton SDs & jumps (neutrons copied)')
         else
-            call sd_make(SPS,Nneu,Qcap,Hcap,Nn)
+            call sd_make(SPS,NtN,Qcap,Hcap,Nn,Ref=RfS(:,2),Act=AcS(:,2),KeepM=KpM,KeepP=KpP)
         end if
         end if
         Par = mod(P%N0 + Nn%N0 + Nmax,2)
@@ -390,10 +469,14 @@ contains
         if (B%dim == 0) return
 
         ! Pair blocks within the quanta cut: the largest quanta of two nucleons in the basis ...
-        Epair(1) = merge(SPS%e(max(Z,1)) + SPS%e(max(Z-1,1)), -1000, Z >= 2)
-        Epair(2) = merge(SPS%e(max(Nneu,1)) + SPS%e(max(Nneu-1,1)), -1000, Nneu >= 2)
-        Epair(3) = SPS%e(Z) + SPS%e(Nneu)
-        Epair = min(Epair + Qcap, 2*maxval(SPS%e))
+        if (Trunc == 'npnh') then
+            Epair = 2*maxval(SPS%e)
+        else
+            Epair(1) = merge(SPS%e(max(Z,1)) + SPS%e(max(Z-1,1)), -1000, Z >= 2)
+            Epair(2) = merge(SPS%e(max(Nneu,1)) + SPS%e(max(Nneu-1,1)), -1000, Nneu >= 2)
+            Epair(3) = SPS%e(Z) + SPS%e(Nneu)
+            Epair = min(Epair + Qcap, 2*maxval(SPS%e))
+        end if
         do t = 1, 3
             call pairs_make(SPS,t,Epair(t),Pr(t))
         end do
@@ -439,42 +522,6 @@ contains
         write(*,'(a)') TAB // 'products of H + Beta N_cm: ' // trim(Mode)
         call mem_report('before Lanczos')
 
-        ! Lanczos for H + Beta N_cm ...
-        Ne = min(Params%Calc%NCSM%N_Eig, B%dim)
-        call timer_start(t0)
-        cP => P
-        cNn => Nn
-        cPr => Pr
-        cB => B
-        cH => H
-        cEH => EH
-        call lanczos_tr(B%dim,apply_h,Ne,Params%Calc%NCSM%Lanczos_Basis,Params%Calc%NCSM%Lanczos_Max, &
-                        Params%Calc%NCSM%Lanczos_Tol,E,Zv,Res,Nconv)
-        nullify(cP, cNn, cPr, cB, cH, cEH)
-        call timer_report(t0,'Lanczos')
-        call mem_report('Lanczos')
-        Ne = size(E)
-        call eng_free(EH)
-        call op_free(H)
-
-        ! <N_cm> (2-body, lower-half expectation pass) & <J^2> (one-body: |J_+ z|^2 + M (M + 1)) ...
-        call timer_start(t0)
-        allocate(Ev(Ne), Jv(Ne), Nv(Ne), Xt(Ne,B%dim))
-        Xt = transpose(Zv)
-        call pn_tables(SPS,Pr(3),Ncm)
-        if (UseCut) then
-            call eng_make(SPS,P,Nn,Pr,Ncm,B,EO,.false.,Qcap,Hcap,EpsP,EpsN,ExmP,ExmN)
-        else
-            call eng_make(SPS,P,Nn,Pr,Ncm,B,EO,.false.,Qcap,Hcap)
-        end if
-        call eng_expect(P,Nn,B,Ncm,EO,Ne,Xt,Nv)
-        call op_free(Ncm)
-        call eng_free(EO)
-        call j2_expect(SPS,P,Nn,B,B2,Ne,Xt,Jv)
-        deallocate(Xt)
-        Ev = E - Beta*Nv
-        call timer_report(t0,'<N_cm> & <J^2>')
-
         Fn = io_path(Params,'/NCSM/NCSM_' // trim(Params%Calc%NCSM%Hamiltonian) // '_Nmax' // istr(Nmax))
         ! Nmax in the HF basis (quanta e = 2n + l of the HF orbitals, i.e. HF major shells) ... NCSM_EMPM_HF_Nmax<N> ...
         if (Params%Calc%NCSM%Basis == 'HF') Fn = io_path(Params,'/NCSM/NCSM_' // trim(Params%Calc%NCSM%Hamiltonian) // &
@@ -486,6 +533,72 @@ contains
         if (UseCut) Hdr = ' Ecut_npnh = ' // Tag(4:) // ' (n = 1..' // istr(Nmax) // ')'
         if (Beta /= 0.0_dp) Fn = Fn // '_B' // istr(nint(Beta))
         Fn = Fn // '.dat'
+
+        ! Lanczos for H + Beta N_cm ...
+        Ne = min(Params%Calc%NCSM%N_Eig, B%dim)
+        ! the larger runs of Tr_Gs_Nmax with strength functions: no eigenstates (the converged Ritz states of the SF) ...
+        if (Params%Calc%NCSM%Transitions .and. Params%Calc%NCSM%Tr_Gs_Nmax > 0 .and. Params%Calc%NCSM%Tr_Lanczos > 0 .and. &
+            Nmax /= Params%Calc%NCSM%Tr_Gs_Nmax) Ne = 0
+        call timer_start(t0)
+        cP => P
+        cNn => Nn
+        cPr => Pr
+        cB => B
+        cH => H
+        cEH => EH
+        ! transitions from the HF reference (Tr_From 'HF'): Xg the reference determinant in the parity + basis of these
+            ! SDs ... strength-function Lanczos from Q|g> (Tr_Lanczos) ...
+        if (Params%Calc%NCSM%Transitions .and. Params%Calc%NCSM%Tr_From == 'HF') call hf_ref(P,Nn,M2,Nmax,E_HF)
+        ! the g.s. of the smaller run (Tr_Gs_Nmax) in the parity + basis of these SDs ...
+        if (Params%Calc%NCSM%Transitions .and. Params%Calc%NCSM%Tr_From == 'gs' .and. Params%Calc%NCSM%Tr_Gs_Nmax > 0 .and. &
+            Nmax /= Params%Calc%NCSM%Tr_Gs_Nmax) call gs_remap(SPS,P,Nn,Nmax)
+        if (Params%Calc%NCSM%Transitions .and. Params%Calc%NCSM%Tr_Lanczos > 0) then
+            call trans_strength(Params,SPS,P,Nn,B,Par,Fn(1:len(Fn)-4))
+            call timer_report(t0,'strength-function Lanczos')
+        end if
+        if (Ne <= 0) then
+            nullify(cP, cNn, cPr, cB, cH, cEH)
+            call eng_free(EH)
+            call op_free(H)
+            call op_free(Ncm)
+            return
+        end if
+        call timer_start(t0)
+        if (B%dim <= Params%Calc%NCSM%Dense_Max) then
+            call dense_all(B%dim,E,Zv,Res,Nconv)
+        else
+            call lanczos_tr(B%dim,apply_h,Ne,Params%Calc%NCSM%Lanczos_Basis,Params%Calc%NCSM%Lanczos_Max, &
+                            Params%Calc%NCSM%Lanczos_Tol,E,Zv,Res,Nconv)
+        end if
+        nullify(cP, cNn, cPr, cB, cH, cEH)
+        call timer_report(t0,merge('dense   ','Lanczos ',B%dim <= Params%Calc%NCSM%Dense_Max))
+        call mem_report('Lanczos')
+        Ne = size(E)
+        call eng_free(EH)
+        call op_free(H)
+
+        ! <N_cm> (2-body, lower-half expectation pass) & <J^2> (one-body: |J_+ z|^2 + M (M + 1)) ...
+        call timer_start(t0)
+        allocate(Ev(Ne), Jv(Ne), Nv(Ne), Xt(Ne,B%dim))
+        Xt = transpose(Zv)
+        if (UseWin) then
+            Nv = 0.0_dp            ! N_cm of the window only: not computed
+        else
+        call pn_tables(SPS,Pr(3),Ncm)
+        if (UseCut) then
+            call eng_make(SPS,P,Nn,Pr,Ncm,B,EO,.false.,Qcap,Hcap,EpsP,EpsN,ExmP,ExmN)
+        else
+            call eng_make(SPS,P,Nn,Pr,Ncm,B,EO,.false.,Qcap,Hcap)
+        end if
+        call eng_expect(P,Nn,B,Ncm,EO,Ne,Xt,Nv)
+        call eng_free(EO)
+        end if
+        call op_free(Ncm)
+        call j2_expect(SPS,P,Nn,B,B2,Ne,Xt,Jv)
+        deallocate(Xt)
+        Ev = E - Beta*Nv
+        call timer_report(t0,'<N_cm> & <J^2>')
+
         open(newunit=u, file=Fn, status='replace', action='write')
         write(u,'(a)') '# NCSM ' // trim(Params%Calc%NCSM%Hamiltonian) // ' A = ' // istr(A) // ' Z = ' // istr(Z) // &
                        ' hw = ' // jstr(Params%Calc%hw) // ' ' // merge('npnh','Nmax',Trunc == 'npnh') // ' = ' // istr(Nmax) // &
@@ -501,6 +614,11 @@ contains
         close(u)
         if (Nconv < Ne) write(*,'(a)') TAB // 'Warning ... only ' // istr(Nconv) // ' of ' // istr(Ne) // ' states converged'
         write(*,'(a)') TAB // 'written ' // Fn
+        if (Params%Calc%NCSM%Transitions) then
+            call timer_start(t0)
+            call trans_out(Params,SPS,P,Nn,B,Par,Ne,Zv,Ev,Jv,Fn(1:len(Fn)-4))
+            call timer_report(t0,'transitions')
+        end if
 
     contains
 
@@ -508,6 +626,14 @@ contains
             real(dp), intent(in) :: x
             jval = 0.5_dp*(-1.0_dp + sqrt(max(1.0_dp + 4.0_dp*x,0.0_dp)))
         end function jval
+
+        ! all reference energies <= all active particle energies ...
+        logical function gapm(e,rf,ac)
+            real(dp), intent(in) :: e(:)
+            logical, intent(in) :: rf(:), ac(:)
+            gapm = .true.
+            if (any(ac .and. .not. rf)) gapm = maxval(e,rf) <= minval(e,ac .and. .not. rf)
+        end function gapm
 
         ! all reference energies e(1:nt) <= all others ...
         logical function gap(e,nt)
@@ -518,6 +644,493 @@ contains
         end function gap
 
     end subroutine run_nmax
+
+    ! Window of &empm (pHole, pPart, nHole, nPart: HF levels per isospin by energy, as EMPM_space_make) ... RefO the
+        ! window holes, ActO the window levels (a, t) ...
+    subroutine window_make(Params,Orb)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), intent(in) :: Orb(:)
+        type(empm_space_t) :: Space
+        integer :: k, t
+        if (Params%Calc%NCSM%Trunc /= 'npnh' .or. Params%Calc%NCSM%Basis /= 'HF' .or. &
+            Params%Calc%NCSM%Hamiltonian /= 'EMPM') call fatal('NCSM ... Window needs Trunc npnh, Basis HF, Hamiltonian EMPM')
+        if (Params%Calc%NCSM%Beta_CM /= 0.0_dp) call fatal('NCSM ... Window: no Lawson term (N_cm of the window only)')
+        call EMPM_space_make(Params,Orb,Space)
+        allocate(RefO(size(Orb),2), ActO(size(Orb),2))
+        RefO = .false.
+        ActO = .false.
+        do k = 1, Space%N_lev
+            t = merge(1,2,Space%Lev(k)%t == -1)
+            ActO(Space%Lev(k)%a,t) = .true.
+            RefO(Space%Lev(k)%a,t) = Space%Lev(k)%Occ == 1
+        end do
+        write(*,'(a)') TAB // 'NCSM window ... ' // istr(count(RefO(:,1))) // ' & ' // istr(count(RefO(:,2))) // &
+                       ' hole orbitals, ' // istr(count(ActO(:,1) .and. .not. RefO(:,1))) // ' & ' // &
+                       istr(count(ActO(:,2) .and. .not. RefO(:,2))) // ' particle orbitals (p & n) ... <N_cm> of the window only'
+    end subroutine window_make
+
+    ! ---------------------------------------------------------------------------------------------------------------
+    ! Electric transitions from the ground state (&ncsm Transitions) ...
+
+    ! Reduced one-body matrices of E0 (r^2), E1, E2, E3 (nj_tr1b, Edmonds convention) in the orbitals of the run ...
+    subroutine trans_init(Params,Orb)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), intent(in) :: Orb(:)
+        type(tr1b_t) :: TrOp, TrH
+        type(o1b_t) :: C
+        integer :: a_max, M2
+        M2 = Params%Calc%NCSM%M2
+        if (M2 < 0) M2 = mod(Params%Calc%A,2)
+        if (Params%Calc%NCSM%Trunc /= 'npnh' .or. M2 /= 0) call fatal('NCSM ... Transitions need Trunc = ''npnh'' & M2 = 0')
+        if (Params%Calc%NCSM%Tr_From /= 'HF' .and. Params%Calc%NCSM%Tr_From /= 'gs') call fatal('NCSM ... Tr_From gs or HF')
+        if (Params%Calc%NCSM%Tr_From == 'gs' .and. Params%Calc%NCSM%Parity == 1) &
+            call fatal('NCSM ... Tr_From gs needs the parity + run (Parity = -1)')
+        a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
+        TrH = Tr1b_initialize(Params,Orb,1.0_dp)
+        HfBasis = Params%Calc%NCSM%Basis == 'HF'
+        if (HfBasis) then
+            C = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
+            TrOp = Tr1b_transformation(Params,Orb,C,TrH)
+        else
+            TrOp = TrH
+        end if
+        if (allocated(QL)) deallocate(QL)
+        if (allocated(QH)) deallocate(QH)
+        allocate(QL(a_max,a_max,2,0:3), QH(a_max,a_max,2,0:3))
+        call put(QL,TrOp)
+        call put(QH,TrH)
+        Bosc = sqrt(0.5_dp*(m_p + m_n)*Params%Calc%hw)/HbarC
+        if (allocated(Xg)) deallocate(Xg)
+        write(*,'(a)') TAB // 'transitions: E0 (r^2), E1, E2, E3 from the lowest state of parity + (' // &
+                       merge('HF','HO',HfBasis) // ' orbitals)'
+    contains
+        subroutine put(Q,T)
+            real(dp), intent(out) :: Q(:,:,:,0:)
+            type(tr1b_t), intent(in) :: T
+            Q(:,:,1,0) = T%E0%p
+            Q(:,:,2,0) = T%E0%n
+            Q(:,:,1,1) = T%E1%p
+            Q(:,:,2,1) = T%E1%n
+            Q(:,:,1,2) = T%E2%p
+            Q(:,:,2,2) = T%E2%n
+            Q(:,:,1,3) = T%E3%p
+            Q(:,:,2,3) = T%E3%n
+        end subroutine put
+    end subroutine trans_init
+
+    ! m-scheme <k|Q_L0|l> from the reduced matrix Q (Edmonds: <j m|T_L0|j' m> = <j' m L 0|j m> <j||T||j'> / sqrt(2j+1)) ...
+    real(dp) function qm(SPS,Q,L,k,kl,t)
+        type(sp_t), intent(in) :: SPS
+        real(dp), intent(in) :: Q(:,:,:,0:)
+        integer, intent(in) :: L, k, kl, t
+        qm = 0.0_dp
+        if (SPS%m2(k) /= SPS%m2(kl)) return
+        if (mod(SPS%l(k) + SPS%l(kl) + L,2) /= 0) return
+        if (abs(SPS%j2(k) - SPS%j2(kl)) > 2*L .or. SPS%j2(k) + SPS%j2(kl) < 2*L) return
+        qm = fCG(SPS%j2(kl),2*L,SPS%j2(k),SPS%m2(kl),0,SPS%m2(k))*Q(SPS%a(k),SPS%a(kl),t,L)/sqrt(real(SPS%j2(k) + 1,dp))
+    end function qm
+
+    ! Checks of the m-scheme tables: hermiticity (all L) & E1 against the HO r_0 = b/sqrt(2) (b_0 + b_0^+) of b_mscheme
+        ! (the (l s) j convention of the NCSM operators) ... printed once per run ...
+    subroutine trans_check(SPS)
+        type(sp_t), intent(in) :: SPS
+        real(dp), allocatable :: Bm(:,:,:)
+        real(dp) :: dh, dz, z, q, zmax
+        integer :: k, kl, L_, t
+        dh = 0.0_dp
+        do L_ = 0, 3
+            do t = 1, 2
+                do k = 1, SPS%ns
+                    do kl = 1, SPS%ns
+                        dh = max(dh,abs(qm(SPS,QL,L_,k,kl,t) - qm(SPS,QL,L_,kl,k,t)))
+                    end do
+                end do
+            end do
+        end do
+        call b_mscheme(SPS,Bm)
+        dz = 0.0_dp
+        zmax = 0.0_dp
+        do k = 1, SPS%ns
+            do kl = 1, SPS%ns
+                z = sqrt(3.0_dp/(4.0_dp*pi))/Bosc/sqrt(2.0_dp)*(Bm(k,kl,0) + Bm(kl,k,0))
+                q = qm(SPS,QH,1,k,kl,1)
+                dz = max(dz,abs(q - z))
+                zmax = max(zmax,abs(z))
+            end do
+        end do
+        write(*,'(a,es10.2,a,es10.2,a,f8.4,a)') TAB // 'transition tables: max |q(k,l) - q(l,k)| = ', dh, &
+            ', HO E1 vs sqrt(3/4pi) z of b_mscheme: max dev ', dz, ' (max |z| ', zmax, ' fm)'
+        if (dz > 1.0e-8_dp*max(zmax,1.0_dp)) write(*,'(a)') TAB // 'Warning ... E1 table differs from the NCSM (l s) j convention'
+    end subroutine trans_check
+
+    ! yp, yn = Q_L0 (protons, neutrons) applied to the ground state Xg (basis Bg) in the target basis Bt ... the reverse jumps
+        ! of j2_expect: y(cc) = sum over the jumps a+_kc a_ka |sd(cc)> = sg |s> of <ka|Q|kc> sg Xg(c(s)) ... the diagonal
+        ! bucket dm = 0 with the parity type of L ...
+    subroutine tr_apply(SPS,P,Nn,Bt,L,yp,yn)
+        type(sp_t), intent(in) :: SPS
+        type(sd_t), intent(in) :: P, Nn
+        type(mb_t), intent(in) :: Bt
+        integer, intent(in) :: L
+        real(dp), intent(out) :: yp(:), yn(:)
+        real(dp), allocatable :: vp(:), vn(:)
+        integer :: br, ix, kc, ka, cc, spp, snp, s, st, c, L2
+        integer(i8) :: j
+        real(dp) :: v, ap, an
+        br = SPS%b0 + mod(L,2)
+        allocate(vp(SPS%Nty(br)), vn(SPS%Nty(br)))
+        do ix = 1, SPS%Nty(br)
+            kc = SPS%Tkc(br)%v(ix)
+            ka = SPS%Tka(br)%v(ix)
+            vp(ix) = qm(SPS,QL,L,ka,kc,1)
+            vn(ix) = qm(SPS,QL,L,ka,kc,2)
+        end do
+        !$omp parallel do schedule(dynamic,256) private(spp,snp,s,st,c,L2,j,v,ap,an)
+        do cc = 1, Bt%dim
+            spp = Bt%sp(cc)
+            snp = Bt%sn(cc)
+            ap = 0.0_dp
+            an = 0.0_dp
+            L2 = Nn%L(snp)
+            do j = P%Jo(br,spp), P%Jo(br+1,spp) - 1
+                v = vp(int(P%Jx(j)) + IXOFF)
+                if (v == 0.0_dp) cycle
+                s = abs(P%Jt(j))
+                st = Bg%St(s,L2)
+                if (st < 0) cycle
+                if (UseCut) then
+                    if (Bg%Lc(snp) > Bg%Nc(s,L2)) cycle
+                end if
+                c = st + Bg%Lc(snp)
+                ap = ap + v*real(sign(1,P%Jt(j)),dp)*Xg(c)
+            end do
+            do j = Nn%Jo(br,snp), Nn%Jo(br+1,snp) - 1
+                v = vn(int(Nn%Jx(j)) + IXOFF)
+                if (v == 0.0_dp) cycle
+                s = abs(Nn%Jt(j))
+                L2 = Nn%L(s)
+                st = Bg%St(spp,L2)
+                if (st < 0) cycle
+                if (UseCut) then
+                    if (Bg%Lc(s) > Bg%Nc(spp,L2)) cycle
+                end if
+                c = st + Bg%Lc(s)
+                an = an + v*real(sign(1,Nn%Jt(j)),dp)*Xg(c)
+            end do
+            yp(cc) = ap
+            yn(cc) = an
+        end do
+        !$omp end parallel do
+    end subroutine tr_apply
+
+    ! B(EL; g.s. -> k) for the states of this run (M = 0): M_t(k) = sqrt(2L+1) <k|Q_L0,t|g.s.> (= <J_k||Q_L,t||0>,
+        ! J_k = L), B_ph = M_p^2, B_is = |M_p + M_n|^2/4, B_iv = |e_p M_p - e_n M_n|^2 (E1, e_p = N/A, e_n = Z/A) or
+        ! |M_p - M_n|^2/4 (as HF_RPA_rB) ... sum rule (2L+1) |Q_L0,p g.s.|^2 = sum over all states of B_ph (complete only with
+        ! all states, Dense_Max) ... files <Fb>_E<L>.dat ...
+    subroutine trans_out(Params,SPS,P,Nn,B,Par,Ne,Zv,Ev,Jv,Fb)
+        type(params_t), intent(in) :: Params
+        type(sp_t), intent(in) :: SPS
+        type(sd_t), intent(in) :: P, Nn
+        type(mb_t), intent(in) :: B
+        integer, intent(in) :: Par, Ne
+        real(dp), intent(in) :: Zv(:,:), Ev(:), Jv(:)
+        character(len=*), intent(in) :: Fb
+        real(dp), allocatable :: yp(:), yn(:), Mp(:), Mn(:)
+        real(dp) :: e_p, e_n, f, Sp, Sn, Bph, Bis, Biv, Tph, Tis, Tiv, Jk
+        integer :: Ls(2), iL, L, k, u, A, Z, nJ
+        logical, save :: Checked = .false.
+        character(len=:), allocatable :: Fl
+        A = Params%Calc%A
+        Z = Params%Calc%Z
+        e_p = real(A - Z,dp)/real(A,dp)
+        e_n = real(Z,dp)/real(A,dp)
+        if (.not. Checked) then
+            call trans_check(SPS)
+            Checked = .true.
+        end if
+        if (Params%Calc%NCSM%Tr_From == 'HF') then
+            Ls = [0, 2]
+            if (Par == 1) Ls = [1, 3]
+        else if (Par == 0 .and. Params%Calc%NCSM%Tr_Gs_Nmax > 0 .and. CurNmax /= Params%Calc%NCSM%Tr_Gs_Nmax) then
+            ! g.s. of the smaller run, mapped by gs_remap ...
+            if (.not. allocated(Xg)) then
+                write(*,'(a)') TAB // 'Warning ... transitions: no ground state of the Tr_Gs_Nmax run ... skipped'
+                return
+            end if
+            Ls = [0, 2]
+        else if (Par == 0) then
+            Bg = B
+            Xg = Zv(:,1)
+            Eg = Ev(1)
+            Jg = 0.5_dp*(-1.0_dp + sqrt(max(1.0_dp + 4.0_dp*Jv(1),0.0_dp)))
+            write(*,'(a,f14.6,a,f8.4)') TAB // 'transitions: ground state E = ', Eg, ' MeV, J = ', Jg
+            if (abs(Jg) > 1.0e-3_dp) write(*,'(a)') TAB // 'Warning ... the lowest state of parity + is not J = 0'
+            if (Params%Calc%NCSM%Tr_Gs_Nmax > 0) then
+                ! kept by the SD occupations for the larger runs ...
+                if (allocated(Gp)) deallocate(Gp, Gn, Gx)
+                allocate(Gp(size(P%occ,1),B%dim), Gn(size(Nn%occ,1),B%dim), Gx(B%dim))
+                do k = 1, B%dim
+                    Gp(:,k) = P%occ(:,B%sp(k))
+                    Gn(:,k) = Nn%occ(:,B%sn(k))
+                end do
+                Gx = Xg
+                write(*,'(a)') TAB // 'transitions: ground state of the ' // istr(CurNmax) // 'p' // istr(CurNmax) // &
+                               'h run kept for the larger runs (' // istr(B%dim) // ' components)'
+            end if
+            Ls = [0, 2]
+        else
+            if (.not. allocated(Xg)) then
+                write(*,'(a)') TAB // 'Warning ... transitions: no ground state (parity + not run first) ... skipped'
+                return
+            end if
+            Ls = [1, 3]
+        end if
+        allocate(yp(B%dim), yn(B%dim), Mp(Ne), Mn(Ne))
+        do iL = 1, 2
+            L = Ls(iL)
+            call tr_apply(SPS,P,Nn,B,L,yp,yn)
+            f = sqrt(real(2*L + 1,dp))
+            Sp = real(2*L + 1,dp)*dot_product(yp,yp)
+            Sn = real(2*L + 1,dp)*dot_product(yn,yn)
+            do k = 1, Ne
+                Mp(k) = f*dot_product(Zv(:,k),yp)
+                Mn(k) = f*dot_product(Zv(:,k),yn)
+            end do
+            Fl = Fb // '_E' // istr(L) // '.dat'
+            open(newunit=u, file=Fl, status='replace', action='write')
+            write(u,'(a)') '# NCSM B(E' // istr(L) // '; g.s. -> k), g.s. E = ' // jstr(Eg) // ' J = ' // jstr(Jg) // &
+                           merge(' (HF reference)              ',' (lowest state of parity +)  ',Params%Calc%NCSM%Tr_From == 'HF') // &
+                           ', states of parity ' // merge('-','+',Par == 1) // ', 2M = 0, dim = ' // &
+                           istr(B%dim) // ', ' // istr(Ne) // ' states'
+            write(u,'(a,2es16.8)') '# sum rule (2L+1)|Q_p g|^2, (2L+1)|Q_n g|^2 (e^2 fm^2L) = ', Sp, Sn
+            write(u,'(a)') '# k   E (MeV)   Ex = E - E_gs   J   B_ph   B_is   B_iv   M_p   M_n'
+            Tph = 0.0_dp
+            Tis = 0.0_dp
+            Tiv = 0.0_dp
+            nJ = 0
+            do k = 1, Ne
+                Bph = Mp(k)**2
+                Bis = 0.25_dp*(Mp(k) + Mn(k))**2
+                if (L == 1) then
+                    Biv = (e_p*Mp(k) - e_n*Mn(k))**2
+                else
+                    Biv = 0.25_dp*(Mp(k) - Mn(k))**2
+                end if
+                Jk = 0.5_dp*(-1.0_dp + sqrt(max(1.0_dp + 4.0_dp*Jv(k),0.0_dp)))
+                write(u,'(i6,2f16.8,i5,3es16.8,2es16.8)') k, Ev(k), Ev(k) - Eg, nint(Jk), Bph, Bis, Biv, Mp(k), Mn(k)
+                if (Par == 0 .and. k == 1 .and. Params%Calc%NCSM%Tr_From /= 'HF') cycle
+                Tph = Tph + Bph
+                Tis = Tis + Bis
+                Tiv = Tiv + Biv
+                if (nint(Jk) == L) nJ = nJ + 1
+            end do
+            close(u)
+            write(*,'(a,i1,a,i7,a,3es12.4,a,es12.4,a)') TAB // 'E', L, ': ', nJ, ' states J = L, sum B_ph, B_is, B_iv =', &
+                Tph, Tis, Tiv, ' (sum rule B_ph ', Sp, ')'
+            write(*,'(a)') TAB // 'written ' // Fl
+        end do
+    end subroutine trans_out
+
+    ! The g.s. of the smaller run (Tr_Gs_Nmax, kept by its SD occupations Gp, Gn, amplitudes Gx) in the parity + basis
+        ! Bg of the current SDs: Xg(c) = Gx for the matching (proton SD, neutron SD) ... a component outside the current
+        ! basis (other window, cut) is dropped with a warning (norm lost) ... Eg, Jg those of the smaller run ...
+    subroutine gs_remap(SPS,P,Nn,Nmax)
+        type(sp_t), intent(in) :: SPS
+        type(sd_t), intent(in) :: P, Nn
+        integer, intent(in) :: Nmax
+        integer(i8) :: kp, kn
+        integer :: i, sp, sn, c, L2, miss
+        real(dp) :: lost
+        if (allocated(Gx)) then
+            if (size(Gp,1) /= size(P%occ,1) .or. size(Gn,1) /= size(Nn%occ,1)) call fatal('NCSM ... Tr_Gs_Nmax: other SD sizes')
+        end if
+        if (.not. allocated(Gx)) then
+            write(*,'(a)') TAB // 'Warning ... Tr_Gs_Nmax: no ground state kept (its run must come first in Nmax_List)'
+            if (allocated(Xg)) deallocate(Xg)
+            return
+        end if
+        call basis_make(P,Nn,0,Nmax,mod(P%N0 + Nn%N0,2),Bg)
+        if (allocated(Xg)) deallocate(Xg)
+        allocate(Xg(Bg%dim))
+        Xg = 0.0_dp
+        miss = 0
+        lost = 0.0_dp
+        do i = 1, size(Gx)
+            c = -1
+            kp = sd_key(SPS,P,Gp(:,i))
+            kn = sd_key(SPS,Nn,Gn(:,i))
+            if (kp >= 0 .and. kn >= 0) then
+                sp = hashmap_lookup(P%Map,kp)
+                sn = hashmap_lookup(Nn%Map,kn)
+                if (sp > 0 .and. sn > 0) then
+                    L2 = Nn%L(sn)
+                    c = Bg%St(sp,L2)
+                    if (c >= 0) then
+                        if (UseCut) then
+                            if (Bg%Lc(sn) > Bg%Nc(sp,L2)) c = -1 - c
+                        end if
+                        if (c >= 0) c = c + Bg%Lc(sn)
+                    end if
+                end if
+            end if
+            if (c < 0) then
+                miss = miss + 1
+                lost = lost + Gx(i)**2
+            else
+                Xg(c) = Gx(i)
+            end if
+        end do
+        write(*,'(a,f14.6,a,es10.2)') TAB // 'transitions: kept ground state (' // istr(size(Gx)) // ' components, E = ', Eg, &
+            ' MeV) mapped into the ' // istr(Nmax) // 'p' // istr(Nmax) // 'h parity + basis, norm^2 lost ', lost
+        if (miss > 0) write(*,'(a)') TAB // 'Warning ... ' // istr(miss) // ' g.s. components not in the current basis'
+    end subroutine gs_remap
+
+    ! The HF reference determinant as the initial state (Tr_From 'HF'): the parity + basis of the current SDs, Xg = unit
+        ! vector of the reference (proton & neutron SDs with h = 0), Eg = E_HF (<HF|H|HF> of the EMPM Hamiltonian) ...
+    subroutine hf_ref(P,Nn,M2,Nmax,E_HF)
+        type(sd_t), intent(in) :: P, Nn
+        integer, intent(in) :: M2, Nmax
+        real(dp), intent(in) :: E_HF
+        integer :: sp0, sn0, s, c
+        if (M2 /= 0) call fatal('NCSM ... Tr_From HF needs M2 = 0')
+        sp0 = 0
+        sn0 = 0
+        do s = 1, P%nsd
+            if (P%h(s) == 0) sp0 = s
+        end do
+        do s = 1, Nn%nsd
+            if (Nn%h(s) == 0) sn0 = s
+        end do
+        if (sp0 == 0 .or. sn0 == 0) call fatal('NCSM ... Tr_From HF: no reference SD')
+        call basis_make(P,Nn,0,Nmax,mod(P%N0 + Nn%N0,2),Bg)
+        c = Bg%St(sp0,Nn%L(sn0))
+        if (c < 0) call fatal('NCSM ... Tr_From HF: reference not in the basis')
+        c = c + Bg%Lc(sn0)
+        if (allocated(Xg)) deallocate(Xg)
+        allocate(Xg(Bg%dim))
+        Xg = 0.0_dp
+        Xg(c) = 1.0_dp
+        Eg = E_HF
+        Jg = 0.0_dp
+        write(*,'(a,f14.6,a)') TAB // 'transitions from the HF reference, E_HF = ', Eg, ' MeV'
+    end subroutine hf_ref
+
+    ! Strength functions (Tr_Lanczos iterations, full reorthogonalization) of B_ph, B_is, B_iv from the pivots Q|g> in the
+        ! target basis (current H context of apply_h) ... Ritz values th_k & B_k = S0 U(1,k)^2, S0 = (2L+1)|Q g|^2 (the total
+        ! strength), residual beta_m |U(m,k)| ... the operator Q_L0|g> (g of J = 0) is pure J = L: only J = L states ...
+        ! files <Fb>_E<L>_SF_<ph|is|iv>.dat ...
+    subroutine trans_strength(Params,SPS,P,Nn,B,Par,Fb)
+        type(params_t), intent(in) :: Params
+        type(sp_t), intent(in) :: SPS
+        type(sd_t), intent(in) :: P, Nn
+        type(mb_t), intent(in) :: B
+        integer, intent(in) :: Par
+        character(len=*), intent(in) :: Fb
+        real(dp), allocatable :: yp(:), yn(:), y(:), V(:,:), w(:), al(:), be(:), T(:,:), th(:), Uv(:,:), cf(:)
+        real(dp) :: e_p, e_n, S0, f, m0, m1
+        integer :: Ls(2), iL, L, io, m, j, k, n, u, mk, ps
+        character(len=2), parameter :: Nm(3) = ['ph', 'is', 'iv']
+        character(len=:), allocatable :: Fl
+        if (.not. allocated(Xg)) then
+            write(*,'(a)') TAB // 'Warning ... strength functions: no initial state (Tr_From gs needs the parity + run first)'
+            return
+        end if
+        n = B%dim
+        e_p = real(Params%Calc%A - Params%Calc%Z,dp)/real(Params%Calc%A,dp)
+        e_n = real(Params%Calc%Z,dp)/real(Params%Calc%A,dp)
+        Ls = [0, 2]
+        if (Par == 1) Ls = [1, 3]
+        m = min(Params%Calc%NCSM%Tr_Lanczos, n)
+        allocate(yp(n), yn(n), y(n), V(n,m), w(n), al(m), be(m), cf(m))
+        do iL = 1, 2
+            L = Ls(iL)
+            call tr_apply(SPS,P,Nn,B,L,yp,yn)
+            f = real(2*L + 1,dp)
+            do io = 1, 3
+                select case (io)
+                case (1)
+                    y = yp
+                case (2)
+                    y = 0.5_dp*(yp + yn)
+                case default
+                    if (L == 1) then
+                        y = e_p*yp - e_n*yn
+                    else
+                        y = 0.5_dp*(yp - yn)
+                    end if
+                end select
+                S0 = f*dot_product(y,y)
+                if (S0 <= 0.0_dp) cycle
+                V(:,1) = y/sqrt(dot_product(y,y))
+                mk = 0
+                do j = 1, m
+                    call apply_h(V(:,j),w)
+                    al(j) = dot_product(V(:,j),w)
+                    w = w - al(j)*V(:,j)
+                    if (j > 1) w = w - be(j-1)*V(:,j-1)
+                    do ps = 1, 2
+                        call dgemv('T',n,j,1.0_dp,V,n,w,1,0.0_dp,cf,1)
+                        call dgemv('N',n,j,-1.0_dp,V,n,cf,1,1.0_dp,w,1)
+                    end do
+                    be(j) = sqrt(dot_product(w,w))
+                    mk = j
+                    if (j == m .or. be(j) < 1.0e-9_dp*max(maxval(abs(al(1:j))),1.0_dp)) exit   ! Krylov space exhausted
+                    V(:,j+1) = w/be(j)
+                end do
+                allocate(T(mk,mk), th(mk), Uv(mk,mk))
+                T = 0.0_dp
+                do j = 1, mk
+                    T(j,j) = al(j)
+                    if (j < mk) then
+                        T(j,j+1) = be(j)
+                        T(j+1,j) = be(j)
+                    end if
+                end do
+                call eig_sym(T,th,Uv)
+                Fl = Fb // '_E' // istr(L) // '_SF_' // Nm(io) // '.dat'
+                open(newunit=u, file=Fl, status='replace', action='write')
+                write(u,'(a)') '# NCSM strength function B_' // Nm(io) // '(E' // istr(L) // ') from ' // &
+                               merge('the HF reference   ','the parity + g.s.  ',Params%Calc%NCSM%Tr_From == 'HF') // &
+                               ' E_g = ' // jstr(Eg) // ', parity ' // merge('-','+',Par == 1) // ', 2M = 0, dim = ' // istr(n) // &
+                               ', Lanczos iterations ' // istr(mk)
+                write(u,'(a,es16.8)') '# total strength S0 = (2L+1)|Q g|^2 (e^2 fm^2L) = ', S0
+                write(u,'(a)') '# k   E (MeV)   Ex = E - E_g   B   residual'
+                m0 = 0.0_dp
+                m1 = 0.0_dp
+                do k = 1, mk
+                    write(u,'(i6,2f16.8,es18.8e3,es12.3e3)') k, th(k), th(k) - Eg, S0*Uv(1,k)**2, be(mk)*abs(Uv(mk,k))
+                    m0 = m0 + S0*Uv(1,k)**2
+                    m1 = m1 + S0*Uv(1,k)**2*(th(k) - Eg)
+                end do
+                close(u)
+                write(*,'(a,i1,a,i5,a,es12.4,a,f10.4,a)') TAB // 'E', L, ' B_' // Nm(io) // ': ', mk, ' Lanczos steps, m0 = ', m0, &
+                    ', centroid ', m1/m0, ' MeV ... ' // Fl
+                deallocate(T, th, Uv)
+            end do
+        end do
+    end subroutine trans_strength
+
+    ! All eigenpairs of H + Beta N_cm by LAPACK (Dense_Max): the dense matrix from n products with unit vectors ...
+    subroutine dense_all(n,E,Zv,Res,Nconv)
+        integer, intent(in) :: n
+        real(dp), allocatable, intent(out) :: E(:), Zv(:,:), Res(:)
+        integer, intent(out) :: Nconv
+        real(dp), allocatable :: Hd(:,:), x(:)
+        real(dp) :: asy
+        integer :: i
+        allocate(Hd(n,n), x(n), E(n), Zv(n,n), Res(n))
+        x = 0.0_dp
+        do i = 1, n
+            x(i) = 1.0_dp
+            call apply_h(x,Hd(:,i))
+            x(i) = 0.0_dp
+        end do
+        asy = maxval(abs(Hd - transpose(Hd)))
+        write(*,'(a,i0,a,es10.2)') TAB // 'dense diagonalization of dimension ', n, ', max |H - H^T| = ', asy
+        Hd = 0.5_dp*(Hd + transpose(Hd))
+        call eig_sym(Hd,E,Zv)
+        Res = 0.0_dp
+        Nconv = n
+    end subroutine dense_all
 
     ! y = (H + Beta N_cm) x ... the product of run_nmax for lanczos_tr (context in cP, cNn, cPr, cB, cH, cEH) ...
     subroutine apply_h(x,y)
@@ -648,6 +1261,20 @@ contains
             EpsHF(a,1) = h%p(a,a)
             EpsHF(a,2) = h%n(a,a)
         end do
+        ! Window: the frozen core is in E_HF & e (normal order w.r.t. HF) ... H in the window = E_HF + e :a+a: + V :a+a+aa:
+            ! normal-ordered w.r.t. the active reference -> plain form with the active holes only ... no window: the
+            ! reference = the HF occupations ...
+        if (UseWin) then
+            do t = 1, 2
+                do a = 1, a_max
+                    occ(a,t) = merge(1.0_dp,0.0_dp,RefO(a,t))
+                end do
+            end do
+        else if (Params%Calc%NCSM%Basis == 'HF') then
+            allocate(RefO(a_max,2), ActO(a_max,2))
+            RefO = occ(1:a_max,:) > 0.5_dp
+            ActO = .true.
+        end if
 
         ! u = e - sum_c n_c sum_J (2J+1)/(2j_a+1) V^J(ac,bc), C0 = -sum (2j+1) n e + 1/2 sum n n (2J+1) V^J ...
         uF = 0.0_dp
@@ -782,15 +1409,19 @@ contains
     ! ---------------------------------------------------------------------------------------------------------------
     ! Single-particle m-states & pair blocks ...
 
-    subroutine sp_make(Orb,emax,SPS)
+    subroutine sp_make(Orb,emax,SPS,Keep)
         type(orb1b_t), intent(in) :: Orb(:)
         integer, intent(in) :: emax
         type(sp_t), intent(out) :: SPS
+        logical, intent(in), optional :: Keep(:)
         integer :: a, m, k, Pass, i
         do Pass = 1, 2
             k = 0
             do a = 1, size(Orb)
                 if (2*Orb(a)%n + Orb(a)%l > emax) cycle
+                if (present(Keep)) then
+                    if (.not. Keep(a)) cycle
+                end if
                 do m = -Orb(a)%j, Orb(a)%j, 2
                     k = k + 1
                     if (Pass == 2) then
@@ -1166,14 +1797,53 @@ contains
     ! Slater determinants, one-body jumps & the many-body basis ...
 
     ! Combinatorial rank of the ascending occupations oc (distinct, 1..ns) ... the SD hash key ...
-    pure integer(i8) function sd_key(SPS,oc)
+    ! Hole-particle form (SDX%HP): Off(h) + rank(holes) C(npar,h) + rank(particles), -1 for an occupation outside the
+        ! species list (inactive m-state, more than Hk holes) ... keys -1 must not be looked up (the empty marker) ...
+    pure integer(i8) function sd_key(SPS,SDX,oc)
         type(sp_t), intent(in) :: SPS
+        type(sd_t), intent(in) :: SDX
         integer, intent(in) :: oc(:)
-        integer :: ii
+        integer :: ii, k, jr, nh, npp
+        integer(i8) :: rh, rp
         sd_key = 0
+        if (.not. SDX%HP) then
+            do ii = 1, size(oc)
+                sd_key = sd_key + SPS%Bin(oc(ii) - 1,ii)
+            end do
+            return
+        end if
+        sd_key = -1
+        nh = 0
+        npp = 0
+        rh = 0
+        rp = 0
+        jr = 1
         do ii = 1, size(oc)
-            sd_key = sd_key + SPS%Bin(oc(ii) - 1,ii)
+            k = oc(ii)
+            if (SDX%Rr(k) > 0) then
+                do while (SDX%RefL(jr) < k)
+                    nh = nh + 1
+                    if (nh > SDX%Hk) return
+                    rh = rh + SDX%Ck(jr - 1,nh)
+                    jr = jr + 1
+                end do
+                jr = jr + 1
+            else if (SDX%Rp(k) > 0) then
+                npp = npp + 1
+                if (npp > SDX%Hk) return
+                rp = rp + SDX%Ck(SDX%Rp(k) - 1,npp)
+            else
+                return
+            end if
         end do
+        do while (jr <= SDX%nref)
+            nh = nh + 1
+            if (nh > SDX%Hk) return
+            rh = rh + SDX%Ck(jr - 1,nh)
+            jr = jr + 1
+        end do
+        if (nh /= npp) return
+        sd_key = SDX%Off(nh) + rh*SDX%Ck(SDX%npar,nh) + rp
     end function sd_key
 
     ! Target SD index of a+_kc a_(occ(ii)) |ss> & the sign xs ... -1 if outside the basis ...
@@ -1186,6 +1856,7 @@ contains
         integer, intent(out) :: xs
         integer, intent(inout) :: tmp(:)   ! work array (thread-private) ...
         integer :: nb2, ka_, a, b, kk
+        integer(i8) :: kx
         logical :: ins
         ka_ = SDX%occ(ii,ss)
         if (kc_ == ka_) then
@@ -1214,18 +1885,26 @@ contains
             tmp(b) = kk
         end do
         if (.not. ins) tmp(SDX%Nt) = kc_
-        sd_tgt = hashmap_lookup(SDX%Map,sd_key(SPS,tmp))
+        kx = sd_key(SPS,SDX,tmp)
+        sd_tgt = -1
+        if (kx >= 0) sd_tgt = hashmap_lookup(SDX%Map,kx)
         xs = 1 - 2*mod(ii - 1 + nb2,2)
     end function sd_tgt
 
     ! Eps (optional, energy cut): HF single-particle energies of the m-states of this species, Exmax(h) the largest
         ! excitation energy sum(Eps(occ)) - sum(Eps(1:Nt)) kept for SDs with h particles outside the reference ...
-    subroutine sd_make(SPS,Nt,Nmax,Hcap,SDX,Eps,Exmax)
+    subroutine sd_make(SPS,Nt,Nmax,Hcap,SDX,Eps,Exmax,Ref,Act,KeepM,KeepP)
         type(sp_t), intent(in) :: SPS
         integer, intent(in) :: Nt, Nmax, Hcap
         type(sd_t), intent(out) :: SDX
         real(dp), intent(in), optional :: Eps(:), Exmax(0:)
-        logical :: Cut
+        logical, intent(in), optional :: Ref(:), Act(:)
+        integer, intent(in), optional :: KeepM(:), KeepP
+        logical :: Cut, isr, isa
+        integer :: nr, npa, hcur, kk2
+        integer, allocatable :: hsel(:), psel(:), Ps(:)
+        real(dp) :: plim
+        real(dp), allocatable :: ep(:)
         real(dp) :: Eref, exv, eminp
         real(dp), allocatable :: epl(:), exm(:), cum(:)
         integer, allocatable :: o(:), Cnt(:)
@@ -1235,17 +1914,77 @@ contains
         logical, allocatable :: Occ(:)
         call timer_start(tt)
         SDX%Nt = Nt
-        SDX%N0 = sum(SPS%e(1:Nt))
-        ! keys = combinatorial rank of the sorted occupations, 0 .. C(ns,Nt) - 1 ...
-        if (Nt > KBIN) call fatal('NCSM ... SD keys overflow (more than KBIN particles of a species)')
-        if (SPS%Bin(SPS%ns,Nt) < 0) call fatal('NCSM ... SD keys overflow (C(ns,Nt) too large)')
+        SDX%HP = Trunc == 'npnh'
+        allocate(SDX%Pt(SPS%ns), SDX%Ac(SPS%ns))
+        if (SDX%HP) then
+            ! hole-particle form: reference & particle lists, binomials up to Hk = min(Hcap, nref, npar), offsets per h ...
+            allocate(SDX%Rr(SPS%ns), SDX%Rp(SPS%ns))
+            SDX%Rr = 0
+            SDX%Rp = 0
+            nr = 0
+            npa = 0
+            do i = 1, SPS%ns
+                isr = i <= Nt
+                if (present(Ref)) isr = Ref(i)
+                isa = .true.
+                if (present(Act)) isa = Act(i)
+                if (isr) then
+                    nr = nr + 1
+                    SDX%Rr(i) = nr
+                else if (isa) then
+                    npa = npa + 1
+                    SDX%Rp(i) = npa
+                end if
+            end do
+            if (nr /= Nt) call fatal('NCSM ... reference m-states ' // istr(nr) // ' /= particle number ' // istr(Nt))
+            SDX%nref = nr
+            SDX%npar = npa
+            SDX%Hk = min(Hcap,nr,npa)
+            allocate(SDX%RefL(nr), SDX%ParL(npa))
+            do i = 1, SPS%ns
+                if (SDX%Rr(i) > 0) SDX%RefL(SDX%Rr(i)) = i
+                if (SDX%Rp(i) > 0) SDX%ParL(SDX%Rp(i)) = i
+            end do
+            allocate(SDX%Ck(0:max(nr,npa),0:SDX%Hk), SDX%Off(0:SDX%Hk+1))
+            SDX%Ck = 0
+            SDX%Ck(:,0) = 1
+            do i = 1, max(nr,npa)
+                do x = 1, SDX%Hk
+                    if (real(SDX%Ck(i-1,x-1),dp) + real(SDX%Ck(i-1,x),dp) > 0.5_dp*real(huge(1_i8),dp)) &
+                        call fatal('NCSM ... hole-particle keys overflow')
+                    SDX%Ck(i,x) = SDX%Ck(i-1,x-1) + SDX%Ck(i-1,x)
+                end do
+            end do
+            SDX%Off(0) = 0
+            do x = 0, SDX%Hk
+                if (real(SDX%Off(x),dp) + real(SDX%Ck(nr,x),dp)*real(SDX%Ck(npa,x),dp) > 0.5_dp*real(huge(1_i8),dp)) &
+                    call fatal('NCSM ... hole-particle keys overflow')
+                SDX%Off(x+1) = SDX%Off(x) + SDX%Ck(nr,x)*SDX%Ck(npa,x)
+            end do
+            SDX%Pt = SDX%Rp > 0
+            SDX%Ac = SDX%Rr > 0 .or. SDX%Rp > 0
+            SDX%N0 = sum(SPS%e(SDX%RefL))
+        else
+            do i = 1, SPS%ns
+                SDX%Pt(i) = i > Nt
+            end do
+            SDX%Ac = .true.
+            SDX%N0 = sum(SPS%e(1:Nt))
+            ! keys = combinatorial rank of the sorted occupations, 0 .. C(ns,Nt) - 1 ...
+            if (Nt > KBIN) call fatal('NCSM ... SD keys overflow (more than KBIN particles of a species)')
+            if (SPS%Bin(SPS%ns,Nt) < 0) call fatal('NCSM ... SD keys overflow (C(ns,Nt) too large)')
+        end if
         allocate(o(Nt))
         Cut = present(Eps)
         Eref = 0.0_dp
         if (Cut) then
             epl = Eps
             exm = Exmax
-            Eref = sum(epl(1:Nt))
+            if (SDX%HP) then
+                Eref = sum(epl(SDX%RefL))
+            else
+                Eref = sum(epl(1:Nt))
+            end if
             ! early pruning: cum(k) = sum of the reference energies e(1:k), eminp the lowest particle energy ...
             allocate(cum(0:Nt))
             cum(0) = 0.0_dp
@@ -1255,9 +1994,25 @@ contains
             eminp = huge(1.0_dp)
             if (Nt < SPS%ns) eminp = minval(epl(Nt+1:))
         end if
+        if (SDX%HP) then
+            ! particles in ascending energy (with the cut, for pruning), else in list order ...
+            allocate(hsel(max(SDX%Hk,1)), psel(max(SDX%Hk,1)), Ps(npa), ep(npa))
+            do i = 1, npa
+                Ps(i) = i
+                ep(i) = 0.0_dp
+                if (Cut) ep(i) = epl(SDX%ParL(i))
+            end do
+            if (Cut .and. npa > 0) call argsort_r(ep,Ps)
+        end if
         do Pass = 1, 2
             n = 0
-            call rec(1,1,0)
+            if (SDX%HP) then
+                do hcur = 0, SDX%Hk
+                    call hrec(1,1)
+                end do
+            else
+                call rec(1,1,0)
+            end if
             if (Pass == 1) allocate(SDX%occ(Nt,n), SDX%q(n), SDX%m2(n), SDX%h(n), SDX%L(n))
             if (Pass == 1 .and. Cut) allocate(SDX%ex(n))
         end do
@@ -1266,7 +2021,7 @@ contains
         call timer_start(tt)
         call SDX%Map%init(n)
         do s = 1, n
-            call SDX%Map%set(key(SDX%occ(:,s)), s)
+            call SDX%Map%set(sd_key(SPS,SDX,SDX%occ(:,s)), s)
         end do
         call timer_report(tt,'  SDs: hash map')
         call timer_start(tt)
@@ -1290,6 +2045,7 @@ contains
                 ka = SDX%occ(i,s)
                 do kc = 1, SPS%ns
                     if (kc /= ka .and. Occ(kc)) cycle
+                    if (.not. SDX%Ac(kc)) cycle
                     if (Cut .and. kc /= ka) then
                         if (.not. inlist(s,ka,kc)) cycle
                     end if
@@ -1332,6 +2088,7 @@ contains
                 ka = SDX%occ(i,s)
                 do kc = 1, SPS%ns
                     if (kc /= ka .and. Occ(kc)) cycle
+                    if (.not. SDX%Ac(kc)) cycle
                     if (Cut .and. kc /= ka) then
                         if (.not. inlist(s,ka,kc)) cycle
                     end if
@@ -1415,21 +2172,94 @@ contains
 
 
 
-        ! combinatorial rank of the ascending occupations oc (distinct, 1..ns) ...
-        integer(i8) function key(oc)
-            integer, intent(in) :: oc(:)
+        ! Hole-particle generation: hcur holes (ranks hsel, lexicographic) x hcur particles (positions psel in Ps) ... with
+            ! the cut sum(e_particles) <= Exmax(h) + sum(e_holes), Ps ascending in energy: pruned by the lower bound ...
+        recursive subroutine hrec(d,st)
+            integer, intent(in) :: d, st
             integer :: ii
-            key = 0
-            do ii = 1, size(oc)
-                key = key + SPS%Bin(oc(ii) - 1,ii)
+            if (d > hcur) then
+                plim = huge(1.0_dp)
+                if (Cut) then
+                    plim = exm(hcur)
+                    do ii = 1, hcur
+                        plim = plim + epl(SDX%RefL(hsel(ii)))
+                    end do
+                end if
+                call prec(1,1,0.0_dp)
+                return
+            end if
+            do ii = st, nr - (hcur - d)
+                hsel(d) = ii
+                call hrec(d + 1,ii + 1)
             end do
-        end function key
+        end subroutine hrec
+
+        recursive subroutine prec(d,st,es)
+            integer, intent(in) :: d, st
+            real(dp), intent(in) :: es
+            integer :: ii
+            if (d > hcur) then
+                call emit()
+                return
+            end if
+            do ii = st, npa - (hcur - d)
+                if (Cut) then
+                    if (es + real(hcur - d + 1,dp)*ep(Ps(ii)) > plim + 1.0e-9_dp) exit
+                end if
+                psel(d) = ii
+                call prec(d + 1,ii + 1,es + ep(Ps(ii)))
+            end do
+        end subroutine prec
+
+        subroutine emit()
+            integer :: ii, jj, nn, qv
+            nn = 0
+            jj = 1
+            do ii = 1, nr
+                if (jj <= hcur) then
+                    if (hsel(jj) == ii) then
+                        jj = jj + 1
+                        cycle
+                    end if
+                end if
+                nn = nn + 1
+                o(nn) = SDX%RefL(ii)
+            end do
+            do ii = 1, hcur
+                nn = nn + 1
+                o(nn) = SDX%ParL(Ps(psel(ii)))
+            end do
+            call isort(o)
+            if (Cut) then
+                exv = sum(epl(o)) - Eref
+                if (exv > exm(hcur) + 1.0e-9_dp) return
+            end if
+            qv = sum(SPS%e(o)) - SDX%N0
+            ! h = Hcap: partner = the other reference only ... 2M & parity of the run ...
+            if (hcur == Hcap .and. hcur > 0) then
+                if (present(KeepM)) then
+                    if (all(KeepM /= sum(SPS%m2(o)))) return
+                end if
+                if (present(KeepP)) then
+                    if (KeepP >= 0 .and. modulo(qv,2) /= KeepP) return
+                end if
+            end if
+            n = n + 1
+            if (Pass == 2) then
+                if (Cut) SDX%ex(n) = exv
+                SDX%occ(:,n) = o
+                SDX%q(n) = qv
+                SDX%m2(n) = sum(SPS%m2(o))
+                SDX%h(n) = hcur
+                SDX%L(n) = 2*hcur + modulo(qv,2)
+            end if
+        end subroutine emit
 
         ! a+_kc a_ka |s> within the energy cut of the list (h' <= Hcap & ex' <= Exmax(h')) ...
         logical function inlist(s_,ka_,kc_)
             integer, intent(in) :: s_, ka_, kc_
             integer :: hh
-            hh = SDX%h(s_) - merge(1,0,ka_ > Nt) + merge(1,0,kc_ > Nt)
+            hh = SDX%h(s_) - merge(1,0,SDX%Pt(ka_)) + merge(1,0,SDX%Pt(kc_))
             inlist = .false.
             if (hh > Hcap .or. hh > ubound(exm,1)) return
             inlist = SDX%ex(s_) - epl(ka_) + epl(kc_) <= exm(hh) + 1.0e-9_dp
@@ -1622,11 +2452,13 @@ contains
         integer, allocatable :: Pos(:), Rl(:), o(:)
         real(dp), allocatable :: Acc(:), Ep(:), Eb(:)
         logical, allocatable :: Occ(:)
-        type(ivec_t), allocatable :: Ord(:)
+        type(ivec_t), allocatable :: Ord(:), Lt(:,:)
+        integer, allocatable :: Tq(:), Ty(:)
         logical :: Cut
         real(dp) :: exlim, base, v, sg
+        integer :: ty_
         integer :: s, i1_, i2_, k1, k2, k3, k4, pid, b, q, qq, pq, sp, nl, Nt, nb1, nb2, ii, p3, p4, hh, h2, qn, h0, rs, b0, nsel
-        integer(i8) :: j
+        integer(i8) :: j, kx
         Nt = SDX%Nt
         Cut = present(Eps)
         allocate(Mt(SDX%nsd))
@@ -1650,7 +2482,30 @@ contains
             end do
             exlim = Exmax(min(1,ubound(Exmax,1)))
         end if
-        !$omp parallel private(Pos,Rl,Acc,o,Occ,j,i1_,i2_,k1,k2,k3,k4,pid,b,q,qq,pq,sp,nl,v,sg,nb1,nb2,ii,p3,p4,hh,h2,qn,h0,rs) &
+        ! block members split by the number of particle m-states (0, 1, 2) of the pair, inactive ones dropped, in the order
+            ! of the scan (ascending energy with the cut) ... only the types within the hole cap are scanned ...
+        allocate(Lt(0:2,Pr%nb))
+        do b = 1, Pr%nb
+            nsel = size(Pr%mem(b)%v)
+            allocate(Tq(nsel), Ty(nsel))
+            nl = 0
+            do qq = 1, nsel
+                q = qq
+                if (Cut) q = Ord(b)%v(qq)
+                pq = Pr%mem(b)%v(q)
+                k3 = Pr%k1(pq)
+                k4 = Pr%k2(pq)
+                if (.not. (SDX%Ac(k3) .and. SDX%Ac(k4))) cycle
+                nl = nl + 1
+                Tq(nl) = q
+                Ty(nl) = merge(1,0,SDX%Pt(k3)) + merge(1,0,SDX%Pt(k4))
+            end do
+            do ii = 0, 2
+                Lt(ii,b)%v = pack(Tq(1:nl),Ty(1:nl) == ii)
+            end do
+            deallocate(Tq, Ty)
+        end do
+        !$omp parallel private(Pos,Rl,Acc,o,Occ,j,i1_,i2_,k1,k2,k3,k4,pid,b,q,qq,pq,sp,nl,v,sg,nb1,nb2,ii,p3,p4,hh,h2,qn,h0,rs,kx,ty_) &
         !$omp firstprivate(base)
         allocate(Pos(SDX%nsd), Rl(4096), Acc(4096), o(Nt), Occ(SPS%ns))
         Pos = 0
@@ -1680,20 +2535,19 @@ contains
                         if (pid == 0) cycle
                         b = Pr%blk(pid)
                         nb1 = i1_ + i2_ - 3
-                        hh = h0 - merge(1,0,k1 > Nt) - merge(1,0,k2 > Nt)
+                        hh = h0 - merge(1,0,SDX%Pt(k1)) - merge(1,0,SDX%Pt(k2))
                         qn = SDX%q(s) - SPS%e(k1) - SPS%e(k2)
                         if (Cut) base = SDX%ex(s) - Eps(k1) - Eps(k2)
-                        do qq = 1, size(Pr%mem(b)%v)
+                        do ty_ = 0, min(2,Hcap - hh)
+                        do qq = 1, size(Lt(ty_,b)%v)
+                            q = Lt(ty_,b)%v(qq)
+                            pq = Pr%mem(b)%v(q)
                             if (Cut) then
-                                q = Ord(b)%v(qq)
-                                pq = Pr%mem(b)%v(q)
                                 if (base + Ep(pq) > exlim + 1.0e-9_dp) exit
-                            else
-                                q = qq
-                                pq = Pr%mem(b)%v(q)
                             end if
                             k3 = Pr%k1(pq)
                             k4 = Pr%k2(pq)
+                            if (.not. (SDX%Ac(k3) .and. SDX%Ac(k4))) cycle
                             if (k3 /= k1 .and. k3 /= k2) then
                                 if (Occ(k3)) cycle
                             end if
@@ -1701,7 +2555,7 @@ contains
                                 if (Occ(k4)) cycle
                             end if
                             if (qn + SPS%e(k3) + SPS%e(k4) > Nmaxq) cycle
-                            h2 = hh + merge(1,0,k3 > Nt) + merge(1,0,k4 > Nt)
+                            h2 = hh + merge(1,0,SDX%Pt(k3)) + merge(1,0,SDX%Pt(k4))
                             if (h2 > Hcap) cycle
                             if (Cut) then
                                 if (base + Ep(pq) > Exmax(min(h2,ubound(Exmax,1))) + 1.0e-9_dp) cycle
@@ -1712,7 +2566,9 @@ contains
                             o(i1_) = k3
                             o(i2_) = k4
                             call isort(o)
-                            sp = hashmap_lookup(SDX%Map,keyo(o))
+                            kx = sd_key(SPS,SDX,o)
+                            if (kx < 0) cycle
+                            sp = hashmap_lookup(SDX%Map,kx)
                             if (sp < 0) cycle
                             if (Rank(sp) < rs) cycle
                             p3 = 0
@@ -1724,6 +2580,7 @@ contains
                             nb2 = p3 + p4 - 3
                             sg = real(1 - 2*mod(nb1 + nb2,2),dp)
                             call acc_add(Pos,Rl,Acc,nl,sp,sg*v)
+                        end do
                         end do
                     end do
                 end do
@@ -1745,16 +2602,6 @@ contains
         !$omp end do
         deallocate(Pos, Rl, Acc, o, Occ)
         !$omp end parallel
-    contains
-        ! combinatorial rank of the ascending occupations oc (distinct, 1..ns) ...
-        integer(i8) function keyo(oc)
-            integer, intent(in) :: oc(:)
-            integer :: ii
-            keyo = 0
-            do ii = 1, size(oc)
-                keyo = keyo + SPS%Bin(oc(ii) - 1,ii)
-            end do
-        end function keyo
     end subroutine species_matrix
 
     ! Jump-type tables of Op: W(b)%v(ixn,ixp) = v_pn(kc kc', ka ka') for the proton type (kc,ka) = ixp of bucket b & the

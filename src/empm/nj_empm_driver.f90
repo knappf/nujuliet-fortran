@@ -34,7 +34,7 @@ module nj_empm_driver
         end subroutine dgemm
     end interface
 
-    public :: EMPM_TDA, EMPM_2PH, EMPM_3PH, EMPM_4PH, EMPM_FULL
+    public :: EMPM_TDA, EMPM_2PH, EMPM_3PH, EMPM_4PH, EMPM_FULL, EMPM_TRANS
 
 contains
 
@@ -94,6 +94,7 @@ contains
         call timer_report(t1)
 
         call EMPM_TDA_export(Params,Space,F_ph,N_nu,Orb_Phonon,Phonon,E_TDA,X_TDA)
+        call EMPM_TDA_strengths(Params,Space,N_nu,Orb_Phonon,Phonon,TrOp,E_TDA,X_TDA)
         call timer_report(t0)
         write(*,'(/,a,/)') 'EMPM TDA calculation has finished ...'
     end subroutine EMPM_TDA
@@ -752,7 +753,9 @@ contains
         write(*,'(/,a)') 'Importing the n-phonon states (Bin/EMPM_S<n>_*.bin) ...'
         J_all = Ph%J_max
         if (Nf >= 2) then
-            call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2,No_Xt=.true.)
+            ! Full_N = 2 ... X of the 2-phonon states per channel only when needed (Lazy, load_x2 / free_x2), as for the 4-phonon
+                ! states with Full_N = 4 (208Pb: X of all 2-phonon channels 311 GB) ...
+            call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2,Lazy=(Nf == 2),No_Xt=.true.)
             if (S2%N == 0) call fatal('EMPM_FULL ... no 2-phonon states in Bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X first')
             J_all = max(J_all, S2%J_max)
         end if
@@ -772,10 +775,15 @@ contains
                        merge(' , 2-phonon ' // istr(S2%N), repeat(' ',len(' , 2-phonon ' // istr(S2%N))), Nf >= 2) // &
                        merge(' , 3-phonon ' // istr(S3%N), repeat(' ',len(' , 3-phonon ' // istr(S3%N))), Nf >= 3) // &
                        merge(' , 4-phonon ' // istr(S4%N), repeat(' ',len(' , 4-phonon ' // istr(S4%N))), Nf >= 4)
+        if (S2%Lazy) write(*,'(a)') TAB // 'Lazy ... X of the 2-phonon states loaded per channel'
+        call full_mem_report('n-phonon states imported')
 
         write(*,'(/,a)') 'Densities, redefined interactions & the couplings to the ground state ...'
         call timer_start(t1)
-        call EMPM_cache1_make(Pairs,Ph,C1)
+        ! phonon cache C1 (densities, transposed densities & redefined interactions of all phonons, all ranks) only for
+            ! Full_N >= 3 (the 3 <- 2 & 4 <- 3 couplings, the 2-phonon densities) ... with Full_N <= 2 the CM matrices are built
+            ! from one phonon density at a time (EMPM_cm_dlevels_nc) ...
+        if (Nf >= 3) call EMPM_cache1_make(Pairs,Ph,C1)
         call EMPM_states1_make(Ph,S1)
         call EMPM_phonon_W(Space,F_ph,Pairs,Ph,W)
         if (Nf >= 4) then
@@ -793,12 +801,21 @@ contains
                            cfmt_e(Params%Calc%EMPM%CM_Tol,0,1) // ')' // trim(merge(' , exact <N_cm> of the states ', ' , no <N_cm> (proj only)      ', CMn))
             call EMPM_cm_make(Params,Orb,Space,Pairs,Ph,Cm)
             call timer_start(t1)
+            if (Nf <= 2) then
+                ! both ranks in one pass (rank 0 for the top-level completion with CMn) ...
+                call EMPM_cm_dlevels_nc(Pairs,Ph,Cm,S1,S2,max(1,merge(Nf,Nf-1,CMn)),merge(Nf,0,CMn),Dl,Dc)
+                call timer_report(t1,'within-level b_cm matrices of the 1- .. ' // istr(max(1,merge(Nf,Nf-1,CMn))) // &
+                                  '-phonon states' // trim(merge(' & of the commutator C (top-level completion of N_cm)', &
+                                  '                                                     ', CMn)) // ', no phonon cache')
+                call full_mem_report('within-level CM matrices')
+            else
             call EMPM_cm_dlevels(Pairs,Ph,C1,Cm,S1,S2,S3,merge(Nf,Nf-1,CMn),Dl)
             call timer_report(t1,'within-level b_cm matrices of the 1- .. ' // istr(min(3,merge(Nf,Nf-1,CMn))) // &
                               '-phonon states')
+            end if
             ! top-level completion of N_cm (level Full_N + 1 not in the basis): rank-0 within-level matrices of the commutator
                 ! C = sum_mu [L_ph+, L_ph] up to level Full_N (EMPM_cm_top) ...
-            if (CMn) then
+            if (CMn .and. Nf >= 3) then
                 if (Nf > 3) then
                     ! level Full_N + 1 exists only with more than Full_N hole m-states (4He, Full_N = 4: none, <N_cm> exact)
                     if (sum(Space%Lev%j + 1, mask = Space%Lev%Occ == 1) > Nf) &
@@ -821,7 +838,9 @@ contains
         if (size(H20) > 0) then
             allocate(A1(0))
             call EMPM_coupling_V(Space,F_ph,Pairs,Ph,S2%Bs(0,1),A1,1,Vk)
+            call load_x2(0,1)
             H20 = matmul(transpose(S2%X(0,1)%v),Vk(:,1))
+            call EMPM_states_free_X(S2,0,1)
             deallocate(A1)
         end if
         ! G1(J,P)%v(beta,lambda) = <beta|H|lambda> of the 3-phonon states beta & the phonons lambda of (J,P) ...
@@ -917,6 +936,8 @@ contains
             end if
             ! 2 <- 0 ...
             if (n0 == 1 .and. n2 > 0) Hf(o2+1:o2+n2,1) = H20(1:n2)
+            ! X of the 2-phonon states of J^P (Lazy S2, Full_N = 2) ...
+            if (n2 > 0) call load_x2(J,P)
             ! 2 <- 1 ...
             if (n1 > 0 .and. n2 > 0) then
                 A1 = I1
@@ -1007,8 +1028,10 @@ contains
                 do Jt = max(J - 1, 0), J + 1
                     if (J == 0 .and. Jt == 0) cycle
                     if (Nf >= 4) call load_x4(Jt,Pt)
+                    if (Nf == 2) call load_x2(Jt,Pt)
                     call EMPM_cm_blocks(Ph,Cm,S1,S2,S3,S4,Dl,Nf,J,P,Jt,Pt,Bph,Bhp,Bd,CMn)
                     if (Nf >= 4) call EMPM_states_free_X(S4,Jt,Pt)
+                    if (Nf == 2) call EMPM_states_free_X(S2,Jt,Pt)
                     if (size(Bph,1) == 0) cycle
                     Bt = Sg_ph(Jt-J)*Bph + Sg_hp(Jt-J)*Bhp + Sg_d(Jt-J)*Bd
                     if (CMp) then
@@ -1103,6 +1126,10 @@ contains
             if (allocated(Ml)) deallocate(Ml)
             deallocate(Hf, I1)
             if (Nf >= 4) call EMPM_states_free_X(S4,J,P)
+            if (Nf == 2) then
+                call full_mem_report('channel ' // Tag)
+                call EMPM_states_free_X(S2,J,P)
+            end if
         end do
         do nn = 1, Nf
             if (DoU) close(uS(nn))
@@ -1112,6 +1139,47 @@ contains
         write(*,'(/,a,/)') 'Full EMPM Hamiltonian has finished ...'
 
     contains
+
+        ! X of the 2-phonon states of channel (Jx,Px) from the state file (Lazy S2), with time & size in the log ...
+        subroutine load_x2(Jx,Px)
+            integer, intent(in) :: Jx, Px
+            integer(i8) :: tx
+            if (.not. S2%Lazy) return
+            if (Jx > ubound(S2%N_ch,1)) return
+            if (S2%N_ch(Jx,Px) == 0 .or. size(S2%X(Jx,Px)%v) > 0) return
+            call timer_start(tx)
+            call EMPM_states_load_X(S2,Jx,Px)
+            call timer_report(tx,'X of the 2-phonon states J^P = ' // jp_str(Jx,Px) // ' loaded (' // &
+                              cfmt_f(8.0_dp*real(size(S2%X(Jx,Px)%v,kind=i8),dp)/1.0e9_dp,0,3) // ' GB)')
+        end subroutine load_x2
+
+        ! Current & peak resident memory (VmRSS, VmHWM of /proc/self/status) in the log, flushed ...
+        subroutine full_mem_report(Label)
+            character(len=*), intent(in) :: Label
+            integer :: um, Ios
+            character(len=256) :: Line
+            integer(i8) :: kb, Rss, Hwm
+            Rss = -1
+            Hwm = -1
+            open(newunit=um, file='/proc/self/status', status='old', action='read', iostat=Ios)
+            if (Ios /= 0) return
+            do
+                read(um,'(a)',iostat=Ios) Line
+                if (Ios /= 0) exit
+                if (index(Line,'VmRSS:') == 1) then
+                    read(Line(7:),*,iostat=Ios) kb
+                    if (Ios == 0) Rss = kb
+                else if (index(Line,'VmHWM:') == 1) then
+                    read(Line(7:),*,iostat=Ios) kb
+                    if (Ios == 0) Hwm = kb
+                end if
+            end do
+            close(um)
+            if (Rss < 0) return
+            write(*,'(a)') TAB // 'memory ... RSS ' // cfmt_f(real(Rss,dp)/976562.5_dp,0,1) // ' GB, peak ' // &
+                           cfmt_f(real(Hwm,dp)/976562.5_dp,0,1) // ' GB (' // Label // ')'
+            flush(6)
+        end subroutine full_mem_report
 
         ! X of the 4-phonon states of channel (Jx,Px) from the state file (Lazy S4), with time & size in the log ...
         subroutine load_x4(Jx,Px)
@@ -1427,6 +1495,247 @@ contains
 
 
     end subroutine EMPM_FULL
+
+    ! B(E1; 0+_gs -> 1-_k) of the full EMPM states (after EMPM_FULL with Full_N <= 2, JPF with 0+ & 1-, CM_Keep or no CM
+        ! phonon) ... reduced matrix elements <1- basis||Q_t||0+ basis> of the E1 operator of protons & neutrons (t = p, n)
+        ! between the EMPM bases [0 ; 1-phonon ; 2-phonon] by the machinery of the CM operator (EMPM_cm_blocks: ph part
+        ! 1/sqrt3 sum_lambda bL X, hp part, pp/hh part by the density recursion; Q Hermitian: bR = bL, EMPM_op_make), the
+        ! within-level matrices only for the block 1- x 0+ (EMPM_cm_dlevels_nc with Sel) ... M_t(k) = Z_1-(:,k)^T B_t
+        ! Z_0+(:,gs) with the eigenvectors of Bin/EMPM_FULL<n>_<JP>_Z_<lab>.bin (lab = unproj or svd, proj), n = 1 .. Full_N,
+        ! gs = the lowest 0+ state with <N_cm> < 0.5 (the lowest one without <N_cm>) ... B_ph = M_p^2, B_is = (M_p + M_n)^2/4,
+        ! B_iv = (e_p M_p - e_n M_n)^2 (recoil charges N/A, Z/A), as EMPM_TDA_strengths & the NCSM transitions ...
+        ! EMPM/Transitions/Full<n>_<lab>_E1.dat (k, E, Ex = E - E_gs, N_cm, phys, B_ph, B_is, B_iv) ...
+    subroutine EMPM_TRANS(Params)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), allocatable :: Orb(:)
+        type(empm_space_t) :: Space
+        type(fmat_t) :: F_ph
+        type(empm_phonons_t) :: Ph
+        type(empm_pairs_t) :: Pairs
+        type(empm_states2_t) :: S1, S2, S3, S4
+        type(empm_cm_t) :: Op(2)
+        type(rmat_t) :: Dl(3), Dc(3), Bt(2)
+        real(dp), allocatable :: Bph(:,:), Bhp(:,:), Bd(:,:), Z0(:,:), Z1(:,:), E0(:), E1(:), N0(:), N1(:), v(:), Mt(:,:)
+        integer :: Nf, nn, it, Nb0(0:4), Nb1(0:4), Mb(0:4), Mb1(0:4), r1, c0, g, k, u, il, n0s, n1s, ig
+        real(dp), allocatable :: Psi(:)
+        real(dp) :: Eg, Ng
+        character(len=:), allocatable :: Gdesc, Fsuf
+        integer(i8) :: t0, t1
+        logical :: Keep, Ex0, Ex1
+        real(dp) :: e_p, e_n, B(3), S(3), Sp(3), M1
+        character(len=8) :: Labs(2)
+        character(len=:), allocatable :: Lab
+
+        call wigner_init_float(75,'Jmax',9)
+        !$ call omp_set_max_active_levels(1)
+        Nf = Params%Calc%EMPM%Full_N
+        if (Nf < 1 .or. Nf > 2) call fatal('EMPM_TRANS ... Full_N must be 1 or 2')
+        write(*,'(a)') 'Starting B(E1; 0+ -> 1-) of the full EMPM states with up to 1 .. ' // istr(Nf) // ' phonons ...'
+        write(*,'(a)') trim(Params%Calc%Path)
+        call timer_start(t0)
+        Orb = orbitals_make(Params)
+        call EMPM_space_make(Params,Orb,Space)
+        call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
+        call EMPM_phonons_import(Params,Space,F_ph,Ph)
+        Keep = Params%Calc%EMPM%CM_Keep .and. Ph%i_cm > 0
+        if (Ph%i_cm > 0 .and. .not. Keep) call fatal('EMPM_TRANS ... needs complete sets (Ortho = .false., or Ortho with CM_Keep)')
+        if (Ph%J_max < 1) call fatal('EMPM_TRANS ... no 1- phonons')
+        call EMPM_pairs_make(Space,F_ph,Ph,Pairs)
+        if (Nf >= 2) then
+            call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2,Lazy=.true.,No_Xt=.true.)
+            if (S2%N == 0) call fatal('EMPM_TRANS ... no 2-phonon states in Bin/EMPM_S2_*.bin')
+        end if
+        call EMPM_states1_make(Ph,S1)
+        e_p = real(Params%Calc%A - Params%Calc%Z,dp)/real(Params%Calc%A,dp)
+        e_n = real(Params%Calc%Z,dp)/real(Params%Calc%A,dp)
+
+        ! <1- basis||Q_t||0+ basis> on [0 ; 1 ; 2] of both channels (Full_N levels) ...
+        Mb = EMPM_cm_dims(Ph,S2,S3,S4,Nf,1,2)
+        do it = 1, 2
+            call timer_start(t1)
+            call EMPM_op_make(Params,Orb,Space,Pairs,Ph,it,Op(it))
+            call EMPM_cm_dlevels_nc(Pairs,Ph,Op(it),S1,S2,Nf,0,Dl,Dc,Sel=[0,1,1,2])
+            if (Nf >= 2) then
+                call load_x(0,1)
+                call load_x(1,2)
+            end if
+            call EMPM_cm_blocks(Ph,Op(it),S1,S2,S3,S4,Dl,Nf,0,1,1,2,Bph,Bhp,Bd,.true.)
+            Bt(it)%v = Sg_ph(1)*Bph + Sg_hp(1)*Bhp + Sg_d(1)*Bd
+            deallocate(Bph, Bhp, Bd)
+            if (Nf >= 2) then
+                call EMPM_states_free_X(S2,0,1)
+                call EMPM_states_free_X(S2,1,2)
+            end if
+            call timer_report(t1,'<1-||Q||0+> of the ' // trim(merge('protons ','neutrons',it == 1)) // ' (' // &
+                              istr(size(Bt(it)%v,1)) // ' x ' // istr(size(Bt(it)%v,2)) // ')')
+            call trans_mem('E1 blocks')
+        end do
+
+        if (.not. is_dir(io_path(Params,'/EMPM/Transitions'))) call make_dir(io_path(Params,'/EMPM/Transitions'))
+        Labs = [character(len=8) :: 'unproj', 'proj']
+        if (Ph%i_cm > 0 .and. .not. Keep) Labs(1) = 'svd'
+        do nn = 1, Nf
+            do il = 1, 2
+                Lab = trim(Labs(il))
+                inquire(file=zfile(nn,'0+',Lab), exist=Ex0)
+                inquire(file=zfile(nn,'1-',Lab), exist=Ex1)
+                if (.not. (Ex0 .and. Ex1)) cycle
+                call read_z(nn,'0+',Lab,Nb0,Z0,E0,N0)
+                call read_z(nn,'1-',Lab,Nb1,Z1,E1,N1)
+                Mb1 = Mb
+                Mb1(nn+1:4) = 0
+                if (any(Nb1 /= Mb1)) call fatal('EMPM_TRANS ... basis of 1- in ' // zfile(nn,'1-',Lab) // ' does not match')
+                r1 = sum(Nb1)
+                c0 = sum(Nb0)
+                ! ground state: the lowest physical 0+ ...
+                g = 1
+                if (size(N0) > 0) then
+                    do g = 1, size(E0)
+                        if (N0(g) < 0.5_dp) exit
+                    end do
+                    if (g > size(E0)) call fatal('EMPM_TRANS ... no physical 0+ state (' // Lab // ')')
+                end if
+                n1s = size(E1)
+                ! initial state: ig = 1 the correlated g.s. of the same diagonalization, ig = 2 |HF> (0+ basis state 1, n >= 2) ...
+                do ig = 1, merge(2,1,nn >= 2 .and. Nb0(0) == 1)
+                if (ig == 1) then
+                    Psi = Z0(:,g)
+                    Eg = E0(g)
+                    Ng = merge(N0(min(g,max(size(N0),1))),-1.0_dp,size(N0) > 0)
+                    Gdesc = 'g.s. = 0+ state ' // istr(g)
+                    Fsuf = ''
+                else
+                    Psi = [1.0_dp, (0.0_dp, k = 2, c0)]
+                    Eg = 0.0_dp
+                    Ng = -1.0_dp
+                    Gdesc = 'initial state |HF> (0+ basis state 1)'
+                    Fsuf = '_fromHF'
+                end if
+                allocate(Mt(n1s,2))
+                do it = 1, 2
+                    v = matmul(Bt(it)%v(1:r1,1:c0),Psi)
+                    Mt(:,it) = matmul(v,Z1)
+                end do
+                open(newunit=u, file=io_path(Params,'/EMPM/Transitions/Full' // istr(nn) // '_' // Lab // '_E1' // Fsuf // '.dat'), &
+                     status='replace', action='write')
+                S = 0.0_dp
+                Sp = 0.0_dp
+                M1 = 0.0_dp
+                do k = 1, n1s
+                    B = [Mt(k,1)**2, 0.25_dp*(Mt(k,1) + Mt(k,2))**2, (e_p*Mt(k,1) - e_n*Mt(k,2))**2]
+                    S = S + B
+                    if (size(N1) == 0) then
+                        Sp = Sp + B
+                    else if (N1(k) < 0.5_dp) then
+                        Sp = Sp + B
+                        M1 = M1 + (E1(k) - Eg)*B(3)
+                    end if
+                end do
+                write(u,'(a)') '# EMPM_FULL B(E1; 0+_gs -> 1-_k), up to ' // istr(nn) // ' phonons, ' // Lab // ' ... ' // Gdesc // &
+                               ' , E_gs - E_HF = ' // cfmt_f(Eg,0,6) // ' , <N_cm>_gs = ' // &
+                               cfmt_e(Ng,0,3) // ' , bases 0+ ' // istr(c0) // ' , 1- ' // istr(r1)
+                write(u,'(a)') '# sums B_ph, B_is, B_iv (e^2 fm^2): all 1- states ' // cfmt_f(S(1),0,5) // ' ' // cfmt_f(S(2),0,5) // &
+                               ' ' // cfmt_f(S(3),0,5) // ' , physical (<N_cm> < 0.5) ' // cfmt_f(Sp(1),0,5) // ' ' // &
+                               cfmt_f(Sp(2),0,5) // ' ' // cfmt_f(Sp(3),0,5) // ' , centroid B_iv (physical) ' // &
+                               cfmt_f(M1/max(Sp(3),1.0e-30_dp),0,4) // ' MeV'
+                write(u,'(a)') '#      k        E - E_HF          Ex = E - E_gs      N_cm  phys          B_ph            B_is            B_iv'
+                do k = 1, n1s
+                    B = [Mt(k,1)**2, 0.25_dp*(Mt(k,1) + Mt(k,2))**2, (e_p*Mt(k,1) - e_n*Mt(k,2))**2]
+                    write(u,'(i8,2f18.8,es12.3,i6,3es16.7)') k, E1(k), E1(k) - Eg, &
+                        merge(N1(min(k,max(size(N1),1))),-1.0_dp,size(N1) > 0), merge(1, 0, size(N1) == 0 .or. N1(min(k,max(size(N1),1))) < 0.5_dp), B
+                end do
+                close(u)
+                write(*,'(a)') TAB // 'up to ' // istr(nn) // ' phonons, ' // Lab // ' ... ' // Gdesc // ' (E - E_HF = ' // &
+                               cfmt_f(Eg,0,4) // ') , sum B_ph / B_iv (physical 1-) = ' // cfmt_f(Sp(1),0,4) // ' / ' // &
+                               cfmt_f(Sp(3),0,4) // ' , centroid B_iv ' // cfmt_f(M1/max(Sp(3),1.0e-30_dp),0,3) // ' MeV'
+                deallocate(Mt)
+                end do
+            end do
+        end do
+        call timer_report(t0)
+        write(*,'(/,a,/)') 'EMPM transitions have finished ...'
+
+    contains
+
+        function zfile(n,Tg,Lb) result(F)
+            integer, intent(in) :: n
+            character(len=*), intent(in) :: Tg, Lb
+            character(len=:), allocatable :: F
+            F = io_path(Params,'/Bin/EMPM_FULL' // istr(n) // '_' // Tg // '_Z_' // Lb // '.bin')
+        end function zfile
+
+        ! eigenvectors (Nb, Z), energies & <N_cm> (empty if not written) of one EMPM_FULL diagonalization ...
+        subroutine read_z(n,Tg,Lb,Nb,Z,E,Nc)
+            integer, intent(in) :: n
+            character(len=*), intent(in) :: Tg, Lb
+            integer, intent(out) :: Nb(0:4)
+            real(dp), allocatable, intent(out) :: Z(:,:), E(:), Nc(:)
+            integer :: uz, Ns, Nst
+            integer(i8) :: Sz
+            character(len=:), allocatable :: Fb
+            logical :: Exn
+            Fb = io_path(Params,'/Bin/EMPM_FULL' // istr(n) // '_' // Tg // '_')
+            inquire(file=Fb // 'E_' // Lb // '.bin', size=Sz)
+            Nst = int(Sz/8_i8)
+            allocate(E(Nst))
+            open(newunit=uz, file=Fb // 'E_' // Lb // '.bin', access='stream', form='unformatted', status='old', action='read')
+            read(uz) E
+            close(uz)
+            open(newunit=uz, file=Fb // 'Z_' // Lb // '.bin', access='stream', form='unformatted', status='old', action='read')
+            read(uz) Nb
+            Ns = sum(Nb)
+            allocate(Z(Ns,Nst))
+            read(uz) Z
+            close(uz)
+            inquire(file=Fb // 'Ncm_' // Lb // '.bin', exist=Exn)
+            if (Exn) then
+                allocate(Nc(Nst))
+                open(newunit=uz, file=Fb // 'Ncm_' // Lb // '.bin', access='stream', form='unformatted', status='old', action='read')
+                read(uz) Nc
+                close(uz)
+            else
+                allocate(Nc(0))
+            end if
+        end subroutine read_z
+
+        subroutine load_x(Jx,Px)
+            integer, intent(in) :: Jx, Px
+            integer(i8) :: tx
+            if (Jx > ubound(S2%N_ch,1)) return
+            if (S2%N_ch(Jx,Px) == 0 .or. size(S2%X(Jx,Px)%v) > 0) return
+            call timer_start(tx)
+            call EMPM_states_load_X(S2,Jx,Px)
+            call timer_report(tx,'X of the 2-phonon states J^P = ' // jp_str(Jx,Px) // ' loaded (' // &
+                              cfmt_f(8.0_dp*real(size(S2%X(Jx,Px)%v,kind=i8),dp)/1.0e9_dp,0,3) // ' GB)')
+        end subroutine load_x
+
+        subroutine trans_mem(Label)
+            character(len=*), intent(in) :: Label
+            integer :: um, Ios
+            character(len=256) :: Line
+            integer(i8) :: kb, Rss, Hwm
+            Rss = -1
+            Hwm = -1
+            open(newunit=um, file='/proc/self/status', status='old', action='read', iostat=Ios)
+            if (Ios /= 0) return
+            do
+                read(um,'(a)',iostat=Ios) Line
+                if (Ios /= 0) exit
+                if (index(Line,'VmRSS:') == 1) then
+                    read(Line(7:),*,iostat=Ios) kb
+                    if (Ios == 0) Rss = kb
+                else if (index(Line,'VmHWM:') == 1) then
+                    read(Line(7:),*,iostat=Ios) kb
+                    if (Ios == 0) Hwm = kb
+                end if
+            end do
+            close(um)
+            if (Rss < 0) return
+            write(*,'(a)') TAB // 'memory ... RSS ' // cfmt_f(real(Rss,dp)/976562.5_dp,0,1) // ' GB, peak ' // &
+                           cfmt_f(real(Hwm,dp)/976562.5_dp,0,1) // ' GB (' // Label // ')'
+            flush(6)
+        end subroutine trans_mem
+    end subroutine EMPM_TRANS
 
     ! Folder of the n-phonon state files EMPM_S<n>_<JP>.bin ... States_Dir (a leading $VARIABLE expanded) or Bin of the
         ! output folder ...

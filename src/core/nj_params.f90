@@ -213,6 +213,17 @@ module nj_params
                                                  ! Ecut_npnh(n) for the n-particle n-hole part (n = 1, 2, ...), e.g.
                                                  ! Ecut_npnh = 80, 70, 60, 50 (1p1h .. 4p4h); n beyond the last value given
                                                  ! repeat it (Ecut_npnh = 60: all n), a value < 0: no cut of that part
+        logical :: Transitions = .false.         ! 'npnh', M2 = 0: B(EL; g.s. -> f), L = 0, 2 (parity +) & 1, 3 (parity -) from
+                                                 ! the lowest state of parity + (the 0+ ground state)
+        integer :: Dense_Max = 0                 ! full diagonalization (all states, LAPACK dsyevd) when the dimension <= Dense_Max
+        logical :: Window = .false.              ! 'npnh', Basis 'HF': single-particle window of &empm (pHole, pPart, nHole, nPart, HF levels
+                                                 ! by energy) ... holes below the window frozen (core), particles above dropped
+        integer :: Parity = -1                   ! 'npnh': parities run, -1 both, 0 (+) or 1 (-) only
+        character(len=8) :: Tr_From = 'gs'       ! Transitions from 'gs' (lowest state of parity +, both parities run) or 'HF'
+                                                 ! (the reference determinant, E = E_HF)
+        integer :: Tr_Lanczos = 0                ! > 0: strength-function Lanczos (iterations) from Q|g> for B_ph, B_is, B_iv
+        integer :: Tr_Gs_Nmax = 0                ! Tr_From 'gs', > 0: the g.s. of the <= Tr_Gs_Nmax p-h run (Nmax_List) kept for the
+                                                 ! larger runs (mapped by its SD occupations): g.s. <= n p n h, final states <= n' p n' h
     end type ncsm_params_t
 
     type, public :: calculation_params_t

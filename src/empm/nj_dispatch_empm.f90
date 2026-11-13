@@ -2,7 +2,7 @@
 module nj_dispatch_empm
     use nj_params, only : params_t
     use nj_input, only : run_input_t
-    use nj_empm_driver, only : EMPM_TDA, EMPM_2PH, EMPM_3PH, EMPM_4PH, EMPM_FULL
+    use nj_empm_driver, only : EMPM_TDA, EMPM_2PH, EMPM_3PH, EMPM_4PH, EMPM_FULL, EMPM_TRANS
     implicit none
     private
     public :: dispatch_empm
@@ -24,6 +24,8 @@ contains
             call EMPM_4PH(Inp%Params)
         case ('EMPM_FULL')
             call EMPM_FULL(Inp%Params)
+        case ('EMPM_TRANS')
+            call EMPM_TRANS(Inp%Params)
         case ('EMPM')
             ! Complete EMPM ... TDA phonons & F-matrix, 2-phonon states, couplings & the full Hamiltonian ...
             call EMPM_TDA(Inp%Params)

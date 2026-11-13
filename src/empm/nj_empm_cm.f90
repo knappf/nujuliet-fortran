@@ -22,9 +22,9 @@ module nj_empm_cm
     use nj_o1b, only : O1b_import
     use nj_empm_space
     use nj_empm_phonons, only : empm_phonons_t
-    use nj_empm_dens, only : empm_pairs_t, phonon_block_t
+    use nj_empm_dens, only : empm_pairs_t, phonon_block_t, EMPM_density
     use nj_wigner, only : f6j
-    use nj_empm_eqm3, only : empm_states2_t, empm_cache1_t
+    use nj_empm_eqm3, only : empm_states2_t, empm_cache1_t, EMPM_states_load_X, EMPM_states_free_X
     implicit none
     private
 
@@ -56,7 +56,7 @@ module nj_empm_cm
     real(dp), parameter, public :: Sg_hp(-1:1) = [-1.0_dp, 1.0_dp, -1.0_dp]
     real(dp), parameter, public :: Sg_d(-1:1) = [1.0_dp, 1.0_dp, 1.0_dp]
 
-    public :: EMPM_cm_make, EMPM_cm_blocks, EMPM_cm_dims, EMPM_cm_dlevels, EMPM_cm_up, EMPM_cm_top
+    public :: EMPM_cm_make, EMPM_cm_blocks, EMPM_cm_dims, EMPM_cm_dlevels, EMPM_cm_dlevels_nc, EMPM_op_make, EMPM_cm_up, EMPM_cm_top
 
 contains
 
@@ -193,6 +193,71 @@ contains
         end function cme
     end subroutine EMPM_cm_make
 
+    ! E1 operator of isospin It (1 protons, 2 neutrons; bare, no charges) in the form of the CM operator for EMPM_cm_blocks &
+        ! EMPM_cm_dlevels_nc (EMPM_TRANS) ... Q = r Y_1 of nj_tr1b in the HF basis (as HF_RPA, EMPM_TDA_strengths & the NCSM
+        ! transitions), Hermitian: the ph part (bL) & the hp part (bR, the adjoint of the ph part of Q+ = Q) both from the
+        ! full <p||Q||h>, bL(lambda) = sum_ph c^lambda_ph <p||Q||h> = M of the TDA phonon lambda, wD(s) = <i1||Q||i2>/sqrt3 ...
+    subroutine EMPM_op_make(Params,Orb,Space,Pairs,Ph,It,Op)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), intent(in) :: Orb(:)
+        type(empm_space_t), intent(in) :: Space
+        type(empm_pairs_t), intent(in) :: Pairs
+        type(empm_phonons_t), intent(in) :: Ph
+        integer, intent(in) :: It
+        type(empm_cm_t), intent(out) :: Op
+        type(tr1b_t) :: TrOp
+        type(o1b_t) :: C
+        integer :: l, p, h, ap, ah, s, k, i1, i2, a1, a2
+        TrOp = Tr1b_initialize(Params,Orb,1.0_dp)
+        C = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
+        TrOp = Tr1b_transformation(Params,Orb,C,TrOp)
+        Op%A = Params%Calc%A
+        allocate(Op%bL(Ph%N), Op%bR(Ph%N), Op%wD(Pairs%S), Op%wC(Pairs%S))
+        Op%bL = 0.0_dp
+        Op%bR = 0.0_dp
+        Op%wD = 0.0_dp
+        Op%wC = 0.0_dp
+        if (Ph%J_max >= 1) then
+            do l = Ph%First(1,2), Ph%First(1,2) + Ph%N_ch(1,2) - 1
+                if (It == 1) then
+                    do h = 1, size(Space%pHole)
+                        ah = Space%Lev(Space%pHole(h))%a
+                        do p = 1, size(Space%pPart)
+                            ap = Space%Lev(Space%pPart(p))%a
+                            Op%bL(l) = Op%bL(l) + Ph%Cp(p,h,l) * TrOp%E1%p(ap,ah)
+                        end do
+                    end do
+                else
+                    do h = 1, size(Space%nHole)
+                        ah = Space%Lev(Space%nHole(h))%a
+                        do p = 1, size(Space%nPart)
+                            ap = Space%Lev(Space%nPart(p))%a
+                            Op%bL(l) = Op%bL(l) + Ph%Cn(p,h,l) * TrOp%E1%n(ap,ah)
+                        end do
+                    end do
+                end if
+            end do
+        end if
+        Op%bR = Op%bL
+        do k = 1, 4
+            if (mod(k,2) /= mod(It,2)) cycle
+            do i2 = 1, Pairs%Nk(k)
+                do i1 = 1, Pairs%Nk(k)
+                    s = Pairs%Off(k) + i1 + (i2 - 1)*Pairs%Nk(k)
+                    a1 = Space%Lev(Pairs%Pos(k)%v(i1))%a
+                    a2 = Space%Lev(Pairs%Pos(k)%v(i2))%a
+                    if (It == 1) then
+                        Op%wD(s) = TrOp%E1%p(a1,a2) / sqrt(3.0_dp)
+                    else
+                        Op%wD(s) = TrOp%E1%n(a1,a2) / sqrt(3.0_dp)
+                    end if
+                end do
+            end do
+        end do
+        write(*,'(a)') TAB // 'E1 operator (' // trim(merge('protons ','neutrons',It == 1)) // ') ... |bL| = ' // &
+                       cfmt_f(norm2(Op%bL),0,6) // ' , |wD| = ' // cfmt_f(norm2(Op%wD),0,6)
+    end subroutine EMPM_op_make
+
     ! Dimensions of the levels 0 .. 4 of channel (J,P) in EMPM_FULL with up to Nf phonons ...
     function EMPM_cm_dims(Ph,S2,S3,S4,Nf,J,P) result(Nb)
         type(empm_phonons_t), intent(in) :: Ph
@@ -295,6 +360,133 @@ contains
             end do
         end subroutine level
     end subroutine EMPM_cm_dlevels
+
+    ! As EMPM_cm_dlevels (rank 1 -> Dl, rank 0 -> Dc) for Full_N <= 2, without the phonon cache C1 (densities, transposed
+        ! densities & redefined interactions of all phonons for all ranks: several 100 GB in 208Pb) ... level 1: the density
+        ! of one phonon at a time (EMPM_density), contracted at once with wD (rank 1) & wC (rank 0) ... level 2: per target
+        ! channel (Jt,Pt) its X loaded (Lazy S2, EMPM_states_load_X; no-op otherwise), used for both ranks & freed ...
+        ! the same arithmetic as EMPM_cm_dlevels (each block written once by one dgemm: bit-identical results) ...
+        ! NlD / NlC = number of levels of Dl / Dc (NlC = 0: no Dc) ... Sel = [Ja, Pa, Jt, Pt] (optional): level 2 only the
+        ! block of the target channel (Jt,Pt) x source channel (Ja,Pa) (transitions, EMPM_TRANS) ...
+    subroutine EMPM_cm_dlevels_nc(Pairs,Ph,Cm,S1,S2,NlD,NlC,Dl,Dc,Sel)
+        type(empm_pairs_t), intent(in) :: Pairs
+        type(empm_phonons_t), intent(in) :: Ph
+        type(empm_cm_t), intent(in) :: Cm
+        type(empm_states2_t), intent(in) :: S1
+        type(empm_states2_t), intent(inout) :: S2
+        integer, intent(in) :: NlD, NlC
+        type(rmat_t), intent(out) :: Dl(3), Dc(3)
+        integer, intent(in), optional :: Sel(4)
+        type(phonon_block_t) :: R
+        integer :: g, Jt, Pt, Ja, Pa, rk
+        integer(i8) :: tx
+        logical :: Ld
+        if (NlD < 1 .or. NlD > 2 .or. NlC < 0 .or. NlC > 2) call fatal('EMPM_cm_dlevels_nc ... levels 1 .. 2 only')
+        allocate(Dl(1)%v(Ph%N,Ph%N))
+        Dl(1)%v = 0.0_dp
+        if (NlC >= 1) then
+            allocate(Dc(1)%v(Ph%N,Ph%N))
+            Dc(1)%v = 0.0_dp
+        end if
+        !$omp parallel do schedule(dynamic) private(R)
+        do g = 1, Ph%N
+            call EMPM_density(Pairs,Ph,g,R)
+            call contract1(R,g,1,Cm%wD,Dl(1))
+            if (NlC >= 1) call contract1(R,g,0,Cm%wC,Dc(1))
+        end do
+        !$omp end parallel do
+        if (NlD >= 2) then
+            allocate(Dl(2)%v(S2%N,S2%N))
+            Dl(2)%v = 0.0_dp
+        end if
+        if (NlC >= 2) then
+            allocate(Dc(2)%v(S2%N,S2%N))
+            Dc(2)%v = 0.0_dp
+        end if
+        if (max(NlD,NlC) < 2) return
+        do Pt = 1, 2
+            do Jt = 0, S2%J_max
+                if (S2%N_ch(Jt,Pt) == 0) cycle
+                if (present(Sel)) then
+                    if (Jt /= Sel(3) .or. Pt /= Sel(4)) cycle
+                end if
+                Ld = .false.
+                do rk = 1, 0, -1
+                    if (rk == 1 .and. NlD < 2) cycle
+                    if (rk == 0 .and. NlC < 2) cycle
+                    Pa = merge(3 - Pt, Pt, rk == 1)
+                    do Ja = max(Jt - rk, 0), min(Jt + rk, S2%J_max)
+                        if (S2%N_ch(Ja,Pa) == 0 .or. Ja + Jt < rk) cycle
+                        if (present(Sel)) then
+                            if (Ja /= Sel(1) .or. Pa /= Sel(2)) cycle
+                        end if
+                        if (.not. Ld) then
+                            call timer_start(tx)
+                            call EMPM_states_load_X(S2,Jt,Pt)
+                            if (S2%Lazy) call timer_report(tx,'X of the 2-phonon states J^P = ' // jp_lab(Jt,Pt) // &
+                                ' loaded (' // cfmt_f(8.0_dp*real(size(S2%X(Jt,Pt)%v,kind=i8),dp)/1.0e9_dp,0,3) // ' GB)')
+                            Ld = .true.
+                        end if
+                        if (rk == 1) then
+                            call block2(Ja,Pa,Jt,Pt,rk,Dl(1)%v,Dl(2))
+                        else
+                            call block2(Ja,Pa,Jt,Pt,rk,Dc(1)%v,Dc(2))
+                        end if
+                    end do
+                end do
+                if (Ld) call EMPM_states_free_X(S2,Jt,Pt)
+            end do
+        end do
+    contains
+        ! column g of the level-1 matrix of rank Rkk: sum over the pairs of rank Rkk, weights Wt (as EMPM_cm_dlevels) ...
+        subroutine contract1(Rg,g1,Rkk,Wt,D)
+            type(phonon_block_t), intent(in) :: Rg
+            integer, intent(in) :: g1, Rkk
+            real(dp), intent(in) :: Wt(:)
+            type(rmat_t), intent(inout) :: D
+            integer :: Jb, Pb, Pp, cc, nb, b0
+            do Jb = 0, Ph%J_max
+                do Pb = 1, 2
+                    nb = Ph%N_ch(Jb,Pb)
+                    if (nb == 0 .or. Rkk < Rg%Lo(Jb,Pb) .or. Rkk > Rg%Hi(Jb,Pb)) cycle
+                    Pp = Rg%Pi(Jb,Pb)
+                    b0 = Ph%First(Jb,Pb)
+                    do cc = 1, Pairs%Na(Rkk,Pp)
+                        D%v(b0:b0+nb-1,g1) = D%v(b0:b0+nb-1,g1) + Wt(Pairs%Al(Rkk,Pp)%v(cc)) * Rg%B(Jb,Pb)%M(Rkk)%v(cc,1:nb)
+                    end do
+                end do
+            end do
+        end subroutine contract1
+        ! block (Jt,Pt) x (Ja,Pa) of the level-2 matrix (the body of level in EMPM_cm_dlevels with Sl = S1, Dlow = D1) ...
+        subroutine block2(Ja,Pa,Jt,Pt,Rkk,D1,Dn)
+            integer, intent(in) :: Ja, Pa, Jt, Pt, Rkk
+            real(dp), intent(in) :: D1(:,:)
+            type(rmat_t), intent(inout) :: Dn
+            real(dp), allocatable :: v(:), Tb(:,:)
+            integer :: na, nb, nk, Nbat, i, i0, i1
+            na = S2%N_ch(Ja,Pa)
+            nb = S2%N_ch(Jt,Pt)
+            nk = S2%Bs(Jt,Pt)%N_full
+            Nbat = max(1, min(na, int(2.0e9_dp/(8.0_dp*real(nk,dp)))))
+            allocate(Tb(nk,Nbat))
+            do i0 = 1, na, Nbat
+                i1 = min(i0 + Nbat - 1, na)
+                !$omp parallel do schedule(dynamic) private(i,v)
+                do i = i0, i1
+                    call cm_dvec(Ph,S1,S2,D1,D1,S2%First(Ja,Pa)+i-1,Jt,Pt,v,Tb(:,i-i0+1),Rkk)
+                end do
+                !$omp end parallel do
+                call dgemm('T','N',nb,i1-i0+1,nk,1.0_dp,S2%X(Jt,Pt)%v,nk,Tb,nk,0.0_dp, &
+                           Dn%v(S2%First(Jt,Pt),S2%First(Ja,Pa)+i0-1),S2%N)
+            end do
+            deallocate(Tb)
+        end subroutine block2
+        function jp_lab(Jx,Px) result(s)
+            integer, intent(in) :: Jx, Px
+            character(len=:), allocatable :: s
+            s = istr(Jx) // merge('+','-',Px == 1)
+        end function jp_lab
+    end subroutine EMPM_cm_dlevels_nc
 
     ! <beta||L_d||a> for the states beta of channel (Jt,Pt) of the level of a (states S, lower level Sl with the contracted
         ! matrix Dlow(mu,al) = <mu||L_d||al>, phonons D1(nu,l1)) ... the recursion of EMPM_densityN at s = 1 with the pair

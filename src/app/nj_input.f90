@@ -83,7 +83,9 @@ contains
         integer :: Nmax_List(16), M2, N_Eig, Lanczos_Max, Lanczos_Basis
         character(len=8) :: Hamiltonian, Matrix, Trunc, Basis
         real(dp) :: Lanczos_Tol, Beta_CM, Matrix_GB, Ecut_npnh(16)
-        logical :: Single
+        logical :: Single, Transitions, Window
+        integer :: Dense_Max, Parity, Tr_Lanczos, Tr_Gs_Nmax
+        character(len=8) :: Tr_From
         ! &run ...
         character(len=64) :: Solvers(Max_Actions)
         ! &transition_densities & &transition_currents ...
@@ -104,7 +106,7 @@ contains
         namelist /qrpa/ Ortho
         namelist /empm/ pHole, pPart, nHole, nPart, Ortho, E2max, JP2, Mem_GB, E1max, Legacy_Order, Dry_Run, Spur_Rows, Legacy_Spur, Full_H, D_Spectrum, Cache_GB, &
                        E3max, JP3, E4max, JP4, Full_N, JPF, Save_X, Ind_First, States_Dir, CM_Exact, CM_Tol, CM_Dump, Ind_Greedy, CM_Variants, CM_Keep, Full_Diag, Full_Svd, CM_Ncm, CM_Beta, D_Disk_GB, Dens_Share
-        namelist /ncsm/ Nmax_List, Hamiltonian, M2, N_Eig, Lanczos_Max, Lanczos_Tol, Beta_CM, Matrix, Single, Lanczos_Basis, Matrix_GB, Trunc, Basis, Ecut_npnh
+        namelist /ncsm/ Nmax_List, Hamiltonian, M2, N_Eig, Lanczos_Max, Lanczos_Tol, Beta_CM, Matrix, Single, Lanczos_Basis, Matrix_GB, Trunc, Basis, Ecut_npnh, Transitions, Dense_Max, Window, Parity, Tr_From, Tr_Lanczos, Tr_Gs_Nmax
         namelist /run/ Solvers
         namelist /transition_densities/ JP, nu_list, File_Name
         namelist /transition_currents/ JP, M, nu_list, File_Name, xN_grid, zN_grid
@@ -310,10 +312,17 @@ contains
         Lanczos_Basis = C0%NCSM%Lanczos_Basis
         Matrix_GB = C0%NCSM%Matrix_GB
         Ecut_npnh = C0%NCSM%Ecut_npnh
+        Transitions = C0%NCSM%Transitions
+        Dense_Max = C0%NCSM%Dense_Max
+        Window = C0%NCSM%Window
+        Parity = C0%NCSM%Parity
+        Tr_From = C0%NCSM%Tr_From
+        Tr_Lanczos = C0%NCSM%Tr_Lanczos
+        Tr_Gs_Nmax = C0%NCSM%Tr_Gs_Nmax
         rewind(u)
         read(u, nml=ncsm, iostat=Ios, iomsg=Msg)
         call check(Ios,'ncsm')
-        Inp%Params%Calc%NCSM = ncsm_params_t(Nmax_List,Hamiltonian,M2,N_Eig,Lanczos_Max,Lanczos_Tol,Beta_CM,Matrix,Single,Lanczos_Basis,Matrix_GB,Trunc,Basis,Ecut_npnh)
+        Inp%Params%Calc%NCSM = ncsm_params_t(Nmax_List,Hamiltonian,M2,N_Eig,Lanczos_Max,Lanczos_Tol,Beta_CM,Matrix,Single,Lanczos_Basis,Matrix_GB,Trunc,Basis,Ecut_npnh,Transitions,Dense_Max,Window,Parity,Tr_From,Tr_Lanczos,Tr_Gs_Nmax)
 
         ! &run ...
         Solvers = ''

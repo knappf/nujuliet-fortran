@@ -17,6 +17,9 @@ output files of the original:
 | `EMPM_TDA`                         | — EMPM: F-matrix & TDA in a restricted ph space (`Fmat`, `Tda`) |
 | `EMPM_2PH`                         | — EMPM: 2-phonon equations of motion (`phon_dens1`, `phon_int`, `eqm2`) |
 | `EMPM`                             | — complete EMPM: `EMPM_TDA` + `EMPM_2PH` + couplings & full Hamiltonian (`nondiag`, `fullham`) |
+| `EMPM_3PH`, `EMPM_4PH`, `EMPM_FULL` | — EMPM: 3-/4-phonon equations of motion, full Hamiltonian with up to 1 .. 4 phonons |
+| `EMPM_TRANS`                       | — EMPM: B(E1; 0+_gs -> 1-) of the `EMPM_FULL` states (Full_N <= 2) |
+| `NCSM`                             | — no-core shell model (HO Nmax or npnh in the HF basis), optional transitions |
 
 > **Earlier test runs (until 2026-11-06)** are in `backup_2026-11-06/`. It holds `runs/` (inputs, logs, results and
 > plots; the `runs/...` paths quoted below refer to it), `tests/` (the Python cross-checks), `doc/` (the notes), `bin/` (the old binaries
@@ -424,6 +427,29 @@ intermediate channel only around `EMPM_cm_blocks` (one at a time), each load log
 disk): FULL4 had run out of memory (1.5 TB) while importing the states; with `Lazy` the peak is ~1.3 TB (3+/3-: two X of
 466 GB) and a J^P channel takes up to ~5.5 h on 96 threads (N_cm & b_cm parts up to 4.7 h, H 1 h, diagonalizations 0.5 h).
 
+**EMPM_FULL with Full_N <= 2 without the phonon cache (2026-11-12).** The cache of `EMPM_cache1_make` (R, Rt & V of every
+phonon for every rank) is built only for Full_N >= 3. For Full_N <= 2 the within-level CM matrices (ranks 1 & 0 = the b_cm
+and the commutator parts) come from one phonon density at a time (`EMPM_cm_dlevels_nc`, both ranks in one pass, optional
+`Sel` = [J_a, P_a, J_t, P_t] for one block only), and the 2-phonon set is read `Lazy`: X(J,P) of the channel is loaded for
+the 2 <- 1 coupling and X(Jt,Pt) of the intermediate channels around `EMPM_cm_blocks`. The log has RSS / peak lines
+(`memory ... RSS, peak`). 4He 4 shells (Full_N 1, 2, 3; complete and E2max 60): all outputs byte-identical. 208Pb window
+(13 shells, E2max 20, 2-phonon X of 311 GB on disk): 0+ & 1- with up to 2 phonons, peak 246 GB in 2 h 14 min on 16 threads
+(with the cache it ran out of memory above 600 GB).
+
+### E1 transitions of the full EMPM states (`EMPM_TRANS`)
+
+On top of an `EMPM_FULL` run with `Full_N` = 1 or 2 (same input, `Solvers = 'EMPM_TRANS'`; complete sets, i.e. `Ortho =
+.false.` or `Ortho` with `CM_Keep`). The E1 operator of protons and neutrons (1-body, HF basis) goes through the CM-operator
+machinery (`EMPM_op_make`: ph strengths bL = bR, pair weights wD; `EMPM_cm_dlevels_nc` with `Sel` for 0+ -> 1-;
+`EMPM_cm_blocks`), giving <1- basis||Q_t||0+ basis> on [0 ; 1-phonon ; 2-phonon]. With the eigenvectors of
+`Bin/EMPM_FULL<n>_<JP>_Z_<lab>.bin` (lab = unproj or svd, proj; n = 1 .. Full_N):
+M_t(k) = Z_1-(:,k)^T B_t Z_0+(:,gs), gs = the lowest 0+ with <N_cm> < 0.5; B_ph = M_p^2, B_is = (M_p + M_n)^2/4, B_iv =
+(e_p M_p - e_n M_n)^2 (e_p = N/A, e_n = Z/A), as `EMPM_TDA` & `NCSM`. Output `EMPM/Transitions/Full<n>_<lab>_E1.dat`
+(k, E - E_HF, Ex, N_cm, physical flag, B_ph, B_is, B_iv; header with the g.s., the sums & the B_iv centroid); for n = 2 also
+from |HF> (the 0+ basis state 1, Ex = E - E_HF): `Full2_<lab>_E1_fromHF.dat`. Only X of 0+ & 1- are loaded. Checks (4He
+4 shells, complete): unprojected <= 1 / <= 2 phonons equal NCSM <= 1p1h / <= 2p2h (Transitions) in all 8 / 126 1- states
+(energies exactly, B to 5e-9); from |HF> the sum over all <= 2-phonon 1- states equals the <= 1 sum (HF sum rule).
+
 ## NCSM (`src/ncsm/`, action `NCSM`)
 
 No-core shell model in the m-scheme HO basis with the same matrix elements, as a reference for the EMPM (light nuclei;
@@ -464,6 +490,25 @@ SD hash keys (2026-11-09): combinatorial rank sum_i C(occ_i - 1, i) of the sorte
 the base-ns number (< ns^Nt, which overflowed int64 for 16O at Nmax >= 6, ns = 240); results unchanged (16O Nmax 2 & 4
 energies bit-identical). Remaining limit: one-body jump offsets (Jo, Tot) are 32-bit, 16O Nmax 8 needs 3.2e9 jumps per
 species. 16O runs: `runs/16O_NCSM/README_16O.md` (NCSM), `runs/16O_EMPM5sh/README_16O_EMPM.md` (EMPM, 5 shells, <= 2 phonons).
+
+**npnh options (2026-11-11/12).** `Ecut_npnh` (Basis 'HF'): cuts (MeV) on the unperturbed HF excitation energy of the
+n-particle n-hole part, one value per n (< 0: no cut, the last value repeats); output tag `_Ec<E>` (one value) or
+`_Ecx-<E2>[-<E3>]` (per rank, x = rank 1 uncut). `Window = .true.`: only the `&empm` window (pHole, pPart, nHole, nPart)
+is active, the SDs are stored in hole/particle form w.r.t. the reference, the frozen core stays in E_HF & e (so the
+reference is E_HF exactly); <N_cm> covers the window only and `Beta_CM` must be 0. `Parity` (-1 both, 0 +, 1 -).
+`Dense_Max = n`: full LAPACK diagonalization (all states) when the dimension <= n.
+
+**Transitions (`Transitions = .true.`, `Trunc = 'npnh'`, `M2 = 0`).** B(EL; g.s. -> k) for E0 (r^2), E1, E2, E3 from the
+lowest parity + state (`Tr_From = 'gs'`, kept for the parity - run) or from the reference (`Tr_From = 'HF'`): output
+`<ncsm file>_E<L>.dat` (k, E, Ex, J, B_ph, B_is, B_iv, M_p, M_n) & the sum rule (2L+1)|Q_p g|^2 in the header (B_ph
+protons with bare charge, B_is, B_iv with the recoil charges N/A, Z/A). `Tr_Lanczos = n`: strength-function Lanczos of
+n steps from Q|g> for B_ph, B_is, B_iv (`<file>_E<L>_SF_{ph,is,iv}.dat`: k, E, Ex, B, residual; header E_g, dim, S0).
+`Tr_Gs_Nmax = m` (with e.g. `Nmax_List = 2, 3`): the g.s. of the <= m p m h run is kept (by SD occupations, remapped into
+the larger basis) and used as the initial state of the larger run (g.s. <= n p n h -> excited states <= (n+1)p(n+1)h).
+`EMPM_TDA` writes `EMPM/Transitions/TDA_E<L>.dat` (E, B_ph, B_is, B_iv as `HF_RPA`). Checks: 16O 4 shells, <= 1p1h vs
+HF_RPA TDA (`Ortho = .false.`) all E0 .. E3 states, energies exactly & B to 4e-9 (`tests/cmp_ncsm_tda_tr.py`); 208Pb
+window (NN + NNN, 13 shells), NCSM <= 1p1h vs EMPM_TDA equal (B to 3e-9); 16O g.s. <= 2p2h with 1- <= 3p3h agrees with
+the full <= 3p3h to 0.05 MeV & 0.03 % in B; SF Lanczos = dense.
 
 ## Compatibility with the Julia code
 
