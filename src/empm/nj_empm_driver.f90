@@ -20,7 +20,7 @@ module nj_empm_driver
     use nj_empm_full
     use nj_empm_eqm3
     use nj_empm_cm
-    use nj_linalg, only : mm, mtm
+    use nj_linalg, only : mm, mtm, eig_sym
     !$ use omp_lib
     implicit none
     private
@@ -34,7 +34,7 @@ module nj_empm_driver
         end subroutine dgemm
     end interface
 
-    public :: EMPM_TDA, EMPM_2PH, EMPM_3PH, EMPM_4PH, EMPM_FULL, EMPM_TRANS
+    public :: EMPM_TDA, EMPM_2PH, EMPM_3PH, EMPM_4PH, EMPM_FULL, EMPM_TRANS, EMPM_SF
 
 contains
 
@@ -1736,6 +1736,569 @@ contains
             flush(6)
         end subroutine trans_mem
     end subroutine EMPM_TRANS
+
+    ! Strength function B(E1; 0+_gs -> 1-) of the EMPM with up to 3 phonons by Lanczos, without the 3-phonon eigenproblem ...
+        ! g.s. = the lowest 0+ of EMPM_FULL with Full_N = 2 (Bin/EMPM_FULL2_0+_Z_unproj.bin), 1- space = [1-phonon ;
+        ! 2-phonon states (EMPM_S2) ; redundant 3-phonon basis |a lambda; 1-> of all 2-phonon states a & phonons lambda] ...
+        ! a vector of the 3-phonon sector is kept by its coefficients c on the redundant basis (not unique): the equations of
+        ! motion give H|i> = sum_k A(i,k)|k>, so H acts as c -> A^T c, and the scalar product is c^T D d with the metric D ...
+        ! neither the inverse / Cholesky of D nor the 3-phonon states are needed: one product with A^T & one with D per step ...
+        ! couplings in the same (contravariant) form, from the formulas of EMPM_FULL without the projection X^T:
+        ! H|a_2> -> sqrt(2J+1) V(:,a) (EMPM_coupling_Vn), H|lambda> -> h20(gamma) on |gamma lambda> (gamma the 0+ 2-phonon
+        ! states), Q_ph|a_2; 0+> -> bL(lambda) on |a lambda>; the rest of Q|g> on [1 ; 2] as EMPM_TRANS ...
+        ! SF_Mode = 'full': complete sets only (Ortho = .false., all rows: no E3max) ... dense A & D (16 N3^2 bytes) ...
+        ! SF_Mode = 'ind': the independent rows of the 3-phonon basis as in EMPM_3PH (also truncated: E2max, E3max),
+        ! orthonormalized by the Cholesky factor of D, still without the 3-phonon eigenproblem & the full diagonalization ...
+        ! outputs EMPM/SF/SF_E1_<op>.dat (poles), _steps.dat (poles of every step) & _coef.dat (alpha, beta; energies
+        ! relative to E_HF), as the NCSM strength function ... SF_Steps, SF_Op = 'iv' / 'is' / 'ph', SF_Reorth ...
+    subroutine EMPM_SF(Params)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), allocatable :: Orb(:)
+        type(empm_space_t) :: Space
+        type(fmat_t) :: F_ph
+        type(empm_phonons_t) :: Ph
+        type(empm_pairs_t) :: Pairs
+        type(empm_states2_t) :: S1, S2, S3, S4
+        type(empm_cache1_t) :: C1
+        type(empm_cm_t) :: Op(2)
+        type(rmat_t) :: Dl(3), Dc(3)
+        type(empm_basis2_t) :: B3
+        type(phonon_block_t) :: Rho
+        real(dp), allocatable :: Bph(:,:), Bhp(:,:), Bd(:,:), Bt(:,:), Z0(:,:), E0(:), Psi(:), W(:,:), Vk(:,:), H20(:), H21(:,:)
+        real(dp), allocatable :: Am(:,:), Dm(:,:), G1(:,:), Gc(:,:), E1(:), E2(:)
+        real(dp), allocatable :: Q12(:,:), Q3(:,:), P3(:,:), w12(:), w3(:), dw3(:), x12(:), x3(:), y12(:), y3(:), px(:), py(:), t3(:)
+        real(dp), allocatable :: al(:), be(:), T(:,:), th(:), Uv(:,:)
+        integer, allocatable :: A1(:), Rows(:)
+        integer :: Nb0(0:4), n1, n2, n12, N3, n20, m, mk, j, k, i, ia, a, ll, it, g, ps, u, l0
+        real(dp) :: e_p, e_n, cf(2), Eg, S0, s, b2, hxy, hyx, m0, m1, eu
+        integer(i8) :: t0, t1
+        character(len=:), allocatable :: Nm, Fl
+        logical :: Reo, Prj, Full
+        character(len=:), allocatable :: DimS
+        real(dp), allocatable :: Hi(:,:), Dii(:,:), Dr(:,:), Dtr(:,:), Cv(:,:), Yv(:,:), wy(:)
+        integer, allocatable :: Ind(:)
+        integer(i8), allocatable :: Dnp(:,:)
+        integer :: r, Tgt, N_visit, Info, nc
+        real(dp) :: Asym
+        interface
+            subroutine dgemv(Trans,m,n,Alpha,A,Lda,x,Incx,Beta,y,Incy)
+                import :: dp
+                character :: Trans
+                integer :: m, n, Lda, Incx, Incy
+                real(dp) :: Alpha, Beta, A(Lda,*), x(*), y(*)
+            end subroutine dgemv
+            subroutine dsymv(Uplo,n,Alpha,A,Lda,x,Incx,Beta,y,Incy)
+                import :: dp
+                character :: Uplo
+                integer :: n, Lda, Incx, Incy
+                real(dp) :: Alpha, Beta, A(Lda,*), x(*), y(*)
+            end subroutine dsymv
+            subroutine dpotrf(Uplo,n,A,Lda,Info)
+                import :: dp
+                character :: Uplo
+                integer :: n, Lda, Info
+                real(dp) :: A(Lda,*)
+            end subroutine dpotrf
+            subroutine dsygst(Itype,Uplo,n,A,Lda,B,Ldb,Info)
+                import :: dp
+                character :: Uplo
+                integer :: Itype, n, Lda, Ldb, Info
+                real(dp) :: A(Lda,*), B(Ldb,*)
+            end subroutine dsygst
+            subroutine dtrsm(Side,Uplo,Transa,Diag,m,n,Alpha,A,Lda,B,Ldb)
+                import :: dp
+                character :: Side, Uplo, Transa, Diag
+                integer :: m, n, Lda, Ldb
+                real(dp) :: Alpha, A(Lda,*), B(Ldb,*)
+            end subroutine dtrsm
+        end interface
+
+        call wigner_init_float(75,'Jmax',9)
+        !$ call omp_set_max_active_levels(1)
+        m = Params%Calc%EMPM%SF_Steps
+        Nm = trim(adjustl(Params%Calc%EMPM%SF_Op))
+        Reo = Params%Calc%EMPM%SF_Reorth
+        select case (trim(adjustl(Params%Calc%EMPM%SF_Mode)))
+        case ('full')
+            Full = .true.
+        case ('ind')
+            Full = .false.
+        case default
+            call fatal('EMPM_SF ... SF_Mode must be ''full'' or ''ind''')
+        end select
+        write(*,'(a)') 'Starting the EMPM strength function B_' // Nm // '(E1; 0+_gs -> 1-) with up to 3 phonons by Lanczos (' // &
+                       istr(m) // ' steps), ' // trim(merge('redundant 3-phonon basis              ','independent rows of the 3-phonon basis',Full)) // ' ...'
+        write(*,'(a)') trim(Params%Calc%Path)
+        if (m < 1) call fatal('EMPM_SF ... SF_Steps must be positive')
+        e_p = real(Params%Calc%A - Params%Calc%Z,dp)/real(Params%Calc%A,dp)
+        e_n = real(Params%Calc%Z,dp)/real(Params%Calc%A,dp)
+        select case (Nm)
+        case ('iv')
+            cf = [e_p, -e_n]
+        case ('is')
+            cf = [0.5_dp, 0.5_dp]
+        case ('ph')
+            cf = [1.0_dp, 0.0_dp]
+        case default
+            call fatal('EMPM_SF ... SF_Op must be ''iv'', ''is'' or ''ph''')
+        end select
+        call timer_start(t0)
+        Orb = orbitals_make(Params)
+        call EMPM_space_make(Params,Orb,Space)
+        call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
+        call EMPM_phonons_import(Params,Space,F_ph,Ph)
+        if (Ph%i_cm > 0) call fatal('EMPM_SF ... needs the complete sets of Ortho = .false.')
+        if (Ph%J_max < 1) call fatal('EMPM_SF ... no 1- phonons')
+        call EMPM_pairs_make(Space,F_ph,Ph,Pairs)
+        call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2)
+        if (S2%N == 0) call fatal('EMPM_SF ... no 2-phonon states in Bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X first')
+        call EMPM_states1_make(Ph,S1)
+        n1 = Ph%N_ch(1,2)
+        l0 = Ph%First(1,2)
+        n2 = 0
+        if (ubound(S2%N_ch,1) >= 1) n2 = S2%N_ch(1,2)
+        n20 = S2%N_ch(0,1)
+        n12 = n1 + n2
+        call EMPM_basis3_make(Ph,S2,1,2,merge(huge(1.0_dp),Params%Calc%EMPM%E3max,Full),'all',B3)
+        N3 = B3%N_full
+        ! SF_Qrows (SF_Mode = 'ind') ... the rows |a lambda> of the 0+ 2-phonon states a & the 1- phonons lambda are kept
+            ! whatever their energy: they carry Q_ph acting on the 2-phonon part of the g.s., i.e. the g.s. correlations
+            ! of the 1-phonon states; without them the 1- states miss the correlation energy the g.s. has ...
+        if (Params%Calc%EMPM%SF_Qrows .and. .not. Full) then
+            block
+                logical, allocatable :: Kp(:)
+                integer :: kq
+                allocate(Kp(N3))
+                Kp = .false.
+                Kp(B3%Row) = .true.
+                kq = count(Kp)
+                do k = 1, N3
+                    if (S2%J(B3%Al(k)) == 0 .and. S2%P(B3%Al(k)) == 1 .and. Ph%J(B3%La(k)) == 1 .and. Ph%P(B3%La(k)) == 2) Kp(k) = .true.
+                end do
+                B3%Row = pack([(k, k = 1, N3)], Kp)
+                B3%N_tr = size(B3%Row)
+                write(*,'(a)') TAB // 'SF_Qrows ... ' // istr(B3%N_tr - kq) // ' rows |0+ 2-phonon state x 1- phonon> added to the ' // &
+                               istr(kq) // ' rows below E3max'
+            end block
+        end if
+        write(*,'(a)') TAB // '1- space ... 1-phonon ' // istr(n1) // ' , 2-phonon ' // istr(n2) // ' , redundant 3-phonon basis ' // &
+                       istr(N3) // ' (' // istr(S2%N) // ' 2-phonon states x ' // istr(Ph%N) // ' phonons)' // &
+                       trim(merge(' , A & D (GB) ' // cfmt_f(16.0_dp*real(N3,dp)**2/1.0e9_dp,12,3), &
+                                  ' , rows       ' // cfmt_d(B3%N_tr,12), Full))
+
+        if (.not. Full) write(*,'(a)') TAB // 'memory ... D of the rows ' // cfmt_f(8.0_dp*real(B3%N_tr,dp)**2/1.0e9_dp,0,1) // &
+                                       ' GB , D rows on the full basis up to ' // cfmt_f(8.0_dp*real(B3%N_tr,dp)*real(N3,dp)/1.0e9_dp,0,1) // &
+                                       ' GB (if all rows are independent) , distinct 2-phonon states of the rows ' // &
+                                       istr(nrow_states())
+        if (Params%Calc%EMPM%Dry_Run) return
+        ! ground state: the lowest 0+ of EMPM_FULL with up to 2 phonons, basis [HF ; 0+ phonons ; 0+ 2-phonon states] ...
+        call read_gs()
+        if (Nb0(0) /= 1 .or. Nb0(1) /= Ph%N_ch(0,1) .or. Nb0(2) /= n20 .or. any(Nb0(3:4) /= 0)) &
+            call fatal('EMPM_SF ... the 0+ basis of Bin/EMPM_FULL2_0+_Z_unproj.bin does not match (EMPM_FULL with Full_N = 2)')
+        write(*,'(a)') TAB // 'g.s. = 0+ state ' // istr(g) // ' of EMPM_FULL (<= 2 phonons) , E - E_HF = ' // cfmt_f(Eg,0,6) // &
+                       ' MeV , weights 0 / 1 / 2 phonons = ' // cfmt_f(Psi(1)**2,0,4) // ' / ' // &
+                       cfmt_f(sum(Psi(2:1+Nb0(1))**2),0,4) // ' / ' // cfmt_f(sum(Psi(2+Nb0(1):)**2),0,4)
+
+        ! Q|g> ... [1 ; 2] by the blocks of EMPM_TRANS, the 3-phonon part = Q_ph on the 2-phonon components of g ...
+        call timer_start(t1)
+        allocate(x12(n12), x3(N3))
+        x12 = 0.0_dp
+        x3 = 0.0_dp
+        do it = 1, 2
+            call EMPM_op_make(Params,Orb,Space,Pairs,Ph,it,Op(it))
+            if (cf(it) == 0.0_dp) cycle
+            call EMPM_cm_dlevels_nc(Pairs,Ph,Op(it),S1,S2,2,0,Dl,Dc,Sel=[0,1,1,2])
+            call EMPM_cm_blocks(Ph,Op(it),S1,S2,S3,S4,Dl,2,0,1,1,2,Bph,Bhp,Bd,.true.)
+            Bt = Sg_ph(1)*Bph + Sg_hp(1)*Bhp + Sg_d(1)*Bd
+            if (size(Bt,1) /= n12 .or. size(Bt,2) /= size(Psi)) call fatal('EMPM_SF ... operator blocks do not match the bases')
+            x12 = x12 + cf(it)*matmul(Bt,Psi)
+            do ia = 1, n20
+                a = S2%First(0,1) + ia - 1
+                do ll = l0, l0 + n1 - 1
+                    k = B3%K(a,ll)
+                    if (k > 0) x3(k) = x3(k) + cf(it)*Sg_ph(1)*Op(it)%bL(ll)*Psi(1+Nb0(1)+ia)
+                end do
+            end do
+            deallocate(Bph, Bhp, Bd, Bt)
+        end do
+        call timer_report(t1,'Q|g> on the 1- space')
+
+        ! Hamiltonian blocks ...
+        call timer_start(t1)
+        call EMPM_cache1_make(Pairs,Ph,C1)
+        call EMPM_phonon_W(Space,F_ph,Pairs,Ph,W)
+        E1 = Ph%E(l0:l0+n1-1)
+        allocate(E2(n2), H21(n2,n1), H20(n20))
+        if (n2 > 0) E2 = S2%E(S2%First(1,2):S2%First(1,2)+n2-1)
+        ! 2 <- 0 (0+) & 2 <- 1 ...
+        allocate(A1(0))
+        call EMPM_coupling_V(Space,F_ph,Pairs,Ph,S2%Bs(0,1),A1,1,Vk)
+        H20 = matmul(transpose(S2%X(0,1)%v),Vk(:,1))
+        deallocate(A1, Vk)
+        H21 = 0.0_dp
+        if (n2 > 0) then
+            A1 = [(l0 + i - 1, i = 1, n1)]
+            call EMPM_coupling_V(Space,F_ph,Pairs,Ph,S2%Bs(1,2),A1,0,Vk)
+            H21 = mtm(S2%X(1,2)%v(:,1:n2),Vk)
+            deallocate(Vk)
+        end if
+        ! 3 <- 1: H|lambda> = sum_gamma h20(gamma) |gamma lambda> ...
+        allocate(G1(N3,n1))
+        G1 = 0.0_dp
+        do i = 1, n1
+            do k = 1, n20
+                j = B3%K(S2%First(0,1)+k-1,l0+i-1)
+                if (j > 0) G1(j,i) = H20(k)
+            end do
+        end do
+        ! 3 <- 2: H|a> = sqrt(2J+1) sum_k V(k,a) |k> ...
+        allocate(Gc(N3,n2))
+        !$omp parallel do schedule(dynamic) private(Rho)
+        do ia = 1, n2
+            call EMPM_densityN(Pairs,Ph,C1,C1%R,S1,S2,S2%First(1,2)+ia-1,Rho)
+            call EMPM_coupling_Vn(Pairs,Ph,W,Rho,1,S2%J_max,S2%N_ch,S2%First,B3,Gc(:,ia))
+        end do
+        !$omp end parallel do
+        Gc = sqrt(3.0_dp)*Gc
+        call timer_report(t1,'couplings 2 <- 1, 3 <- 1 & 3 <- 2')
+        if (.not. Full) then
+            ! Independent rows I of the 3-phonon basis (pivoted Cholesky of D, or the greedy selection with Ind_Greedy),
+                ! H_II = A_I D_I^T & D_II on them as in EMPM_3PH, but no eigenproblem: D_II = U^T U, the orthonormal states
+                ! e = sum_i |i> (U^-1)_i, H~ = U^-T H_II U^-1, and a vector with the coefficients g on the full basis has the
+                ! components U^-T D_I g ... Lanczos on [1 ; 2 ; e] with the Euclidean metric ... also for truncated bases
+                ! (E2max, E3max), with the approximations of the EMPM for incomplete sets ...
+            call timer_start(t1)
+            allocate(Dnp(0:3*Ph%J_max+1,2))
+            Dnp(:,:) = EMPM_npnh_dims(Space,3,3*Ph%J_max + 1)
+            Tgt = int(min(int(B3%N_tr,i8), Dnp(1,2)))
+            if (Params%Calc%EMPM%Ind_Greedy) then
+                call EMPM_ind_greedy_H(Pairs,Ph,C1,C1%R,S1,S2,B3,Tgt,Params%Calc%EMPM%Mem_GB,Ind,Dii,Hi,Dr,N_visit)
+                write(*,'(a)') TAB // 'independent rows (greedy) ... ' // istr(size(Ind)) // ' of ' // istr(B3%N_tr) // &
+                               ' , 3p3h dimension of 1- ' // istr(int(Dnp(1,2))) // ' , rows visited ' // istr(N_visit)
+            else
+                call EMPM_D3_build(Pairs,Ph,C1,C1%R,S1,S2,B3,Params%Calc%EMPM%Mem_GB,Dtr)
+                call EMPM_chol_ind(Dtr,Ind,Dii)
+                deallocate(Dtr)
+                call EMPM_H3_ind(Pairs,Ph,C1,C1%R,S1,S2,B3,Ind,Params%Calc%EMPM%Mem_GB,Hi,Dr)
+                write(*,'(a)') TAB // 'independent rows (pivoted Cholesky) ... ' // istr(size(Ind)) // ' of ' // istr(B3%N_tr) // &
+                               ' , 3p3h dimension of 1- ' // istr(int(Dnp(1,2)))
+            end if
+            r = size(Ind)
+            call timer_report(t1,'independent rows, A D^T & D on them')
+            call timer_start(t1)
+            Asym = 0.0_dp
+            !$omp parallel do schedule(dynamic) reduction(max:Asym) private(i)
+            do j = 1, r
+                do i = 1, j - 1
+                    Asym = max(Asym, abs(Hi(i,j) - Hi(j,i)))
+                    Hi(i,j) = 0.5_dp*(Hi(i,j) + Hi(j,i))
+                end do
+            end do
+            !$omp end parallel do
+            write(*,'(a)') TAB // '|AD - (AD)^T|max = ' // cfmt_e(Asym,0,3)
+            call dpotrf('U',r,Dii,r,Info)
+            if (Info /= 0) call fatal('EMPM_SF ... D of the independent rows is not positive definite, info = ' // istr(Info))
+            call dsygst(1,'U',r,Hi,r,Dii,r,Info)
+            if (Info /= 0) call fatal('EMPM_SF ... dsygst failed, info = ' // istr(Info))
+            ! couplings & start vector: [G1 | Gc | x3] -> U^-T Dr^T [..] ...
+            nc = n12 + 1
+            allocate(Cv(N3,nc), Yv(r,nc))
+            Cv(:,1:n1) = G1
+            if (n2 > 0) Cv(:,n1+1:n12) = Gc
+            Cv(:,nc) = x3
+            call dgemm('T','N',r,nc,N3,1.0_dp,Dr,N3,Cv,N3,0.0_dp,Yv,r)
+            call dtrsm('L','U','T','N',r,nc,1.0_dp,Dii,r,Yv,r)
+            deallocate(Cv, Dr, Dii, G1, Gc)
+            call timer_report(t1,'Cholesky of D, H & the couplings on the orthonormal states (' // istr(r) // ')')
+            S0 = dot_product(x12,x12) + dot_product(Yv(:,nc),Yv(:,nc))
+            write(*,'(a)') TAB // 'total strength S0 = |Q g|^2 = ' // cfmt_e(S0,0,10) // ' e^2 fm^2 (1- / 2- / 3-phonon parts ' // &
+                           cfmt_f(sum(x12(1:n1)**2)/S0,0,6) // ' / ' // cfmt_f(sum(x12(n1+1:)**2)/S0,0,6) // ' / ' // &
+                           cfmt_f(dot_product(Yv(:,nc),Yv(:,nc))/S0,0,6) // ')'
+            call make_dir(io_path(Params,'/EMPM/SF'))
+            Fl = io_path(Params,'/EMPM/SF/SF_E1_' // Nm // '.dat')
+            DimS = istr(n1) // ' + ' // istr(n2) // ' + ' // istr(r) // ' (independent rows of ' // istr(B3%N_tr) // ')'
+            allocate(Q12(n12,m+1), Q3(r,m+1), al(m), be(m), w12(n12), wy(r))
+            Q12(:,1) = x12/sqrt(S0)
+            Q3(:,1) = Yv(:,nc)/sqrt(S0)
+            mk = 0
+            do j = 1, m
+                call timer_start(t1)
+                w12(1:n1) = E1*Q12(1:n1,j)
+                if (n2 > 0) then
+                    w12(1:n1) = w12(1:n1) + matmul(Q12(n1+1:n12,j),H21)
+                    w12(n1+1:n12) = E2*Q12(n1+1:n12,j) + matmul(H21,Q12(1:n1,j))
+                end if
+                call dgemv('T',r,n12,1.0_dp,Yv,r,Q3(:,j),1,1.0_dp,w12,1)
+                call dsymv('U',r,1.0_dp,Hi,r,Q3(:,j),1,0.0_dp,wy,1)
+                call dgemv('N',r,n12,1.0_dp,Yv,r,Q12(:,j),1,1.0_dp,wy,1)
+                al(j) = dot_product(Q12(:,j),w12) + dot_product(Q3(:,j),wy)
+                w12 = w12 - al(j)*Q12(:,j)
+                wy = wy - al(j)*Q3(:,j)
+                if (j > 1) then
+                    w12 = w12 - be(j-1)*Q12(:,j-1)
+                    wy = wy - be(j-1)*Q3(:,j-1)
+                end if
+                if (Reo) then
+                    do ps = 1, 2
+                        do k = 1, j
+                            s = dot_product(Q12(:,k),w12) + dot_product(Q3(:,k),wy)
+                            w12 = w12 - s*Q12(:,k)
+                            wy = wy - s*Q3(:,k)
+                        end do
+                    end do
+                end if
+                be(j) = sqrt(dot_product(w12,w12) + dot_product(wy,wy))
+                mk = j
+                call sf_write()
+                call timer_report(t1,'  SF Lanczos step ' // istr(j) // ' of ' // istr(m) // ' , alpha = ' // cfmt_f(al(j),0,6) // &
+                                  ' , beta = ' // cfmt_f(be(j),0,6))
+                if (j == m .or. be(j) < 1.0e-9_dp*max(maxval(abs(al(1:j))),1.0_dp)) exit
+                Q12(:,j+1) = w12/be(j)
+                Q3(:,j+1) = wy/be(j)
+            end do
+        else
+            if (B3%N_tr /= N3) call fatal('EMPM_SF ... incomplete rows of the 3-phonon basis')
+            ! A & D of the redundant basis: Am(:,i) = row i of A, Dm(:,i) = row i of D ...
+            call timer_start(t1)
+            allocate(Am(N3,N3), Dm(N3,N3), Rows(N3))
+            Rows = [(i, i = 1, N3)]
+            call EMPM_AD3_rows(Pairs,Ph,C1,C1%R,S1,S2,B3,Rows,Dm,Am)
+            call timer_report(t1,'A & D of the redundant 3-phonon basis (' // istr(N3) // ' rows)')
+
+            ! Check: <x|H y> = <H x|y> for two random vectors ...
+            allocate(y12(n12), y3(N3), w12(n12), w3(N3), dw3(N3), px(N3), py(N3), t3(N3))
+            block
+                real(dp), allocatable :: a12(:), a3(:), b12(:), b3(:), r12(:)
+                allocate(a12(n12), a3(N3), b12(n12), b3(N3), r12(n12))
+                call random_number(y12)
+                call random_number(y3)
+                call random_number(r12)
+                call random_number(t3)
+                y12 = y12 - 0.5_dp
+                y3 = y3 - 0.5_dp
+                r12 = r12 - 0.5_dp
+                t3 = t3 - 0.5_dp
+                call dmul(t3,px)
+                call dmul(y3,py)
+                call hmul(y12,y3,py,a12,a3)
+                call hmul(r12,t3,px,b12,b3)
+                hxy = dot_product(r12,a12) + dot_product(px,a3)
+                hyx = dot_product(y12,b12) + dot_product(py,b3)
+                write(*,'(a)') TAB // 'Hermiticity check ... <x|H y> = ' // cfmt_e(hxy,0,12) // ' , <H x|y> = ' // cfmt_e(hyx,0,12) // &
+                               ' , relative difference ' // cfmt_e(abs(hxy - hyx)/max(abs(hxy),1.0e-300_dp),0,3)
+            end block
+
+            ! Lanczos ... vectors q_j = [q12 ; c3] with p_j = D c3 ...
+            ! complete sets: |a lambda> = O+_lambda |a> with charge-conserving phonons, so sum_i |i><i| = N_p(pi) N_h(pi) +
+                ! N_p(nu) N_h(nu) on the 3p3h space: the metric D has only the eigenvalues 0 (redundancy), 5 (2 + 1 proton /
+                ! neutron ph pairs) & 9 (3 + 0), and P = D (14 - D) / 45 is the projector on its range ... the null-space part
+                ! of c (which the metric does not see, but which grows from step to step and ruins the precision) is removed by
+                ! c -> P c in every step, for one more product with D ...
+            call dmul(t3,px)
+            call dmul(px,py)
+            call dmul(py,y3)
+            eu = sqrt(sum((y3 - 14.0_dp*py + 45.0_dp*px)**2)/max(sum(y3**2),1.0e-300_dp))
+            Prj = eu < 1.0e-8_dp
+            write(*,'(a)') TAB // 'metric ... D (D - 5) (D - 9) = 0 on a random vector to ' // cfmt_e(eu,0,3) // ' (relative)'
+            if (Prj) then
+                write(*,'(a)') TAB // 'metric ... the null space of D is projected out in every step, P = D (14 - D) / 45'
+            else
+                write(*,'(a)') TAB // 'Warning ... D does not have the eigenvalues 0, 5 & 9 only (incomplete sets?), no projection ' // &
+                               'of the null space: the precision is lost after some tens of steps'
+            end if
+            call dmul(x3,px)
+            if (Prj) then
+                call dmul(px,py)
+                x3 = (14.0_dp*px - py)/45.0_dp
+            end if
+            S0 = dot_product(x12,x12) + dot_product(x3,px)
+            write(*,'(a)') TAB // 'total strength S0 = |Q g|^2 = ' // cfmt_e(S0,0,10) // ' e^2 fm^2 (1- / 2- / 3-phonon parts ' // &
+                           cfmt_f(sum(x12(1:n1)**2)/S0,0,6) // ' / ' // cfmt_f(sum(x12(n1+1:)**2)/S0,0,6) // ' / ' // &
+                           cfmt_f(dot_product(x3,px)/S0,0,6) // ')'
+            call make_dir(io_path(Params,'/EMPM/SF'))
+            Fl = io_path(Params,'/EMPM/SF/SF_E1_' // Nm // '.dat')
+            DimS = istr(n1) // ' + ' // istr(n2) // ' + ' // istr(N3) // ' (redundant)'
+            allocate(Q12(n12,m+1), Q3(N3,m+1), P3(N3,m+1), al(m), be(m))
+            Q12(:,1) = x12/sqrt(S0)
+            Q3(:,1) = x3/sqrt(S0)
+            P3(:,1) = px/sqrt(S0)
+            mk = 0
+            do j = 1, m
+                call timer_start(t1)
+                call hmul(Q12(:,j),Q3(:,j),P3(:,j),w12,w3)
+                call dmul(w3,dw3)
+                if (Prj) then
+                    call dmul(dw3,t3)
+                    w3 = (14.0_dp*dw3 - t3)/45.0_dp
+                end if
+                al(j) = dot_product(Q12(:,j),w12) + dot_product(P3(:,j),w3)
+                call axpy3(-al(j),j)
+                if (j > 1) call axpy3(-be(j-1),j-1)
+                if (Reo) then
+                    do ps = 1, 2
+                        do k = 1, j
+                            s = dot_product(Q12(:,k),w12) + dot_product(P3(:,k),w3)
+                            call axpy3(-s,k)
+                        end do
+                    end do
+                end if
+                b2 = dot_product(w12,w12) + dot_product(w3,dw3)
+                be(j) = sqrt(max(b2,0.0_dp))
+                mk = j
+                call sf_write()
+                eu = sqrt(dot_product(Q3(:,j),Q3(:,j)))
+                call timer_report(t1,'  SF Lanczos step ' // istr(j) // ' of ' // istr(m) // ' , alpha = ' // cfmt_f(al(j),0,6) // &
+                                  ' , beta = ' // cfmt_f(be(j),0,6) // ' , |c3| = ' // cfmt_e(eu,0,3) // ' , <c3|D|c3> = ' // &
+                                  cfmt_e(dot_product(Q3(:,j),P3(:,j)),0,3))
+                if (j == m .or. be(j) < 1.0e-9_dp*max(maxval(abs(al(1:j))),1.0_dp)) exit
+                Q12(:,j+1) = w12/be(j)
+                Q3(:,j+1) = w3/be(j)
+                P3(:,j+1) = dw3/be(j)
+            end do
+        end if
+        write(*,'(a)') TAB // 'B_' // Nm // '(E1): ' // istr(mk) // ' Lanczos steps, m0 = ' // cfmt_e(m0,0,6) // ' , centroid ' // &
+                       cfmt_f(m1/m0,0,4) // ' MeV ... ' // Fl
+        call timer_report(t0)
+        write(*,'(/,a,/)') 'EMPM strength function has finished ...'
+
+    contains
+
+        ! number of distinct 2-phonon states a among the rows ...
+        integer function nrow_states()
+            logical, allocatable :: Us(:)
+            allocate(Us(S2%N))
+            Us = .false.
+            Us(B3%Al(B3%Row)) = .true.
+            nrow_states = count(Us)
+        end function nrow_states
+
+        ! p = D c ...
+        subroutine dmul(c,p)
+            real(dp), intent(in) :: c(:)
+            real(dp), intent(out) :: p(:)
+            call dgemv('T',N3,N3,1.0_dp,Dm,N3,c,1,0.0_dp,p,1)
+        end subroutine dmul
+
+        ! [o12 ; o3] = H [v12 ; c3] with p = D c3 ...
+        subroutine hmul(v12,c3,p,o12,o3)
+            real(dp), intent(in) :: v12(:), c3(:), p(:)
+            real(dp), intent(out) :: o12(:), o3(:)
+            o12(1:n1) = E1*v12(1:n1)
+            call dgemv('T',N3,n1,1.0_dp,G1,N3,p,1,1.0_dp,o12,1)
+            call dgemv('N',N3,N3,1.0_dp,Am,N3,c3,1,0.0_dp,o3,1)
+            call dgemv('N',N3,n1,1.0_dp,G1,N3,v12,1,1.0_dp,o3,1)
+            if (n2 > 0) then
+                o12(1:n1) = o12(1:n1) + matmul(v12(n1+1:n12),H21)
+                o12(n1+1:n12) = E2*v12(n1+1:n12) + matmul(H21,v12(1:n1))
+                call dgemv('T',N3,n2,1.0_dp,Gc,N3,p,1,1.0_dp,o12(n1+1:n12),1)
+                call dgemv('N',N3,n2,1.0_dp,Gc,N3,v12(n1+1:n12),1,1.0_dp,o3,1)
+            end if
+        end subroutine hmul
+
+        ! w += s q_k (with D w) ...
+        subroutine axpy3(s_,k_)
+            real(dp), intent(in) :: s_
+            integer, intent(in) :: k_
+            integer :: i_
+            w12 = w12 + s_*Q12(:,k_)
+            !$omp parallel do
+            do i_ = 1, N3
+                w3(i_) = w3(i_) + s_*Q3(i_,k_)
+                dw3(i_) = dw3(i_) + s_*P3(i_,k_)
+            end do
+            !$omp end parallel do
+        end subroutine axpy3
+
+        ! g.s. from Bin/EMPM_FULL2_0+_{E,Z,Ncm}_unproj.bin: the lowest 0+ (with <N_cm> < 0.5 when <N_cm> is there) ...
+        subroutine read_gs()
+            integer :: uz, Nst
+            integer(i8) :: Sz
+            real(dp), allocatable :: Nc(:)
+            character(len=:), allocatable :: Fb
+            logical :: Ex
+            Fb = io_path(Params,'/Bin/EMPM_FULL2_0+_')
+            inquire(file=Fb // 'Z_unproj.bin', exist=Ex)
+            if (.not. Ex) call fatal('EMPM_SF ... no ' // Fb // 'Z_unproj.bin, run EMPM_FULL with Full_N = 2 first')
+            inquire(file=Fb // 'E_unproj.bin', size=Sz)
+            Nst = int(Sz/8_i8)
+            allocate(E0(Nst))
+            open(newunit=uz, file=Fb // 'E_unproj.bin', access='stream', form='unformatted', status='old', action='read')
+            read(uz) E0
+            close(uz)
+            open(newunit=uz, file=Fb // 'Z_unproj.bin', access='stream', form='unformatted', status='old', action='read')
+            read(uz) Nb0
+            allocate(Z0(sum(Nb0),Nst))
+            read(uz) Z0
+            close(uz)
+            g = 1
+            inquire(file=Fb // 'Ncm_unproj.bin', exist=Ex)
+            if (Ex) then
+                allocate(Nc(Nst))
+                open(newunit=uz, file=Fb // 'Ncm_unproj.bin', access='stream', form='unformatted', status='old', action='read')
+                read(uz) Nc
+                close(uz)
+                do g = 1, Nst
+                    if (Nc(g) < 0.5_dp) exit
+                end do
+                if (g > Nst) g = 1
+            end if
+            Psi = Z0(:,g)
+            Eg = E0(g)
+        end subroutine read_gs
+
+        ! poles of the mk steps (file Fl), their history (_steps.dat) & the Lanczos coefficients (_coef.dat) ...
+        subroutine sf_write()
+            integer :: i_, k_, uh
+            character(len=:), allocatable :: Fh
+            Fh = Fl(1:len(Fl)-4)
+            allocate(T(mk,mk), th(mk), Uv(mk,mk))
+            T = 0.0_dp
+            do i_ = 1, mk
+                T(i_,i_) = al(i_)
+                if (i_ < mk) then
+                    T(i_,i_+1) = be(i_)
+                    T(i_+1,i_) = be(i_)
+                end if
+            end do
+            call eig_sym(T,th,Uv)
+            open(newunit=u, file=Fl, status='replace', action='write')
+            write(u,'(a)') '# EMPM strength function B_' // Nm // '(E1) from the 0+ g.s. (<= 2 phonons), 1- with <= 3 phonons, E_g - E_HF = ' // &
+                           cfmt_f(Eg,0,10) // ', dim = ' // DimS // ', Lanczos iterations ' // istr(mk)
+            write(u,'(a,es16.8)') '# total strength S0 = |<1-||Q||g>|^2 (e^2 fm^2) = ', S0
+            write(u,'(a)') '# k   E - E_HF (MeV)   Ex = E - E_g   B   residual'
+            m0 = 0.0_dp
+            m1 = 0.0_dp
+            do k_ = 1, mk
+                write(u,'(i6,2f16.8,es18.8e3,es12.3e3)') k_, th(k_), th(k_) - Eg, S0*Uv(1,k_)**2, be(mk)*abs(Uv(mk,k_))
+                m0 = m0 + S0*Uv(1,k_)**2
+                m1 = m1 + S0*Uv(1,k_)**2*(th(k_) - Eg)
+            end do
+            close(u)
+            if (mk == 1) then
+                open(newunit=uh, file=Fh // '_steps.dat', status='replace', action='write')
+                write(uh,'(a)') '# EMPM strength function B_' // Nm // '(E1) poles after every Lanczos step, E_g - E_HF = ' // &
+                                cfmt_f(Eg,0,10) // ', dim = ' // DimS
+                write(uh,'(a,es16.8)') '# total strength S0 = ', S0
+                write(uh,'(a)') '# step   k   E - E_HF (MeV)   Ex = E - E_g   B   residual'
+            else
+                open(newunit=uh, file=Fh // '_steps.dat', status='old', position='append', action='write')
+                write(uh,'(a)') ''
+            end if
+            do k_ = 1, mk
+                write(uh,'(i6,i6,2f16.8,es18.8e3,es12.3e3)') mk, k_, th(k_), th(k_) - Eg, S0*Uv(1,k_)**2, be(mk)*abs(Uv(mk,k_))
+            end do
+            close(uh)
+            open(newunit=uh, file=Fh // '_coef.dat', status='replace', action='write')
+            write(uh,'(a,es24.16,a)') '# Lanczos coefficients of B_' // Nm // '(E1), E_g - E_HF = ', Eg, ', dim = ' // DimS
+            write(uh,'(a,es24.16)') '# S0 = ', S0
+            write(uh,'(a)') '# j   alpha_j - E_HF (MeV)   beta_j (MeV)'
+            do i_ = 1, mk
+                write(uh,'(i6,2es24.16)') i_, al(i_), be(i_)
+            end do
+            close(uh)
+            deallocate(T, th, Uv)
+        end subroutine sf_write
+    end subroutine EMPM_SF
 
     ! Folder of the n-phonon state files EMPM_S<n>_<JP>.bin ... States_Dir (a leading $VARIABLE expanded) or Bin of the
         ! output folder ...

@@ -79,13 +79,19 @@ contains
         character(len=8) :: Full_Diag
         logical :: Full_Svd
         real(dp) :: CM_Tol, CM_Beta, D_Disk_GB
+        integer :: SF_Steps
+        character(len=8) :: SF_Op, SF_Mode
+        logical :: SF_Reorth, SF_Qrows
         ! &ncsm ...
         integer :: Nmax_List(16), M2, N_Eig, Lanczos_Max, Lanczos_Basis
         character(len=8) :: Hamiltonian, Matrix, Trunc, Basis
         real(dp) :: Lanczos_Tol, Beta_CM, Matrix_GB, Ecut_npnh(16)
         logical :: Single, Transitions, Window
-        integer :: Dense_Max, Parity, Tr_Lanczos, Tr_Gs_Nmax
+        integer :: Dense_Max, Parity, Tr_Lanczos, Tr_Gs_Nmax, Tr_Ckpt
         character(len=8) :: Tr_From
+        character(len=32) :: Tr_Ops
+        character(len=8) :: Tr_Vec
+        logical :: Tr_Reorth, Tr_Sym
         ! &run ...
         character(len=64) :: Solvers(Max_Actions)
         ! &transition_densities & &transition_currents ...
@@ -105,8 +111,8 @@ contains
         namelist /qtda/ Ortho
         namelist /qrpa/ Ortho
         namelist /empm/ pHole, pPart, nHole, nPart, Ortho, E2max, JP2, Mem_GB, E1max, Legacy_Order, Dry_Run, Spur_Rows, Legacy_Spur, Full_H, D_Spectrum, Cache_GB, &
-                       E3max, JP3, E4max, JP4, Full_N, JPF, Save_X, Ind_First, States_Dir, CM_Exact, CM_Tol, CM_Dump, Ind_Greedy, CM_Variants, CM_Keep, Full_Diag, Full_Svd, CM_Ncm, CM_Beta, D_Disk_GB, Dens_Share
-        namelist /ncsm/ Nmax_List, Hamiltonian, M2, N_Eig, Lanczos_Max, Lanczos_Tol, Beta_CM, Matrix, Single, Lanczos_Basis, Matrix_GB, Trunc, Basis, Ecut_npnh, Transitions, Dense_Max, Window, Parity, Tr_From, Tr_Lanczos, Tr_Gs_Nmax
+                       E3max, JP3, E4max, JP4, Full_N, JPF, Save_X, Ind_First, States_Dir, CM_Exact, CM_Tol, CM_Dump, Ind_Greedy, CM_Variants, CM_Keep, Full_Diag, Full_Svd, CM_Ncm, CM_Beta, D_Disk_GB, Dens_Share, SF_Steps, SF_Op, SF_Reorth, SF_Mode, SF_Qrows
+        namelist /ncsm/ Nmax_List, Hamiltonian, M2, N_Eig, Lanczos_Max, Lanczos_Tol, Beta_CM, Matrix, Single, Lanczos_Basis, Matrix_GB, Trunc, Basis, Ecut_npnh, Transitions, Dense_Max, Window, Parity, Tr_From, Tr_Lanczos, Tr_Gs_Nmax, Tr_Ops, Tr_Vec, Tr_Reorth, Tr_Sym, Tr_Ckpt
         namelist /run/ Solvers
         namelist /transition_densities/ JP, nu_list, File_Name
         namelist /transition_currents/ JP, M, nu_list, File_Name, xN_grid, zN_grid
@@ -291,11 +297,16 @@ contains
         CM_Beta = C0%EMPM%CM_Beta
         D_Disk_GB = C0%EMPM%D_Disk_GB
         Dens_Share = C0%EMPM%Dens_Share
+        SF_Steps = C0%EMPM%SF_Steps
+        SF_Op = C0%EMPM%SF_Op
+        SF_Reorth = C0%EMPM%SF_Reorth
+        SF_Mode = C0%EMPM%SF_Mode
+        SF_Qrows = C0%EMPM%SF_Qrows
         rewind(u)
         read(u, nml=empm, iostat=Ios, iomsg=Msg)
         call check(Ios,'empm')
         Inp%Params%Calc%EMPM = empm_params_t(pHole,pPart,nHole,nPart,Ortho,E2max,JP2,Mem_GB,E1max,Legacy_Order,Dry_Run,Spur_Rows,Legacy_Spur,Full_H,D_Spectrum,Cache_GB, &
-                                                E3max,JP3,E4max,JP4,Full_N,JPF,Save_X,Ind_First,States_Dir,CM_Exact,CM_Tol,CM_Dump,Ind_Greedy,CM_Variants,CM_Keep,Full_Diag,Full_Svd,CM_Ncm,CM_Beta,D_Disk_GB,Dens_Share)
+                                                E3max,JP3,E4max,JP4,Full_N,JPF,Save_X,Ind_First,States_Dir,CM_Exact,CM_Tol,CM_Dump,Ind_Greedy,CM_Variants,CM_Keep,Full_Diag,Full_Svd,CM_Ncm,CM_Beta,D_Disk_GB,Dens_Share,SF_Steps,SF_Op,SF_Reorth,SF_Mode,SF_Qrows)
 
         ! &ncsm ...
         Nmax_List = C0%NCSM%Nmax_List
@@ -319,10 +330,15 @@ contains
         Tr_From = C0%NCSM%Tr_From
         Tr_Lanczos = C0%NCSM%Tr_Lanczos
         Tr_Gs_Nmax = C0%NCSM%Tr_Gs_Nmax
+        Tr_Ops = C0%NCSM%Tr_Ops
+        Tr_Vec = C0%NCSM%Tr_Vec
+        Tr_Reorth = C0%NCSM%Tr_Reorth
+        Tr_Sym = C0%NCSM%Tr_Sym
+        Tr_Ckpt = C0%NCSM%Tr_Ckpt
         rewind(u)
         read(u, nml=ncsm, iostat=Ios, iomsg=Msg)
         call check(Ios,'ncsm')
-        Inp%Params%Calc%NCSM = ncsm_params_t(Nmax_List,Hamiltonian,M2,N_Eig,Lanczos_Max,Lanczos_Tol,Beta_CM,Matrix,Single,Lanczos_Basis,Matrix_GB,Trunc,Basis,Ecut_npnh,Transitions,Dense_Max,Window,Parity,Tr_From,Tr_Lanczos,Tr_Gs_Nmax)
+        Inp%Params%Calc%NCSM = ncsm_params_t(Nmax_List,Hamiltonian,M2,N_Eig,Lanczos_Max,Lanczos_Tol,Beta_CM,Matrix,Single,Lanczos_Basis,Matrix_GB,Trunc,Basis,Ecut_npnh,Transitions,Dense_Max,Window,Parity,Tr_From,Tr_Lanczos,Tr_Gs_Nmax,Tr_Ops,Tr_Vec,Tr_Sym,Tr_Reorth,Tr_Ckpt)
 
         ! &run ...
         Solvers = ''

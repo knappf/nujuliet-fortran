@@ -184,6 +184,16 @@ module nj_params
         ! Dens_Share (Ind_Greedy) ... the greedy selections of all channels of the step in one pass over the (n-1)-phonon
             ! states a, the densities of each a computed once for all channels (memory of the blocks split among them) ...
         logical :: Dens_Share = .false.
+        ! EMPM_SF ... Lanczos strength function B(E1; 0+_gs -> 1-) with up to 3 phonons in the redundant 3-phonon basis:
+            ! SF_Steps Lanczos steps, SF_Op = 'iv' / 'is' / 'ph', SF_Reorth full reorthogonalization ...
+        integer :: SF_Steps = 100
+        character(len=8) :: SF_Op = 'iv'
+        logical :: SF_Reorth = .true.
+        ! SF_Mode ... 'full' the whole redundant 3-phonon basis (A^T & D products, complete sets), 'ind' its independent
+            ! rows (as EMPM_3PH, also with E2max / E3max) ...
+        character(len=8) :: SF_Mode = 'full'
+        ! SF_Qrows (SF_Mode = 'ind') ... keep all rows |0+ 2-phonon state x 1- phonon> regardless of E3max ...
+        logical :: SF_Qrows = .false.
     end type empm_params_t
 
     ! No-core shell model in the m-scheme HO basis (action NCSM) ... Nmax_List the many-body truncations (HO quanta above
@@ -224,6 +234,16 @@ module nj_params
         integer :: Tr_Lanczos = 0                ! > 0: strength-function Lanczos (iterations) from Q|g> for B_ph, B_is, B_iv
         integer :: Tr_Gs_Nmax = 0                ! Tr_From 'gs', > 0: the g.s. of the <= Tr_Gs_Nmax p-h run (Nmax_List) kept for the
                                                  ! larger runs (mapped by its SD occupations): g.s. <= n p n h, final states <= n' p n' h
+        character(len=32) :: Tr_Ops = ''         ! Tr_Lanczos: strength functions computed, '' = all, or a list of E<L><ph|is|iv>,
+                                                 ! e.g. 'E1iv' or 'E1iv,E1is' (the others skipped: fewer products of H)
+        character(len=8) :: Tr_Vec = 'double'    ! Tr_Lanczos: precision of the stored Lanczos vectors, 'double' or 'single' (half the
+                                                 ! memory; the current vectors w, products & coefficients stay double)
+        logical :: Tr_Sym = .true.               ! Tr_Lanczos (2M = 0, Matrix 'otf', no eigenstates): rotation symmetry R_y(pi), half of the rows & of the species matrices
+        logical :: Tr_Reorth = .true.            ! Tr_Lanczos: full reorthogonalization (all vectors kept, n x Tr_Lanczos) or none (3
+                                                 ! vectors: plain Lanczos, moments & folded strength exact, ghost copies of converged poles)
+        integer :: Tr_Ckpt = 0                   ! Tr_Lanczos: > 0 checkpoint every Tr_Ckpt steps (the Lanczos vectors appended to
+                                                 ! <file>_vecs.bin every step, alpha, beta & the two current vectors to <file>_ckpt.bin)
+                                                 ! & a run with a valid checkpoint resumes from its last step ... 0: none
     end type ncsm_params_t
 
     type, public :: calculation_params_t

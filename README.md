@@ -19,6 +19,7 @@ output files of the original:
 | `EMPM`                             | — complete EMPM: `EMPM_TDA` + `EMPM_2PH` + couplings & full Hamiltonian (`nondiag`, `fullham`) |
 | `EMPM_3PH`, `EMPM_4PH`, `EMPM_FULL` | — EMPM: 3-/4-phonon equations of motion, full Hamiltonian with up to 1 .. 4 phonons |
 | `EMPM_TRANS`                       | — EMPM: B(E1; 0+_gs -> 1-) of the `EMPM_FULL` states (Full_N <= 2) |
+| `EMPM_SF`                          | — EMPM: E1 strength function with up to 3 phonons by Lanczos, no 3-phonon eigenproblem |
 | `NCSM`                             | — no-core shell model (HO Nmax or npnh in the HF basis), optional transitions |
 
 > **Earlier test runs (until 2026-11-06)** are in `backup_2026-11-06/`. It holds `runs/` (inputs, logs, results and
@@ -450,6 +451,37 @@ from |HF> (the 0+ basis state 1, Ex = E - E_HF): `Full2_<lab>_E1_fromHF.dat`. On
 4 shells, complete): unprojected <= 1 / <= 2 phonons equal NCSM <= 1p1h / <= 2p2h (Transitions) in all 8 / 126 1- states
 (energies exactly, B to 5e-9); from |HF> the sum over all <= 2-phonon 1- states equals the <= 1 sum (HF sum rule).
 
+### E1 strength function with up to 3 phonons by Lanczos (`EMPM_SF`)
+
+B(E1; 0+_gs -> 1-) with the g.s. up to 2 phonons and the 1- space up to 3 phonons, without the 3-phonon eigenproblem and
+without the full diagonalization (`EMPM_SF` in `nj_empm_driver.f90`). It runs on top of `EMPM_TDA`, `EMPM_2PH` (all channels,
+`Save_X = .true.`) and `EMPM_FULL` with `Full_N = 2`, `JPF = '0+'` (the g.s. = lowest 0+ of `Bin/EMPM_FULL2_0+_Z_unproj.bin`);
+`Ortho = .false.`. Input (`&empm`): `SF_Steps` (100), `SF_Op` = `'iv'` (default), `'is'`, `'ph'`, `SF_Reorth` (.true.),
+`SF_Mode`. The 1- space is [1-phonon ; 2-phonon states ; 3-phonon sector], the couplings are those of `EMPM_FULL` taken
+before the projection on the 3-phonon states (H|a_2> -> sqrt(2J+1) V(:,a), H|lambda> -> h20(gamma) on |gamma lambda>,
+Q_ph|a_2; 0+> -> bL(lambda) on |a lambda>), the [1 ; 2] part of Q|g> is that of `EMPM_TRANS`.
+
+* `SF_Mode = 'full'` (default): the 3-phonon sector is the whole redundant basis |a lambda; 1-> (all 2-phonon states x
+  phonons). A vector is kept by its coefficients c; the equations of motion give H|i> = sum_k A(i,k)|k>, so H acts as
+  c -> A^T c and the scalar product is c^T D d. Neither D^-1 nor a Cholesky factor is needed. With complete sets D has only
+  the eigenvalues 0, 5 and 9 (sum_i |i><i| = N_p(pi) N_h(pi) + N_p(nu) N_h(nu) on 3p3h, the phonons being
+  charge-conserving), so P = D (14 - D)/45 projects on its range; the null-space part of c, which the metric does not see
+  but which grows by a factor ~2.4 per step (4He: breakdown after 29 steps without it), is removed by c -> P c in every
+  step. One product with A^T and two with D per step. Complete sets only (no `E2max`, `E3max`); A & D are dense
+  (16 N3^2 bytes), so this mode is a reference implementation for small spaces.
+* `SF_Mode = 'ind'`: the independent rows I of the 3-phonon basis as in `EMPM_3PH` (pivoted Cholesky of D, or
+  `Ind_Greedy`; rows `E3max`), H_II = A_I D_I^T and D_II = U^T U; Lanczos on the orthonormal states with
+  H~ = U^-T H_II U^-1 and the couplings U^-T D_I g. Also for truncated bases, with the usual EMPM approximations.
+
+Outputs `EMPM/SF/SF_E1_<op>.dat` (poles: E - E_HF, Ex, B, residual), `_steps.dat` (poles after every step) and `_coef.dat`
+(alpha_j, beta_j), in the format of the NCSM strength function. The log has a Hermiticity check (<x|H y> = <H x|y> on
+random vectors) and the check of the D spectrum. Checks (`runs/empm_sf/`, `compare_coef.py`): 4He in 4 shells (1- space
+8 + 118 + 12030 redundant, 1266 independent) and 16O in 3 shells (10 + 190 + 28832, 4552 independent; A & D 13.3 GB)
+against the NCSM (g.s. <= 2p2h, 1- <= 3p3h, `Single = .false.`): S0 equal to 4e-15, alpha_1 and beta_1 to 1e-14, all 40
+coefficients to 2e-6 or better (both modes; the difference grows with the step as usual for Lanczos). Truncated
+(4He, `E3max = 45`, 46 independent rows): the Lanczos poles equal the 1- eigenvalues of `EMPM_3PH` + `EMPM_FULL`
+(`Full_N = 3`) to the 6 printed digits.
+
 ## NCSM (`src/ncsm/`, action `NCSM`)
 
 No-core shell model in the m-scheme HO basis with the same matrix elements, as a reference for the EMPM (light nuclei;
@@ -503,8 +535,18 @@ lowest parity + state (`Tr_From = 'gs'`, kept for the parity - run) or from the 
 `<ncsm file>_E<L>.dat` (k, E, Ex, J, B_ph, B_is, B_iv, M_p, M_n) & the sum rule (2L+1)|Q_p g|^2 in the header (B_ph
 protons with bare charge, B_is, B_iv with the recoil charges N/A, Z/A). `Tr_Lanczos = n`: strength-function Lanczos of
 n steps from Q|g> for B_ph, B_is, B_iv (`<file>_E<L>_SF_{ph,is,iv}.dat`: k, E, Ex, B, residual; header E_g, dim, S0).
+`Tr_Ops = 'E1iv'` (list of `E<L><ph|is|iv>`, default '' = all): only the listed strength functions (6x fewer products of H
+for one of them). `Tr_Lanczos = 1` already gives m0 & the centroid m1/m0 exactly, with the width sigma as the residual.
 `Tr_Gs_Nmax = m` (with e.g. `Nmax_List = 2, 3`): the g.s. of the <= m p m h run is kept (by SD occupations, remapped into
 the larger basis) and used as the initial state of the larger run (g.s. <= n p n h -> excited states <= (n+1)p(n+1)h).
+`Tr_Ckpt = k` (default 0 = off): checkpoint & restart of the strength-function Lanczos. Every step the Lanczos vector is
+written to `<file>_E<L>_SF_<op>_vecs.bin` (n x 4 bytes with `Tr_Vec = 'single'`, n x 8 with 'double'; only with
+`Tr_Reorth`), every k steps alpha, beta & the current vectors to `<file>_E<L>_SF_<op>_ckpt.bin` (via a .tmp file &
+rename, so a run killed while writing keeps the previous one; about 2 x 8n bytes). A run with the same input that finds a
+valid checkpoint (same dimension, operator & S0) continues after its last step, with `_steps.dat` rebuilt; a larger
+`Tr_Lanczos` extends a finished run (from the checkpoint at step <= Tr_Lanczos - 1). Delete both files to start from step 1.
+The setup (basis, species matrices, g.s.) is redone on restart. Check: 16O 3 shells, 40 steps in one run vs 15 + restart,
+coefficients equal to the run-to-run noise (alpha 7e-8 MeV, beta 6e-12 MeV), single & double vectors.
 `EMPM_TDA` writes `EMPM/Transitions/TDA_E<L>.dat` (E, B_ph, B_is, B_iv as `HF_RPA`). Checks: 16O 4 shells, <= 1p1h vs
 HF_RPA TDA (`Ortho = .false.`) all E0 .. E3 states, energies exactly & B to 4e-9 (`tests/cmp_ncsm_tda_tr.py`); 208Pb
 window (NN + NNN, 13 shells), NCSM <= 1p1h vs EMPM_TDA equal (B to 3e-9); 16O g.s. <= 2p2h with 1- <= 3p3h agrees with
