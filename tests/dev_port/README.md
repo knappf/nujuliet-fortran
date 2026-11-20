@@ -34,6 +34,8 @@ tests/dev_port/
 | `o16_open` | bundled | `io/O20` 20O (0d5/2 neutrons 4/6 filled), HF `ESH=false` → TDA → RPA with default tolerances (0d5/2 dropped from the 1p1h space), `TDA-frac`/`RPA-frac` with `Tol_par=0.9`, `Tol_hol=0.5` (0d5/2 both particle and hole) + 2+ transition densities |
 | `hf_options` | bundled | HF options of no other case, HF only (`BMF = false`): `io/O16_VHF` 16O `V_HF = true` (radial HF potential, CMS1+2B); `io/O18_ESH` 18O `ESH = true` (valence neutrons in 1s1/2), `V_HF = true`, `CMS = "None"` |
 | `mbpt_options` | bundled | HF-MBPT export branches of no other case, HF + MBPT only: `io/O28_TBCF` 28O (N = 20, N != Z, fix F1) `Export`, `TBCF`, `ScH = false`; `io/O16_ScH` 16O `Export`, `ScH`, `TBCF = false` |
+| `rpa_options` | bundled | TDA/RPA options (stage 3): `io/O16` 16O HF → TDA, RPA `Ortho = false` (`TDA-noOrtho`, `RPA-noOrtho`), RPA `TBCF`, `RPA_Orb`, `Transitions = 'Exact'` (`RPA-TBCF`: RPA_sigma with fix F2, density energy, natural-orbital export); `io/O16_MBPT` HF + MBPT(Export, TBCF, ScH) → RPA `Reference = 'HF-MBPT'`, `Reference_TBCF`, `TBCF`, `'Exact'` (`RPA-dress`: Sigma_AB dressing energy), RPA `Reference_TBCF`, `DEV = true` (`RPA-DEV-TBCF`: RPA_allocate_SE, stage 3 part 2); part 2 additions: externals on `TDA-noOrtho`/`RPA-noOrtho` (2- analysis `Cut = 0.05`, 2+ densities `File_Name = 'D2'`, 0+/3- operator densities, 2+ currents `M = 1` on 20 x 30, both `*_transitions_recalculate`), `RPA-Exact` + 1- densities/analysis/currents/recalculation, `io/O16_MBPT` `RPA-DEV-dress` (`Reference_TBCF`, `TBCF`, `DEV`, `'Exact'`: SE in A and in the dressing energy) + all RPA externals, `TDA-MBPT` + operator densities/analysis/recalculation, `RPA-DEV-frac` (`DEV`, `Tol_par = 0.9`, `Tol_hol = 0.02`: overlapping particle/hole sets) |
+| `qp_options` | bundled | quasiparticle-chain options (stage 3): `io/Ne22_HFB` 22Ne HFB (open p & n shells) → QTDA `Ortho = false` → pnQTDA (QRPA stops in both codes: complex eigenvectors); `io/O20_LN` 20O HFB `LNT`, `LNRes` → QRPA; `io/O20_MCA` HFB `Pairing = 'MCA'` → QTDA; `io/O20_HBCS` HFB `Pairing = 'BCS'` → pnQTDA; `io/O20_ScBCS` BCS `ScBCS`, `A0 = 16`, `Z0 = 8` → QTDA, pnQTDA, QRPA `Ortho = false` (`Reference = 'BCS'`) |
 
 The parameters of every step are in the driver scripts; the Fortran namelist inputs must reproduce them
 (`Path` and `Name` give the output directories).
@@ -76,6 +78,9 @@ matching GLOB in order, e.g. `./run_fortran.sh bundled 8 '*_HF.nml'` for the HF 
 `H2b.bin` in the HF basis and `H1b.bin`, `H2b.bin`, `sigma.bin` in the HF-MBPT natural-orbital basis are SIGN when an
 HF / natural orbital has the opposite sign (stage-2 check with the column-sign gauge of `C.bin` applied element-wise:
 agreement to <= 2.3e-13; `python3 -I gauge_check.py REF_BIN NEW_BIN NMAX N2MAX` does this check).
+Quasiparticle chain (stage 3): `qpH2b.bin`, `QTDA_X.bin`, `QRPA_X/Y.bin`, `pnQTDA_X.bin` are SIGN when a quasiparticle
+state (C / U,V column) has the opposite sign; `python3 -I qp_gauge_check.py REF_IO NEW_IO NMAX N2MAX BCS|HFB` (REF_IO,
+NEW_IO = `io/<Path>`) derives the quasiparticle signs from C, U, V of the reference solver and compares element-wise.
 
 ### Original plan text (stage 1)
 

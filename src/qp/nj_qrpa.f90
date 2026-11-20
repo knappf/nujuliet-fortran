@@ -1,4 +1,5 @@
-! Spherical quasiparticle random-phase approximation ... counterpart of QRPA/*.jl ...
+! Spherical quasiparticle random-phase approximation ... counterpart of dev QRPA/*.jl ... input io/<Path>/<Reference>/bin,
+    ! output io/<Path>/QRPA/{bin,densities,transitions,spectra,amplitudes} ...
 module nj_qrpa
     use nj_kinds
     use nj_types
@@ -8,7 +9,7 @@ module nj_qrpa
     use nj_wigner, only : wigner_init_float
     use nj_orbitals, only : orbitals_make, orbitals_2qp_make
     use nj_o1b
-    use nj_obdm, only : OBDM_chR2, OBDM_export
+    use nj_obdm, only : rho_chR2, rho_export
     use nj_tr1b, only : qptr1b_t, qpTr1b_initialize
     use nj_qpo2b, only : qpO2b_import
     use nj_hfb, only : HFB_particle_number
@@ -44,19 +45,16 @@ contains
             write(*,'(a)') '_________________________________________________________'
         end if
         write(*,'(a)') trim(Params%Calc%Path)
-        if (.not. is_dir(io_path(Params,''))) then
-            write(*,'(/,a)') 'Error! ... No precomputed reference quasiparticle mean-field (HFB, BCS) solution is available in ' // &
-                             'given Input_File path ... run HFB/BCS solver first ...'
-            return
-        end if
+        if (.not. qex_reference_check(Params,Params%Calc%QRPA%Reference,[character(len=5) :: 'C.bin', 'U.bin', 'V.bin'])) return
         if (is_dir(io_path(Params,'/QRPA'))) call remove_dir(io_path(Params,'/QRPA'))
-        call make_dir(io_path(Params,'/QRPA/Densities'))
-        call make_dir(io_path(Params,'/QRPA/Transitions/E0'))
-        call make_dir(io_path(Params,'/QRPA/Transitions/E1'))
-        call make_dir(io_path(Params,'/QRPA/Transitions/E2'))
-        call make_dir(io_path(Params,'/QRPA/Transitions/E3'))
-        call make_dir(io_path(Params,'/QRPA/Spectra'))
-        call make_dir(io_path(Params,'/QRPA/Amplitudes'))
+        call make_dir(io_path(Params,'/QRPA/bin'))
+        call make_dir(io_path(Params,'/QRPA/densities'))
+        call make_dir(io_path(Params,'/QRPA/transitions/E0'))
+        call make_dir(io_path(Params,'/QRPA/transitions/E1'))
+        call make_dir(io_path(Params,'/QRPA/transitions/E2'))
+        call make_dir(io_path(Params,'/QRPA/transitions/E3'))
+        call make_dir(io_path(Params,'/QRPA/spectra'))
+        call make_dir(io_path(Params,'/QRPA/amplitudes'))
 
         write(*,'(/,a)') 'Starting QRPA calculation ...'
         call timer_start(t0)
@@ -84,14 +82,16 @@ contains
         real(dp) :: chR2, E_corr
         logical :: Stability
         integer :: J, P
+        character(len=:), allocatable :: Ref
 
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Ref = '/' // trim(Params%Calc%QRPA%Reference) // '/bin/'
+        Orb = orbitals_make(Params)
         Orb_2qp = orbitals_2qp_make(Params,Orb)
-        C = O1b_import(Params,Orb,io_path(Params,'/Bin/C.bin'))
-        U = O1b_import(Params,Orb,io_path(Params,'/Bin/U.bin'))
-        V = O1b_import(Params,Orb,io_path(Params,'/Bin/V.bin'))
-        H_N = qpO1B_import(Params,Orb,io_path(Params,'/Bin/qpH1B.bin'))
-        call qpO2b_import(Params,Orb,io_path(Params,'/Bin/qpH2B.bin'),H_NN,Orb_NN)
+        C = O1b_import(Params,Orb,io_path(Params,Ref // 'C.bin'))
+        U = O1b_import(Params,Orb,io_path(Params,Ref // 'U.bin'))
+        V = O1b_import(Params,Orb,io_path(Params,Ref // 'V.bin'))
+        H_N = qpO1B_import(Params,Orb,io_path(Params,Ref // 'qpH1b.bin'))
+        call qpO2b_import(Params,Orb,io_path(Params,Ref // 'qpH2b.bin'),H_NN,Orb_NN)
         qpTrOp = qpTr1b_initialize(Params,Orb,1.0_dp,C,U,V)
         qpN = qpN1B_make(Params,U,V)
 
@@ -102,7 +102,7 @@ contains
         call QRPA_diagonalize(Params,Orb,Orb_2qp,A,B,qpN,qpTrOp,E,X,Y,Stability)
         A_phonon = QRPA_A_phonon_particle_number(Params,Orb,Orb_2qp,U,V,X,Y)
         Rho = QRPA_OBDM(Params,Orb,Orb_2qp,U,V,Y,A_phonon)
-        chR2 = OBDM_chR2(Params,Orb,C,Rho)
+        chR2 = rho_chR2(Params,Orb,C,Rho)
         qpTrOp = qpTr1b_initialize(Params,Orb,chR2,C,U,V)
 
         allocate(E_re(2,0:ubound(E,2)))
@@ -412,7 +412,7 @@ contains
 
         ! Summary ...
         write(*,'(/,a)') 'Preparing QRPA summary file ...'
-        open(newunit=u, file=io_path(Params,'/QRPA/QRPA_Summary.dat'), status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QRPA/QRPA_summary.dat'), status='replace', action='write')
         write(u,'(a)') 'Spherical Quasiparticle Random-Phase Approximation review:'
         call qex_header(u,Params,Params%Calc%QRPA%Ortho)
         write(u,'(/,a)') 'Stability of the QRPA system:'
@@ -430,21 +430,21 @@ contains
 
         ! Binary export ... complex X, Y & E ...
         write(*,'(/,a)') 'Performing binary export of QRPA energies E & amplitudes X & Y ...'
-        open(newunit=u, file=io_path(Params,'/Bin/QRPA_X.bin'), access='stream', form='unformatted', status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QRPA/bin/QRPA_X.bin'), access='stream', form='unformatted', status='replace', action='write')
         do J = 0, J_max
             do P = 1, 2
                 if (size(X(P,J)%v) > 0) write(u) X(P,J)%v
             end do
         end do
         close(u)
-        open(newunit=u, file=io_path(Params,'/Bin/QRPA_Y.bin'), access='stream', form='unformatted', status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QRPA/bin/QRPA_Y.bin'), access='stream', form='unformatted', status='replace', action='write')
         do J = 0, J_max
             do P = 1, 2
                 if (size(Y(P,J)%v) > 0) write(u) Y(P,J)%v
             end do
         end do
         close(u)
-        open(newunit=u, file=io_path(Params,'/Bin/QRPA_E.bin'), access='stream', form='unformatted', status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QRPA/bin/QRPA_E.bin'), access='stream', form='unformatted', status='replace', action='write')
         do J = 0, J_max
             do P = 1, 2
                 if (size(E(P,J)%v) > 0) write(u) E(P,J)%v
@@ -455,7 +455,7 @@ contains
 
         ! Spectrum ...
         write(*,'(/,a)') 'Preparing export of QRPA spectra ...'
-        open(newunit=u, file=io_path(Params,'/QRPA/Spectra/QRPA.dat'), status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QRPA/spectra/QRPA.dat'), status='replace', action='write')
         write(u,'(a)') cfmt_s('J',5,.true.) // ' ' // cfmt_s('P',5,.true.) // ' ' // cfmt_s('Re E',20,.true.) // ' ' // &
                        cfmt_s('Im E',20,.true.) // ' ' // cfmt_s('A-body',12,.true.)
         do J = 0, J_max
@@ -475,7 +475,7 @@ contains
 
         ! Norms of the amplitudes ... per channel & energy ordered ...
         write(*,'(/,a)') 'Preparing export of the norms of the QRPA amplitudes X & Y ...'
-        open(newunit=u, file=io_path(Params,'/QRPA/Amplitudes/QRPA_Amplitudes_Ordered.dat'), status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QRPA/amplitudes/QRPA_amplitudes_ordered.dat'), status='replace', action='write')
         write(u,'(a)') cfmt_s('E',12,.true.) // ' ' // cfmt_s('|X|^2',12,.true.) // ' ' // cfmt_s('|Y|^2',12,.true.)
         do J = 0, J_max
             do P = 1, 2
@@ -505,7 +505,7 @@ contains
             end do
         end do
         call sortperm(E_ord,Sort)
-        open(newunit=u, file=io_path(Params,'/QRPA/Amplitudes/QRPA_Amplitudes.dat'), status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QRPA/amplitudes/QRPA_amplitudes.dat'), status='replace', action='write')
         write(u,'(a)') cfmt_s('Ind',12,.true.) // ' ' // cfmt_s('E',12,.true.) // ' ' // cfmt_s('J',12,.true.) // ' ' // &
                        cfmt_s('P',12,.true.) // ' ' // cfmt_s('|X|^2',12,.true.) // ' ' // cfmt_s('|Y|^2',12,.true.)
         do nu = 1, N_tot
@@ -524,15 +524,15 @@ contains
         write(*,'(a)') TAB // TAB // 'dZ = ' // cfmt_f(Z,12,6)
         write(*,'(a)') TAB // TAB // 'dN = ' // cfmt_f(N,12,6)
         write(*,'(/,a)') TAB // 'Exporting the corrected QRPA particle numbers ...'
-        open(newunit=u, file=io_path(Params,'/QRPA/QRPA_Summary.dat'), position='append', action='write')
+        open(newunit=u, file=io_path(Params,'/QRPA/QRPA_summary.dat'), position='append', action='write')
         write(u,'(/,a)') 'QRPA particle number values Z & N:'
         write(u,'(/,a)') 'Z = ' // cfmt_f(Z,12,6)
         write(u,'(a)') 'N = ' // cfmt_f(N,12,6)
         close(u)
 
-        call OBDM_export(Params,Orb,io_path(Params,'/QRPA/QRPA_Summary.dat'), &
-                         io_path(Params,'/QRPA/Densities/QRPA_Radial_Densities.dat'),Rho,C)
-        call qex_transitions_export(Params,Orb,Orb_2qp,Rho,E_re,rB,'QRPA')
+        call rho_export(Params,Orb,io_path(Params,'/QRPA/QRPA_summary.dat'), &
+                        io_path(Params,'/QRPA/densities/QRPA_radial_densities.dat'),Rho,C)
+        call qex_transitions_export(Params,Orb,Orb_2qp,Rho,E_re,rB,'QRPA',Params%Calc%QRPA%Reference)
     end subroutine QRPA_export
 
 end module nj_qrpa

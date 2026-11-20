@@ -1,0 +1,38 @@
+! dev-port test case 'rpa_options': 16O RPA on HF-MBPT, Reference_TBCF, TBCF, DEV, 'Exact' (RPA_allocate_SE in A & dA) + TDA-MBPT + externals
+! Run the files of this directory in order from one work directory: nujuliet 01_*.nml 02_*.nml ... (see ../../run_fortran.sh)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 16, Z = 8, hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+  CMS = 'CMS1+2B'
+  Path = 'O16_MBPT'
+/
+&hf_mbpt
+  Export = .true., TBCF = .true., ScH = .true.
+/
+&tda
+  Name = 'TDA-MBPT', Reference = 'HF-MBPT', Reference_TBCF = .true.
+/
+&rpa
+  Name = 'RPA-DEV-dress', Reference = 'HF-MBPT', Reference_TBCF = .true., TBCF = .true., DEV = .true., Transitions = 'Exact'
+/
+&run
+  Solvers = 'RPA', 'TDA', 'RPA_transition_densities', 'RPA_transition_operator_densities', 'RPA_transition_analysis',
+            'RPA_transition_currents', 'RPA_transitions_recalculate', 'TDA_transition_operator_densities',
+            'TDA_transition_analysis', 'TDA_transitions_recalculate'
+/
+&transition_densities
+  JP = '1-', nu_list = 5, 6, 7
+/
+&transition_operator_densities
+  JP = '1-', nu_list = 5, 6, 7
+/
+&transition_analysis
+  JP = '1-', nu_list = 5, 6, 7
+/
+&transition_currents
+  JP = '1-', M = 0, nu_list = 5, 6, 7
+/

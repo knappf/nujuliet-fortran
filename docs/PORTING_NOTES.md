@@ -352,3 +352,135 @@ Kept faithfully (listed in `UPSTREAM_BUGS.md`): `HF_MBPT_export` with `ScH = fal
 density Rho_NAT; the summary text `E_0^(3) / A ... correction to ground-state energy` lacks "per nucleon".
 
 Not ported (dead in dev): `Orb1B_HF_MBPT3` (defined, never used), the unreachable `return 0.0` of `HF_MBPT_h1b`.
+
+## NuJuliet dev port (f3f7a33) ... stage 3, quasiparticle chain (spec `docs/dev_port/qp.md`; track QP)
+
+Sources: `src/qp/` (`nj_qpo2b`, `nj_bcs`, `nj_hfb`, `nj_qex`, `nj_qtda`, `nj_qrpa`, new `nj_pnqtda`, dispatcher `pnQTDA`).
+The section "Chain B" above describes the base port; this section lists what changed with dev.
+
+Legacy handling: no legacy consumer reads the BCS/HFB/QTDA/QRPA outputs (`consumers.md`; EMPM/NCSM use the HF chain
+only), so the chain was replaced **in place**; there are no `*_LEGACY` actions for it. The chain no longer uses
+`nj_hf_legacy` (BCS uses the dev `HF_solve`/`HF_energy`/`HF_orbitals_make` of `nj_hf`, HFB `HF_orbitals_make`).
+Orbitals are the dev `orbitals_make(Params)` (Calc.Nmax) everywhere.
+
+Dev changes ported (spec table A-J): output layout `io/<Path>/{BCS,HFB}/{bin,densities}` (no `Bin/`), lowercase file
+names (`qpH1b.bin`, `qpH2b.bin`, `*_summary.dat`, `lambda_2.bin`, ...); `Reference` of `&qtda`/`&qrpa`/`&pnqtda`
+selects `io/<Path>/<Reference>/bin` (precondition: C, U, V files resp. qpH1b, qpH2b for pnQTDA, dev error text);
+QTDA/QRPA folders `bin, densities, transitions/E0..E3, spectra[, amplitudes]` (`QTDA_plot.dat` vs `QRPA_Plot.dat`
+as dev); O^(40) pp/nn direct-term sign flip; new H^22 pn(11,11) (engine `Fch = 4`/`Out = 7` with the 4-block Pandya
+`pnpn`, accessor `qpO2b_1111_pn`); `qpO2b_import` file-size check (dev message; expected size from the port's channel
+range, port note B.3); BCS & HFB(`Pairing='BCS'`) via `HF_orbitals_make` (target fractional filling); HFB modified
+Broyden mixing (`broyden_t`, verbatim algorithm, gamma via `dsysv('U')` like Julia's Bunch-Kaufman `Symmetric \`),
+safeguarded secant/bisection for Lambda + `Lambda_H` bookkeeping + closed-shell gap Lambda, (l,j)-block matching with
+Hungarian assignment and Loewdin projection (`HFB_orbital_matching`) in all three ordering routines; new solver pnQTDA.
+
+Deviations:
+1. **F3** (clear bug, fixed, mirrored in `port-ref`): `HF_BCS_initialize_chemical_potential` uses the mid-gap value
+   `Lambda = 0.5*(Eps_hole + Eps_particle)` (dev: `0.5*(Eps_hole - Eps_particle)`).
+2. Port notes B.1 (Broyden net effect) and B.5 (fatal on failed ordering) of chain B are **obsolete** (dev mixes for
+   real; the matching cannot fail). B.2 (`V_NN_Ref` not read), B.3 (export channel range), B.4 (silenced output) still
+   apply.
+3. HFB chemical-potential bracket / gap: dev's NaN markers are logical flags (`Has_lo`, `Has_hi`, `Has_gap`), so the
+   logic does not depend on NaN semantics under ifx fast floating point. Loewdin `P (P^T P)^(-1/2)` uses `eig_sym` and
+   `Z diag(w^-1/2) Z^T` (Julia: `inv(sqrt(Symmetric(S)))`), equal to rounding.
+4. `HFB_diagonalize_BCS` calls `HF_orbitals_make` on a local copy of `Orb` (dev mutates HFB's `Orb` occupations, which
+   no HFB routine reads afterwards); the ESH fatal is reproduced by `HF_orbitals_make` itself.
+5. Robustness guards (fatal instead of out-of-bounds / dev `KeyError`): `qpO2b` and `pnQTDA` with `N2max < 2*Nmax`
+   (the direct O2b terms resp. the pn 2qp pairs need 2-body pairs up to 2*Nmax), `qpO2b_1111_pn` with a missing pair.
+6. Determinism: the Lipkin-Nogami traces (`HFB_Lipkin_Nogami_Lambda_2`) are summed per orbital and added in orbital
+   order instead of an OpenMP `reduction` (the LN field feeds back into the iteration; with the reduction 1 vs 8
+   threads differed by ~1e-11 with eigenvector sign flips). Other reductions only affect final energies (1e-15 rel.).
+7. pnQTDA: `Orb_pn2qp` reuses `orb2b_2qp_t` with `T = 0` without the (unused) lookup; `pnQTDA_allocate` is one OpenMP
+   task per (J,P) block (each block written by one thread). `QTDA/QRPA/pnQTDA_import_binary` (`*_external.jl`) have no
+   caller in dev and are not ported.
+8. `&qtda/&qrpa/&pnqtda Reference` is validated as a folder name (common A reader) rather than restricted to HFB/BCS;
+   a wrong name gives dev's "No precomputed reference" message.
+
+Kept faithfully (`UPSTREAM_BUGS.md`): BCS reference HF with the target fractional occupations; `HFB_diagonalize_BCS`
+ESH throw for open shells; QTDA/QRPA plot files drop the highest level (pnQTDA writes all); `BCS`/`HFB` both remove
+`io/<Path>`; QRPA complex (A-B)(A+B) eigenvectors stop the run (dev `InexactError`, e.g. 22Ne with the bundled
+interaction); MCA `Delta`, degeneracy `Rho_1`, LN `Delta`, `QRPAE3.dat`/`Mev` (chain B list).
+
+Not ported (dead in dev): `HFB_Broyden_BackUp.jl` (not included), `HFB_canonical_basis_diagonalize`,
+`qpO2b_31` (caller commented out), the `*_import_binary` readers (no caller).
+
+## NuJuliet dev port (f3f7a33) ... stage 3, TDA & RPA part 1 (spec `docs/dev_port/tda_rpa.md` sections 2-5, 9; track RPA)
+
+New files (`src/rpa/`): `nj_ph_common.f90` (1p1h metric, spurious vector + closed-form Gram-Schmidt, shared
+`ph_allocate(Want_B)` = RPA_allocate / TDA_allocate, `ph_allocate_tbcf(Want_B,DEV)` = RPA_allocate_TBCF /
+TDA_allocate_TBCF incl. the DEV pf/nf contact terms, shared `ph_rB` with the f3f7a33 isovector E1 fixes, shared
+`ph_transitions_export`, summary/dimension/plot helpers), `nj_tda.f90` (TDA_diagonalize, TDA_transition_kernel, TDA_rM,
+TDA_export), `nj_rpa.f90` (RPA_diagonalize, RPA_OBDM_oY2, RPA_energy + QBA/dress/rho, RPA_rM incl. `Transitions =
+'Exact'` with the RPA Sigma, RPA_sigma), `nj_rpa_export.f90`, `nj_tda_rpa_driver.f90` (actions `TDA`, `RPA`). Shared
+change: `nj_linalg::eig_sym_gen` (dsygvd itype 1, 'V', 'U'; the TDA orthogonalized 1- channel). Spec section 9 items
+1-7, 9-12 were already in place (stages 1-2).
+
+Deviations:
+1. **F2** (clear bug, fixed, mirrored in `port-ref`): `RPA_sigma` pn branch, hole-particle-particle-hole term uses `X`
+   in `RPA_sigma_hpph` (dev passes `Y`, `RPA_sigma.jl:208-210`).
+2. TDA writes the marker `<Name>/.TDA_output` (dev checks for it before deleting an existing output folder but never
+   writes it, so a TDA re-run with the same `Name` was refused). `compare.py` ignores the marker.
+3. RPA with `Reference_TBCF = .true.` and no `<Reference>/bin/sigma.bin` stops (`fatal`); dev silently runs without the
+   reference Sigma. `Name == Reference` is refused by the `&tda`/`&rpa` readers (dev RPA deletes the reference).
+4. RPA spurious 2x2 problem: when `|E_s|` or `|n_s|` is exactly `1e-8` the zero-norm (else) branch is taken (dev leaves
+   `E[1]`, `X[:,1]`, `Y[:,1]` undefined).
+5. Determinism: every threaded loop writes disjoint elements (A/B/N rows i_ph with their mirrored columns, the W1/W2
+   rows, the kernel columns, the Sigma (Bra,Ket,T) list); `RPA_OBDM_oY2` and the QBA / dressing energies accumulate
+   per (J,P) block and sum the blocks in JP order (dev does the same with threads). Only `V2b_correlation_energy`
+   (core, `reduction(+)`) is order dependent, at the 1e-15 relative level.
+6. Stage 3 part 2 items: `RPA DEV = .true.` together with `Reference_TBCF` (the only path reaching `RPA_allocate_SE`)
+   stops with "not ported yet"; `DEV = .true.` without a reference Sigma is identical to dev (the DEV switch is then
+   inert, as in dev). The pf/nf contact terms of `RPA_allocate_TBCF` are already ported (`ph_allocate_tbcf(DEV)`).
+7. Port notes 6 (OBDM race) and 9 (spurious state in the OBDM) apply to the LEGACY `HF_RPA` only; the dev RPA follows
+   dev exactly (spurious 1- state with a real `E_s` enters OBDM, energy and Sigma; only the E1 moments skip it).
+8. The LEGACY actions `HF_RPA`, `HF_RPA_transition_densities/currents`, `HF_RRPA*` and their files stay unchanged
+   (`nj_hf_rpa*.f90` is needed by EMPM until stage 5, `HF_RRPA` until HF_ScRPA in stage 4).
+
+Not ported (dead in dev): the Sigma variant of `RPA_spurious_ini` (`RPA_spurious.jl:40-130`), `RPA_OBDM_sigma`, the
+commented-out pf/nf block of `TDA_allocate_TBCF`, the commented-out Sigma_NAT transformation of `RPA_export`.
+
+## NuJuliet dev port (f3f7a33) ... stage 3, TDA & RPA part 2 (spec `docs/dev_port/tda_rpa.md` sections 4.4, 6, 7; track RPA)
+
+New files (`src/rpa/`): `nj_rpa_se.f90` (`RPA_allocate_SE`, the experimental DEV path), `nj_ph_external.f90` (the ten
+external actions `TDA_/RPA_transition_densities`, `_transition_operator_densities`, `_transition_analysis`,
+`_transition_currents`, `_transitions_recalculate` of `TDA_external.jl` / `RPA_external.jl`, incl.
+`RPA_transition_kernel` for `Transitions = 'Linear'` and `'Exact'` with the RPA Sigma). Shared (additive): `nj_input`
+namelists `&transition_operator_densities` (`JP, nu_list, File_Name = 'Phonon_Transition_Operator_Densities'`) and
+`&transition_analysis` (`JP, nu_list, File_Name = 'Phonon_Transtion_Analysis'` (dev spelling), `Cut = 0.1`),
+`run_input_t%Op_Densities`, `%Analysis`, `export_request_t%Cut`. `&transition_currents` `M = 0` is the dev default
+`M = -1` (= 0).
+
+Deviations:
+1. `RPA_allocate_SE` (reached from `RPA_allocate` and from the dressing energy of `RPA_energy`, both with
+   `Mode = "OnShell"` and the default `Regularization = "DSRG"`, `Gamma = 2`, `dE_bin = 0.1`, `Chunk = 32768`):
+   algorithmic restructuring with the same result up to round-off. Dev accumulates the binned spectral weights
+   `W[i,j,b]` (N_ph^2 x N_bin per channel, 1234-1897 bins on the bundled case) and evaluates a full `Sigma(w_i)` for
+   every row (N_ph^3 N_bin); the port contracts the two bin weights of every 2p-2h configuration with
+   `f(Delta_b - w_i)` first, `dA = (S + S^T)/2`, `S = (A_12 o G) A_12^T` (`G[i,c] = -g_c(w_i)`), one dgemm per block of
+   configurations (plus the backward `B_12` part with `f(Delta_b + w_i)` when particle and hole sets overlap). The
+   pole grid, bins, linear splitting, `1/N_c`, the configuration list and the vertices are dev's. The order of
+   degenerate configurations (Julia `Dict` iteration + stable sort) only changes the round-off. `expm1` is libm's.
+2. Not ported (unreachable: both callers pass `Mode = "OnShell"` and the default regularization): the modes `"QP"`
+   (`SE_QP`, root search, des Cloizeaux orthogonalization) and `"Fixed"`, the regularizations `"Imaginary"` and
+   `"None"`, `RPA_allocate_SE_Old`. The removed "not ported yet" stop of part 1 makes `DEV = .true.` with
+   `Reference_TBCF` run as in dev.
+3. External actions, robustness guards: a `JP` outside `0..J_max` or a `nu` outside the stored levels of the channel
+   stops with a message (dev: `BoundsError`), a missing input binary stops with its path (dev: `SystemError`);
+   `levels/`, `densities/` and `transitions/E0..E3` are created with `mkdir -p` (dev: non-recursive `mkdir`, only when
+   `levels/` resp. `transitions/` is missing). The RPA externals stop for `RPA_Orb = .true.` as in dev.
+4. `TDA_transition_operator_densities`: dev fills an `a_max x a_max x N_grid` buffer with `Amp(a,b) r^X R_a R_b` for
+   `a >= b` and mirrors it with `(-1)^((j_b - j_a)/2)`; the port evaluates `<a||Y_J||b>` directly for every pair as in
+   `RPA_transition_operator_densities` (identical, `Amp(b,a) = (-1)^((j_b-j_a)/2) Amp(a,b)`; no buffer). The TDA and RPA
+   densities/currents share one code path; they differ only where dev differs (real vs complex gauge, current pair-map
+   phase `(-1)^((j_b -+ m_b)/2)` and the `|cg| < 1e-14` skip of RPA, level amplitude `g (-1)^J Gamma` vs
+   `-Re(g Gamma)/hat(J)`, analysis columns and criterion).
+5. Current maps: the map points are snapped to the `(r, theta)` grid with `round` (ties to even). At `x = 0`,
+   `theta = pi` and `pi/dtheta = 127.5` is an exact tie, so the snapped node depends on the last bit of `x` and of
+   `atan2`. The port computes the map coordinates with separately rounded products (`volatile`, no FMA contraction)
+   and a scalar `atan2` (`!DIR$ NOVECTOR`), which reproduces Julia (with FMA contraction the `x = 0` column of the maps
+   was mirrored).
+6. `RPA_transitions_recalculate` passes the RPA OBDM in the RPA basis to the shared export (dev passes `C Rho C^T`,
+   which `RPA_transitions_export` transforms back). The summary is cut before the first
+   `"\nReview of {TDA,RPA} electromagnetic transition moments"` as in dev.
+7. The external routines are race-free: kernel columns, grid points, map points and pair maps are each written by one
+   thread; results with 1 and 8 threads agree to 1e-12 (`--strict-sign`).

@@ -1,5 +1,7 @@
-! Spherical HFB solver ... counterpart of HFB/*.jl ...
+! Spherical HFB solver ... counterpart of dev HFB/*.jl (HFB.jl, HFB_solver.jl, HFB_Broyden.jl, HFB_chemical_potential.jl,
+    ! HFB_ordering.jl, HFB_canonical_basis.jl, HFB_export.jl, ...) ... output io/<Path>/HFB/{bin,densities} ...
 module nj_hfb
+    use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
     use nj_kinds
     use nj_types
     use nj_params
@@ -11,8 +13,8 @@ module nj_hfb
     use nj_o2b
     use nj_v2b, only : V2b_read, V2b_residual_no2b
     use nj_v3b, only : V3b_no2b_read, V3b_no2b
-    use nj_obdm, only : OBDM_export
-    use nj_hf_legacy, only : HF_orbital_ordering   ! LEGACY (removed in cleanup stage)
+    use nj_obdm, only : rho_export
+    use nj_hf, only : HF_orbitals_make
     use nj_hf_driver, only : print_run_header
     use nj_qpo2b
     use nj_qp_common, only : pairing_energy
@@ -20,6 +22,27 @@ module nj_hfb
     private
 
     public :: HFB, HFB_density_operator, HFB_particle_number
+
+    ! Modified Broyden mixing state ... counterpart of dev HFB_Broyden & HFB_Broyden_Vector (HFB_Broyden.jl) ... the 4
+        ! components (last index) are 1 pRho, 2 nRho, 3 pKappa, 4 nKappa; M linearized (l,j)-block elements (a <= b),
+        ! m_hist history vectors ...
+    type :: broyden_t
+        integer :: M = 0, m_hist = 0
+        integer, allocatable :: Key(:,:)                    ! (2,M) ... a, b with a <= b
+        real(dp), allocatable :: w(:)                       ! (M) weights
+        real(dp), allocatable :: x(:,:), y(:,:), z(:,:), r(:,:), s(:,:)       ! (M,4)
+        real(dp), allocatable :: Xh(:,:,:), Rh(:,:,:)                       ! (M,m_hist,4)
+    end type broyden_t
+
+    interface
+        subroutine dsysv(Uplo,n,Nrhs,A,Lda,Ipiv,B,Ldb,Work,Lwork,Info)
+            import :: dp
+            character(len=1), intent(in) :: Uplo
+            integer, intent(in) :: n, Nrhs, Lda, Ldb, Lwork
+            real(dp), intent(inout) :: A(Lda,*), B(Ldb,*), Work(*)
+            integer, intent(out) :: Ipiv(*), Info
+        end subroutine dsysv
+    end interface
 
 contains
 
@@ -33,11 +56,11 @@ contains
 
         if (is_dir(io_path(Params,''))) call remove_dir(io_path(Params,''))
         call make_dir(io_path(Params,''))
-        call make_dir(io_path(Params,'/Bin'))
         call make_dir(io_path(Params,'/HFB'))
-        call make_dir(io_path(Params,'/HFB/Densities'))
+        call make_dir(io_path(Params,'/HFB/bin'))
+        call make_dir(io_path(Params,'/HFB/densities'))
 
-        write(*,'(/,a)') 'Starting spherical HFB calculation of designated nuclid ...'
+        write(*,'(/,a)') 'Starting spherical Hartree-Fock-Bogoliubov calculation ...'
         call timer_start(t0)
         call HFB_solver(Params)
         call timer_report(t0)
@@ -61,7 +84,7 @@ contains
         integer :: Iteration
         integer(i8) :: t0
 
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = orbitals_make(Params)
         T = T1b(Params,Orb)
         call timer_start(t0)
         call V2b_read(Params,V_NN,Orb_NN)
@@ -79,8 +102,8 @@ contains
         dA = HFB_particle_number_dispersion(Params,Rho,Orb)
         call HFB_summary(Params,E_HFB,T_HFB,Lambda,dA,Convergence,Iteration)
 
-        call OBDM_export(Params,Orb,io_path(Params,'/HFB/HFB_Summary.dat'), &
-                         io_path(Params,'/HFB/Densities/HFB_Radial_Densities.dat'),Rho,C)
+        call rho_export(Params,Orb,io_path(Params,'/HFB/HFB_summary.dat'), &
+                        io_path(Params,'/HFB/densities/HFB_radial_densities.dat'),Rho,C)
         Rho_c%p = mtmm(C%p,Rho%p)
         Rho_c%n = mtmm(C%n,Rho%n)
         call HFB_summary_SQS(Params,SQE,Rho_c,Orb)
@@ -106,15 +129,15 @@ contains
 
             Kappa_c%p = mtmm(C%p,Kappa%p)
             Kappa_c%n = mtmm(C%n,Kappa%n)
-            call O1b_export(Params,Orb,C,io_path(Params,'/Bin/C.bin'))
-            call O1b_export(Params,Orb,U,io_path(Params,'/Bin/U.bin'))
-            call O1b_export(Params,Orb,V,io_path(Params,'/Bin/V.bin'))
-            call O1b_export(Params,Orb,Rho_c,io_path(Params,'/Bin/Rho.bin'))
-            call O1b_export(Params,Orb,Kappa_c,io_path(Params,'/Bin/Kappa.bin'))
-            call qpO1B_export(Params,Orb,H_N,io_path(Params,'/Bin/qpH1B.bin'))
-            call qpO2b_export(Params,Orb_NN,H_NN,io_path(Params,'/Bin/qpH2B.bin'))
+            call O1b_export(Params,Orb,C,io_path(Params,'/HFB/bin/C.bin'))
+            call O1b_export(Params,Orb,U,io_path(Params,'/HFB/bin/U.bin'))
+            call O1b_export(Params,Orb,V,io_path(Params,'/HFB/bin/V.bin'))
+            call O1b_export(Params,Orb,Rho_c,io_path(Params,'/HFB/bin/Rho.bin'))
+            call O1b_export(Params,Orb,Kappa_c,io_path(Params,'/HFB/bin/Kappa.bin'))
+            call qpO1B_export(Params,Orb,H_N,io_path(Params,'/HFB/bin/qpH1b.bin'))
+            call qpO2b_export(Params,Orb_NN,H_NN,io_path(Params,'/HFB/bin/qpH2b.bin'))
 
-            call qp_BMBPT_energy(Params,Orb,Orb_NN,H_N,H_NN,'HFB',io_path(Params,'/HFB/HFB_Summary.dat'))
+            call qp_BMBPT_energy(Params,Orb,Orb_NN,H_N,H_NN,'HFB',io_path(Params,'/HFB/HFB_summary.dat'))
         end if
     end subroutine HFB_solver
 
@@ -152,8 +175,13 @@ contains
         integer, intent(out) :: Iteration
         type(o1b_t) :: U_1, U_2, V_1, V_2, Rho_1, Rho_2, Kappa_1, Kappa_2, H_1, H_2, Delta_1, Delta_2, Rho_Temp, Kappa_Temp
         type(pnvector_t) :: SQE_1, SQE_2, SQE_old
-        type(pnfloat_t) :: Lambda_1, Lambda_2
+        type(pnfloat_t) :: Lambda_1, Lambda_2, Lambda_H
+        type(broyden_t) :: Broyden
         real(dp) :: Z_target, N_target, epsilon, dE, d2E, dZ, dN, Z, N, Z_1, Z_2, N_1, N_2, E_HFB_1(4), E_HFB_2(4), Eye_shift
+        ! Bracket Lambda_lo < Lambda < Lambda_hi (index 1 p, 2 n) & the shell-gap Lambda ... dev NaN = unknown is
+            ! represented by the logical flags Has_* ...
+        real(dp) :: Lambda_lo(2), Lambda_hi(2), Lambda_gap(2)
+        logical :: Has_lo(2), Has_hi(2), Has_gap(2)
         integer :: a_max, Iteration_max, L, a
         logical :: Degeneracy
 
@@ -179,6 +207,7 @@ contains
 
         Lambda = pnfloat_t(Params%Calc%HFB%pL0, Params%Calc%HFB%nL0)
         call HFB_density_operator_initialize(Params,Orb,Rho,Kappa)
+        call HFB_Broyden_initialize(Params,Rho,Kappa,Orb,Broyden)
         SQE_old = SQE
 
         Z_1 = 0.0_dp
@@ -187,11 +216,23 @@ contains
         N_2 = 0.0_dp
         Lambda_1 = pnfloat_t(0.75_dp * Lambda%p, 0.75_dp * Lambda%n)
         Lambda_2 = Lambda
+        Lambda_H = Lambda               ! chemical potential currently contained in the field H
+        Lambda_lo = 0.0_dp
+        Lambda_hi = 0.0_dp
+        Lambda_gap = 0.0_dp
+        Has_lo = .false.
+        Has_hi = .false.
+        Has_gap = .false.
 
         write(*,'(/,a)') 'Starting iteration of HFB equations ...'
         do while (((dE > epsilon) .or. (dZ > epsilon) .or. (dN > epsilon)) .and. (Iteration < Iteration_max))
-            ! Secant iterations for the chemical potentials ...
+            ! Safeguarded secant iterations for the chemical potentials ...
             do L = 1, Iteration_max
+                ! Reset of the bracket ... fields H & Delta have changed ...
+                if (L == 1) then
+                    Has_lo = .false.
+                    Has_hi = .false.
+                end if
                 if ((L == 1) .and. (Iteration == 0)) then
                     call HFB_allocate(Params,Lambda_1,Rho,Kappa,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN,H_1,Delta_1)
                     call HFB_allocate(Params,Lambda_2,Rho,Kappa,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN,H_2,Delta_2)
@@ -203,10 +244,12 @@ contains
                     call HFB_particle_number(Params,Rho_2,Orb,Z_2,N_2)
                     Z = Z_2
                     N = N_2
-                    Lambda = HFB_Lambda_secant(Params,Lambda_1,pnfloat_t(Z_target - Z_1, N_target - N_1), &
-                                               Lambda_2,pnfloat_t(Z_target - Z_2, N_target - N_2))
+                    Lambda = HFB_chemical_potential_secant(Params,Lambda_1,pnfloat_t(Z_target - Z_1, N_target - N_1), &
+                                                           Lambda_2,pnfloat_t(Z_target - Z_2, N_target - N_2), &
+                                                           Lambda_lo,Lambda_hi,Has_lo,Has_hi)
                     Lambda_1 = Lambda_2
                     Lambda_2 = Lambda
+                    Lambda_H = Lambda_1           ! H = H_2 was built with the old Lambda_2 (now Lambda_1)
                     SQE = SQE_2
                     U = U_2
                     V = V_2
@@ -214,13 +257,20 @@ contains
                     Delta = Delta_2
                 end if
 
-                ! Shift of H for the updated chemical potential ...
+                ! Closed-shell systems (collapsed pairing) ... Lambda in the middle of the shell gap ...
+                if (L == 1) call HFB_chemical_potential_gap(Params,H,Lambda_H,Delta,Orb,Lambda_gap,Has_gap)
+                if (Has_gap(1)) Lambda%p = Lambda_gap(1)
+                if (Has_gap(2)) Lambda%n = Lambda_gap(2)
+                Lambda_2 = Lambda
+
+                ! Shift of H for the updated chemical potential ... dev: by Lambda_H - Lambda (base: Lambda_1 - Lambda) ...
                 do a = 1, a_max
-                    Eye_shift = Lambda_1%p - Lambda%p
+                    Eye_shift = Lambda_H%p - Lambda%p
                     H%p(a,a) = H%p(a,a) + Eye_shift
-                    Eye_shift = Lambda_1%n - Lambda%n
+                    Eye_shift = Lambda_H%n - Lambda%n
                     H%n(a,a) = H%n(a,a) + Eye_shift
                 end do
+                Lambda_H = Lambda
 
                 call diagonalize(Params,H,Delta,Orb,SQE,U,V)
                 call HFB_density_operator(Params,U,V,Orb,Rho_Temp,Kappa_Temp)
@@ -229,8 +279,9 @@ contains
                 N_1 = N_2
                 Z_2 = Z
                 N_2 = N
-                Lambda = HFB_Lambda_secant(Params,Lambda_1,pnfloat_t(Z_target - Z_1, N_target - N_1), &
-                                           Lambda_2,pnfloat_t(Z_target - Z_2, N_target - N_2))
+                Lambda = HFB_chemical_potential_secant(Params,Lambda_1,pnfloat_t(Z_target - Z_1, N_target - N_1), &
+                                                       Lambda_2,pnfloat_t(Z_target - Z_2, N_target - N_2), &
+                                                       Lambda_lo,Lambda_hi,Has_lo,Has_hi)
                 Lambda_1 = Lambda_2
                 Lambda_2 = Lambda
                 dZ = abs(Z_target - Z)
@@ -238,11 +289,12 @@ contains
                 if (dZ < epsilon .and. dN < epsilon) exit
             end do
 
-            ! New densities ... the Broyden update of the original reduces to a block symmetrization (see notes) ...
+            ! New densities & their modified Broyden mixing ...
             call HFB_density_operator(Params,U,V,Orb,Rho,Kappa)
-            call HFB_Broyden_update(Orb,Rho,Kappa)
+            call HFB_Broyden_update(Params,Iteration,Rho,Kappa,Broyden)
 
             call HFB_allocate(Params,Lambda,Rho,Kappa,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN,H,Delta)
+            Lambda_H = Lambda
             if (Params%Calc%HFB%LNT .and. Iteration > 15) call HFB_Lipkin_Nogami(Params,Orb,Orb_NN,Orb_NNN,Rho,Kappa,H,V_NN,V_NNN)
             call diagonalize(Params,H,Delta,Orb,SQE,U,V)
             call HFB_particle_number(Params,Rho,Orb,Z,N)
@@ -554,6 +606,7 @@ contains
         type(o1b_t), intent(out) :: U, V
         type(o1b_t) :: Cc
         type(pnvector_t) :: SPE
+        type(orb1b_t), allocatable :: Orb_tmp(:)
         real(dp), allocatable :: pDelta(:,:), nDelta(:,:)
         real(dp) :: Ph, pE_a, pD_a, nE_a, nD_a
         integer :: a_max, a
@@ -564,7 +617,10 @@ contains
         allocate(SQE%p(a_max), SQE%n(a_max), SPE%p(a_max), SPE%n(a_max), Cc%p(a_max,a_max), Cc%n(a_max,a_max))
         call eig_sym(H%p,SPE%p,Cc%p)
         call eig_sym(H%n,SPE%n,Cc%n)
-        call HF_orbital_ordering(Orb,a_max,Cc,SPE)
+        ! dev HF_orbitals_make: same ordering as before & target occupations written into Orb (unused by HFB, a local
+            ! copy here) ... fatal for HF.ESH with an open-shell target as dev ...
+        Orb_tmp = Orb
+        call HF_orbitals_make(Params,SPE,Cc,Orb_tmp)
         pDelta = mtmm(Cc%p,Delta%p)
         nDelta = mtmm(Cc%n,Delta%n)
         do a = 1, a_max
@@ -586,7 +642,8 @@ contains
         V%n = mm(Cc%n,V%n)
     end subroutine HFB_diagonalize_BCS
 
-    ! Assigns quasiparticle states to orbital slots with matching <l> & <2j> ... optional final sort by |U|^2 ...
+    ! Matches the quasiparticle vectors (U;V) to the (l,j)-blocks of the orbitals ... counterpart of HFB_orbital_ordering
+        ! (dev HFB_ordering.jl) ... optional final sort by |U|^2 ascending (not for Pairing = 'BCS') ...
     subroutine HFB_orbital_ordering(Params,SQE,U,V,Orb,Final_Ordering)
         type(params_t), intent(in) :: Params
         type(pnvector_t), intent(inout) :: SQE
@@ -600,10 +657,9 @@ contains
     contains
         subroutine order_one(E,Um,Vm)
             real(dp), intent(inout) :: E(:), Um(:,:), Vm(:,:)
-            real(dp), allocatable :: Nrm(:), lv(:), jv(:)
+            real(dp), allocatable :: Nrm(:), UV(:,:), UV_new(:,:)
             integer, allocatable :: Perm(:), Ord(:)
-            logical, allocatable :: Mask(:)
-            integer :: n, a, b
+            integer :: n, a
             n = size(E)
             if (Sort_U) then
                 allocate(Nrm(n), Perm(n))
@@ -615,69 +671,154 @@ contains
                 Um = Um(:,Perm)
                 Vm = Vm(:,Perm)
             end if
-            allocate(lv(n), jv(n), Ord(n), Mask(n))
-            Ord = 0
-            Mask = .false.
-            do a = 1, n
-                lv(a) = sum(real(Orb(1:n)%l,dp) * (Um(:,a)**2 + Vm(:,a)**2))
-                jv(a) = sum(real(Orb(1:n)%j,dp) * (Um(:,a)**2 + Vm(:,a)**2))
-            end do
-            do a = 1, n
-                do b = 1, n
-                    if (.not. Mask(b) .and. abs(real(Orb(b)%l,dp) - lv(a)) < 1.0e-3_dp .and. &
-                        abs(real(Orb(b)%j,dp) - jv(a)) < 1.0e-3_dp) then
-                        Ord(b) = a
-                        Mask(b) = .true.
-                        exit
-                    end if
-                end do
-            end do
-            if (any(Ord == 0)) call fatal('HFB quasiparticle ordering failed ... mixed l & j detected ...')
+            allocate(UV(2*n,n), Ord(n))
+            UV(1:n,:) = Um
+            UV(n+1:2*n,:) = Vm
+            call HFB_orbital_matching(UV,Orb(1:n),Ord,UV_new)
             E = E(Ord)
-            Um = Um(:,Ord)
-            Vm = Vm(:,Ord)
+            Um = UV_new(1:n,Ord)
+            Vm = UV_new(n+1:2*n,Ord)
         end subroutine order_one
     end subroutine HFB_orbital_ordering
 
-    ! Reorders canonical orbitals (columns of C) & occupations to the orbital slots with matching l & 2j ...
+    ! Reorders canonical orbitals (columns of C) & occupations to the (l,j)-blocks ... HFB_canonical_orbital_ordering ...
     subroutine HFB_canonical_orbital_ordering(Params,Occ,C,Orb)
         type(params_t), intent(in) :: Params
         type(pnvector_t), intent(inout) :: Occ
         type(o1b_t), intent(inout) :: C
         type(orb1b_t), intent(in) :: Orb(:)
-        integer, allocatable :: Ord(:)
-        Ord = canonical_order(C%p,Orb)
-        Occ%p = Occ%p(Ord)
-        C%p = C%p(:,Ord)
-        Ord = canonical_order(C%n,Orb)
-        Occ%n = Occ%n(Ord)
-        C%n = C%n(:,Ord)
+        call canonical_one(Occ%p,C%p)
+        call canonical_one(Occ%n,C%n)
+    contains
+        subroutine canonical_one(O,Cm)
+            real(dp), intent(inout) :: O(:), Cm(:,:)
+            real(dp), allocatable :: C_new(:,:)
+            integer, allocatable :: Ord(:)
+            allocate(Ord(size(O)))
+            call HFB_orbital_matching(Cm,Orb(1:size(O)),Ord,C_new)
+            O = O(Ord)
+            Cm = C_new(:,Ord)
+        end subroutine canonical_one
     end subroutine HFB_canonical_orbital_ordering
 
-    function canonical_order(Cm,Orb) result(Ord)
-        real(dp), intent(in) :: Cm(:,:)
+    ! Ordering of a canonical basis C ... HFB_canonical_basis_orbital_ordering ...
+    subroutine HFB_canonical_basis_orbital_ordering(Cm,Orb)
+        real(dp), intent(inout) :: Cm(:,:)
         type(orb1b_t), intent(in) :: Orb(:)
+        real(dp), allocatable :: C_new(:,:)
         integer, allocatable :: Ord(:)
-        logical, allocatable :: Mask(:)
-        real(dp) :: lv, jv
-        integer :: n, a, b
-        n = size(Cm,1)
-        allocate(Ord(n), Mask(n))
-        Ord = 0
-        Mask = .false.
-        do a = 1, n
-            lv = sum(real(Orb(1:n)%l,dp) * Cm(:,a)**2)
-            jv = sum(real(Orb(1:n)%j,dp) * Cm(:,a)**2)
-            do b = 1, n
-                if (.not. Mask(b) .and. abs(real(Orb(b)%l,dp) - lv) < 1.0e-3_dp .and. abs(real(Orb(b)%j,dp) - jv) < 1.0e-3_dp) then
-                    Ord(b) = a
-                    Mask(b) = .true.
+        allocate(Ord(size(Cm,2)))
+        call HFB_orbital_matching(Cm,Orb(1:size(Cm,2)),Ord,C_new)
+        Cm = C_new(:,Ord)
+    end subroutine HFB_canonical_basis_orbital_ordering
+
+    ! Matching of the vectors X(:,a) (rows: LHO components, a_max or 2*a_max rows, row r belongs to orbital
+        ! mod(r-1,a_max)+1) to the (l,j)-blocks ... counterpart of HFB_orbital_matching (dev HFB_ordering.jl:79-185) ...
+        ! weights W(B,a), argmax block, Hungarian assignment if the block counts do not fit, Order(b) = a (k-th vector of
+        ! a block -> k-th orbital of the block, input order kept) & Lowdin projection of the vectors of mixed blocks ...
+    subroutine HFB_orbital_matching(X,Orb,Order,X_new)
+        real(dp), intent(in) :: X(:,:)
+        type(orb1b_t), intent(in) :: Orb(:)
+        integer, intent(out) :: Order(:)
+        real(dp), allocatable, intent(out) :: X_new(:,:)
+        real(dp), parameter :: Tol_pure = 1.0e-10_dp
+        integer, allocatable :: Blk(:), Vector_block(:), Block_size(:), Block_count(:), Assignment(:)
+        integer, allocatable :: Orbs(:), Vecs(:), Rows(:)
+        real(dp), allocatable :: W(:,:), Cost(:,:), P(:,:), S(:,:), Z(:,:), Ev(:), Sm(:,:)
+        integer :: a_max, Row_max, B_max, a, b, r, iB, k, nV, nR
+
+        a_max = size(Orb)
+        Row_max = size(X,1)
+
+        ! (l,j)-blocks numbered by first appearance ...
+        allocate(Blk(a_max))
+        Blk = 0
+        B_max = 0
+        do a = 1, a_max
+            do b = 1, a - 1
+                if ((Orb(b)%l == Orb(a)%l) .and. (Orb(b)%j == Orb(a)%j)) then
+                    Blk(a) = Blk(b)
                     exit
                 end if
             end do
+            if (Blk(a) == 0) then
+                B_max = B_max + 1
+                Blk(a) = B_max
+            end if
         end do
-        if (any(Ord == 0)) call fatal('HFB canonical orbital ordering failed ... mixed l & j detected ...')
-    end function canonical_order
+
+        ! Normalized block weights of the vectors ...
+        allocate(W(B_max,a_max))
+        W = 0.0_dp
+        do a = 1, a_max
+            do r = 1, Row_max
+                b = mod(r - 1,a_max) + 1
+                W(Blk(b),a) = W(Blk(b),a) + X(r,a)**2
+            end do
+            W(:,a) = W(:,a) / sum(W(:,a))
+        end do
+
+        ! Block of the largest weight (first maximum) ...
+        allocate(Vector_block(a_max))
+        do a = 1, a_max
+            Vector_block(a) = 1
+            do iB = 2, B_max
+                if (W(iB,a) > W(Vector_block(a),a)) Vector_block(a) = iB
+            end do
+        end do
+
+        ! Wrong block populations ... Hungarian assignment of vectors a to orbitals b with the cost 1 - W(Block(b),a) ...
+        allocate(Block_size(B_max), Block_count(B_max))
+        do iB = 1, B_max
+            Block_size(iB) = count(Blk == iB)
+            Block_count(iB) = count(Vector_block == iB)
+        end do
+        if (any(Block_size /= Block_count)) then
+            allocate(Cost(a_max,a_max), Assignment(a_max))
+            do b = 1, a_max
+                do a = 1, a_max
+                    Cost(b,a) = 1.0_dp - W(Blk(b),a)
+                end do
+            end do
+            call hungarian(Cost,Assignment)
+            do b = 1, a_max
+                Vector_block(Assignment(b)) = Blk(b)
+            end do
+        end if
+
+        ! Order ... vectors of block B (input order) go to the orbitals of block B (LHO order) ...
+        Order = 0
+        do iB = 1, B_max
+            Orbs = pack([(a, a = 1, a_max)], Blk == iB)
+            Vecs = pack([(a, a = 1, a_max)], Vector_block == iB)
+            Order(Orbs) = Vecs
+        end do
+
+        ! Lowdin projection of the vectors of mixed blocks P_new = P (P^T P)^(-1/2), zero outside the block ...
+        X_new = X
+        do iB = 1, B_max
+            Vecs = pack([(a, a = 1, a_max)], Vector_block == iB)
+            nV = size(Vecs)
+            if (all(W(iB,Vecs) > (1.0_dp - Tol_pure))) cycle
+            Rows = pack([(r, r = 1, Row_max)], [(Blk(mod(r - 1,a_max) + 1) == iB, r = 1, Row_max)])
+            nR = size(Rows)
+            P = X(Rows,Vecs)
+            S = matmul(transpose(P),P)
+            allocate(Ev(nV), Z(nV,nV))
+            call eig_sym(S,Ev,Z)
+            allocate(Sm(nV,nV))
+            Sm = 0.0_dp
+            do k = 1, nV
+                Sm(:,k) = Z(:,k) / sqrt(Ev(k))
+            end do
+            Sm = matmul(Sm,transpose(Z))
+            do k = 1, nV
+                X_new(:,Vecs(k)) = 0.0_dp
+            end do
+            X_new(Rows,Vecs) = matmul(P,Sm)
+            deallocate(Ev, Z, Sm)
+        end do
+    end subroutine HFB_orbital_matching
 
     function HFB_canonical_basis(Params,Rho,Orb) result(C)
         type(params_t), intent(in) :: Params
@@ -708,8 +849,8 @@ contains
         call eig_sym(nRho,w,C%n,Descending=.true.)
         call clean(C%p,1.0e-13_dp)
         call clean(C%n,1.0e-13_dp)
-        C%p = C%p(:,canonical_order(C%p,Orb))
-        C%n = C%n(:,canonical_order(C%n,Orb))
+        call HFB_canonical_basis_orbital_ordering(C%p,Orb)
+        call HFB_canonical_basis_orbital_ordering(C%n,Orb)
     end function HFB_canonical_basis
 
     function HFB_canonical_basis_BCS(Params,H,Orb) result(C)
@@ -736,35 +877,193 @@ contains
         call eig_sym(nH,w,C%n)
         call clean(C%p,1.0e-13_dp)
         call clean(C%n,1.0e-13_dp)
-        C%p = C%p(:,canonical_order(C%p,Orb))
-        C%n = C%n(:,canonical_order(C%n,Orb))
+        call HFB_canonical_basis_orbital_ordering(C%p,Orb)
+        call HFB_canonical_basis_orbital_ordering(C%n,Orb)
     end function HFB_canonical_basis_BCS
 
-    ! The Broyden update of the original sets the trial densities equal to the new densities (the mixing terms are
-    ! commented out there), so its net effect is the block symmetrization & noise cleaning of HFB_Broyden_reconstruct ...
-    subroutine HFB_Broyden_update(Orb,Rho,Kappa)
+    ! ---------------------------------------------------------------------------------------------------------------
+    ! Modified Broyden mixing of (Rho, Kappa) ... counterpart of dev HFB_Broyden.jl (D. D. Johnson, PRB 38, 12807) ...
+        ! one joint Jacobian for pRho, nRho, pKappa, nKappa ...
+
+    ! Mapping (a <= b in the same (l,j)-block), weights & the initial input vector ... HFB_Broyden_initialize ...
+    subroutine HFB_Broyden_initialize(Params,Rho,Kappa,Orb,B)
+        type(params_t), intent(in) :: Params
+        type(o1b_t), intent(in) :: Rho, Kappa
         type(orb1b_t), intent(in) :: Orb(:)
-        type(o1b_t), intent(inout) :: Rho, Kappa
-        call sym_block(Rho%p)
-        call sym_block(Rho%n)
-        call sym_block(Kappa%p)
-        call sym_block(Kappa%n)
-    contains
-        subroutine sym_block(M)
-            real(dp), intent(inout) :: M(:,:)
-            real(dp), allocatable :: R(:,:)
-            integer :: n, a, b
-            n = size(M,1)
-            allocate(R(n,n))
-            R = 0.0_dp
-            do a = 1, n
-                do b = 1, n
-                    if (Orb(a)%l == Orb(b)%l .and. Orb(a)%j == Orb(b)%j) R(a,b) = 0.5_dp * (M(a,b) + M(b,a))
+        type(broyden_t), intent(out) :: B
+        integer :: a_max, a, b2, i, Pass
+
+        a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
+        B%m_hist = Params%Calc%HFB%Broy_m
+        do Pass = 1, 2
+            i = 0
+            do a = 1, a_max
+                do b2 = a, a_max
+                    if ((Orb(a)%l == Orb(b2)%l) .and. (Orb(a)%j == Orb(b2)%j)) then
+                        i = i + 1
+                        if (Pass == 2) B%Key(:,i) = [a, b2]
+                    end if
                 end do
             end do
-            where (abs(R) < 1.0e-14_dp) R = 0.0_dp
-            M = R
-        end subroutine sym_block
+            if (Pass == 1) then
+                B%M = i
+                allocate(B%Key(2,i))
+            end if
+        end do
+        allocate(B%w(B%M))
+        do i = 1, B%M
+            B%w(i) = sqrt(real(Orb(B%Key(1,i))%j + 1,dp))
+            if (B%Key(1,i) /= B%Key(2,i)) B%w(i) = B%w(i) * sqrt(2.0_dp)
+        end do
+        allocate(B%x(B%M,4), B%y(B%M,4), B%z(B%M,4), B%r(B%M,4), B%s(B%M,4))
+        allocate(B%Xh(B%M,B%m_hist,4), B%Rh(B%M,B%m_hist,4))
+        call HFB_Broyden_linearize(B,Rho,Kappa,B%x)
+        B%y = 0.0_dp
+        B%z = 0.0_dp
+        B%r = 0.0_dp
+        B%s = 0.0_dp
+        B%Xh = 0.0_dp
+        B%Rh = 0.0_dp
+    end subroutine HFB_Broyden_initialize
+
+    ! Weighted, (a,b)-(b,a) symmetrized elements of the (l,j)-blocks ... HFB_Broyden_linearize ...
+    subroutine HFB_Broyden_linearize(B,Rho,Kappa,F)
+        type(broyden_t), intent(in) :: B
+        type(o1b_t), intent(in) :: Rho, Kappa
+        real(dp), intent(out) :: F(:,:)
+        integer :: i, a, b2
+        do i = 1, B%M
+            a = B%Key(1,i)
+            b2 = B%Key(2,i)
+            F(i,1) = 0.5_dp * B%w(i) * (Rho%p(a,b2) + Rho%p(b2,a))
+            F(i,2) = 0.5_dp * B%w(i) * (Rho%n(a,b2) + Rho%n(b2,a))
+            F(i,3) = 0.5_dp * B%w(i) * (Kappa%p(a,b2) + Kappa%p(b2,a))
+            F(i,4) = 0.5_dp * B%w(i) * (Kappa%n(a,b2) + Kappa%n(b2,a))
+        end do
+    end subroutine HFB_Broyden_linearize
+
+    ! Symmetric block matrices from a linearized vector (weights removed, zero elsewhere) ... HFB_Broyden_reconstruct ...
+    subroutine HFB_Broyden_reconstruct(B,a_max,x,Rho,Kappa)
+        type(broyden_t), intent(in) :: B
+        integer, intent(in) :: a_max
+        real(dp), intent(in) :: x(:,:)
+        type(o1b_t), intent(out) :: Rho, Kappa
+        integer :: i, a, b2
+        call o1b_alloc(Rho,a_max)
+        call o1b_alloc(Kappa,a_max)
+        do i = 1, B%M
+            a = B%Key(1,i)
+            b2 = B%Key(2,i)
+            Rho%p(a,b2) = x(i,1) / B%w(i)
+            Rho%n(a,b2) = x(i,2) / B%w(i)
+            Kappa%p(a,b2) = x(i,3) / B%w(i)
+            Kappa%n(a,b2) = x(i,4) / B%w(i)
+            Rho%p(b2,a) = Rho%p(a,b2)
+            Rho%n(b2,a) = Rho%n(a,b2)
+            Kappa%p(b2,a) = Kappa%p(a,b2)
+            Kappa%n(b2,a) = Kappa%n(a,b2)
+        end do
+    end subroutine HFB_Broyden_reconstruct
+
+    ! Joint norm of (pRho, nRho, pKappa, nKappa) ... HFB_Broyden_norm ...
+    pure real(dp) function HFB_Broyden_norm(x) result(Nrm)
+        real(dp), intent(in) :: x(:,:)
+        Nrm = sqrt(sum(x(:,1)**2) + sum(x(:,2)**2) + sum(x(:,3)**2) + sum(x(:,4)**2))
+    end function HFB_Broyden_norm
+
+    ! Newest normalized history vectors (cyclic slot k = mod(Iteration,m) + 1) ... HFB_Broyden_history_update ...
+    subroutine HFB_Broyden_history_update(Iteration,B)
+        integer, intent(in) :: Iteration
+        type(broyden_t), intent(inout) :: B
+        real(dp), allocatable :: dR(:,:)
+        real(dp) :: dR_norm
+        integer :: k
+        k = mod(Iteration,B%m_hist) + 1
+        dR = B%r - B%s
+        dR_norm = HFB_Broyden_norm(dR)
+        if (dR_norm < 1.0e-14_dp) return
+        B%Xh(:,k,:) = (B%x - B%y) / dR_norm
+        B%Rh(:,k,:) = dR / dR_norm
+    end subroutine HFB_Broyden_history_update
+
+    ! Coefficients gamma = (w0^2 I + dR^T dR)^(-1) dR^T r ... HFB_Broyden_gamma (Julia Symmetric(A) \ c = dsysv 'U') ...
+    function HFB_Broyden_gamma(B) result(gamma)
+        type(broyden_t), intent(in) :: B
+        real(dp) :: gamma(B%m_hist)
+        real(dp), parameter :: w0 = 0.01_dp
+        real(dp), allocatable :: A(:,:), c(:,:), Work(:)
+        integer, allocatable :: Ipiv(:)
+        integer :: k, m, Info, Lwork
+
+        m = B%m_hist
+        allocate(A(m,m), c(m,1), Ipiv(m))
+        A = 0.0_dp
+        c = 0.0_dp
+        do k = 1, 4
+            A = A + matmul(transpose(B%Rh(:,:,k)),B%Rh(:,:,k))
+            c(:,1) = c(:,1) + matmul(transpose(B%Rh(:,:,k)),B%r(:,k))
+        end do
+        do k = 1, m
+            A(k,k) = A(k,k) + w0**2
+        end do
+        Lwork = max(1,64*m)
+        allocate(Work(Lwork))
+        call dsysv('U',m,1,A,m,Ipiv,c,m,Work,Lwork,Info)
+        gamma = c(:,1)
+        if (Info /= 0 .or. .not. all(ieee_is_finite(gamma))) gamma = 0.0_dp
+    end function HFB_Broyden_gamma
+
+    ! Broyden update of the output densities (Rho, Kappa) of iteration Iteration ... HFB_Broyden_update ... plain
+        ! iteration before Iteration_Broyden (1, or 17 with LNT where the history is restarted) ...
+    subroutine HFB_Broyden_update(Params,Iteration,Rho,Kappa,B)
+        type(params_t), intent(in) :: Params
+        integer, intent(in) :: Iteration
+        type(o1b_t), intent(inout) :: Rho, Kappa
+        type(broyden_t), intent(inout) :: B
+        real(dp), allocatable :: F(:,:)
+        real(dp) :: alpha, T_max, r_norm, s_norm
+        real(dp), allocatable :: gamma(:)
+        integer :: Iteration_Broyden, k, a_max
+
+        a_max = size(Rho%p,1)
+        alpha = Params%Calc%HFB%Broy_Amax
+        T_max = Params%Calc%HFB%Broy_Tmax
+        Iteration_Broyden = 1
+        if (Params%Calc%HFB%LNT) Iteration_Broyden = 17
+
+        allocate(F(B%M,4))
+        call HFB_Broyden_linearize(B,Rho,Kappa,F)
+        B%s = B%r
+        B%r = F - B%x
+
+        if (Iteration < Iteration_Broyden) then
+            B%z = F
+        else
+            r_norm = HFB_Broyden_norm(B%r)
+            s_norm = HFB_Broyden_norm(B%s)
+            if ((Iteration == Iteration_Broyden) .and. (Iteration_Broyden > 1)) then
+                B%Xh = 0.0_dp
+                B%Rh = 0.0_dp
+            else if (r_norm > s_norm / T_max) then
+                B%Xh = 0.0_dp
+                B%Rh = 0.0_dp
+                call HFB_Broyden_history_update(Iteration,B)
+            else
+                call HFB_Broyden_history_update(Iteration,B)
+            end if
+            gamma = HFB_Broyden_gamma(B)
+            do k = 1, 4
+                B%z(:,k) = B%x(:,k) + alpha * B%r(:,k) - matmul(B%Xh(:,:,k) + alpha * B%Rh(:,:,k), gamma)
+            end do
+        end if
+
+        ! Collapsed pairing ... keep the mixed Kappa exactly zero ...
+        if (sqrt(sum(F(:,3)**2)) < 1.0e-12_dp) B%z(:,3) = 0.0_dp
+        if (sqrt(sum(F(:,4)**2)) < 1.0e-12_dp) B%z(:,4) = 0.0_dp
+
+        B%y = B%x
+        B%x = B%z
+        call HFB_Broyden_reconstruct(B,a_max,B%z,Rho,Kappa)
     end subroutine HFB_Broyden_update
 
     subroutine HFB_allocate(Params,Lambda,Rho,Kappa,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN,H,Delta)
@@ -1140,32 +1439,46 @@ contains
         end do
     end subroutine HFB_density_operator
 
-    function HFB_Lambda_secant(Params,Lambda_1,dA_1,Lambda_2,dA_2) result(L)
+    ! Safeguarded secant step for protons & neutrons ... counterpart of HFB_chemical_potential_secant (dev
+        ! HFB_chemical_potential.jl) ... the brackets (index 1 p, 2 n) are updated, Has_* = .false. is dev's NaN ...
+    function HFB_chemical_potential_secant(Params,Lambda_1,dA_1,Lambda_2,dA_2,Lambda_lo,Lambda_hi,Has_lo,Has_hi) result(L)
         type(params_t), intent(in) :: Params
         type(pnfloat_t), intent(in) :: Lambda_1, dA_1, Lambda_2, dA_2
+        real(dp), intent(inout) :: Lambda_lo(2), Lambda_hi(2)
+        logical, intent(inout) :: Has_lo(2), Has_hi(2)
         type(pnfloat_t) :: L
-        real(dp), parameter :: Denom_eps = 1.0e-7_dp
-        real(dp) :: dLmax, dp_L, dn_L
-        dLmax = Params%Calc%HFB%dLmax
-        L = Lambda_2
-        if (abs(dA_2%p - dA_1%p) > Denom_eps) then
-            dp_L = (Lambda_1%p * dA_2%p - Lambda_2%p * dA_1%p) / (dA_2%p - dA_1%p) - L%p
-        else if (abs(dA_2%p) <= huge(1.0_dp)) then
-            dp_L = 0.1_dp * dA_2%p
-        else
-            dp_L = 0.05_dp * L%p
+        L%p = HFB_chemical_potential_secant_step(Lambda_1%p,dA_1%p,Lambda_2%p,dA_2%p,Lambda_lo(1),Lambda_hi(1), &
+                                                 Has_lo(1),Has_hi(1),Params%Calc%HFB%dLmax,Params%Calc%HFB%Tol)
+        L%n = HFB_chemical_potential_secant_step(Lambda_1%n,dA_1%n,Lambda_2%n,dA_2%n,Lambda_lo(2),Lambda_hi(2), &
+                                                 Has_lo(2),Has_hi(2),Params%Calc%HFB%dLmax,Params%Calc%HFB%Tol)
+    end function HFB_chemical_potential_secant
+
+    ! dA = A_target - A(Lambda), A increasing in Lambda ... (L2,dA2) is the latest point ...
+    function HFB_chemical_potential_secant_step(L1,dA1,L2,dA2,Lo,Hi,Has_lo,Has_hi,dLmax,Tol) result(L)
+        real(dp), intent(in) :: L1, dA1, L2, dA2, dLmax, Tol
+        real(dp), intent(inout) :: Lo, Hi
+        logical, intent(inout) :: Has_lo, Has_hi
+        real(dp) :: L, Denom, dL
+        if (abs(dA2) < Tol) then
+            L = L2
+            return
         end if
-        if (abs(dA_2%n - dA_1%n) > Denom_eps) then
-            dn_L = (Lambda_1%n * dA_2%n - Lambda_2%n * dA_1%n) / (dA_2%n - dA_1%n) - L%n
-        else if (abs(dA_2%n) <= huge(1.0_dp)) then
-            dn_L = 0.1_dp * dA_2%n
+        if (dA2 > 0.0_dp) then
+            Lo = L2
+            Has_lo = .true.
         else
-            dn_L = 0.05_dp * L%n
+            Hi = L2
+            Has_hi = .true.
         end if
-        if (abs(dp_L) > dLmax) dp_L = julia_sign(dp_L) * dLmax
-        if (abs(dn_L) > dLmax) dn_L = julia_sign(dn_L) * dLmax
-        L%p = L%p + dp_L
-        L%n = L%n + dn_L
+        Denom = dA2 - dA1
+        dL = 0.0_dp
+        if (Denom /= 0.0_dp .and. L1 /= L2 .and. ieee_is_finite(Denom)) dL = -dA2 * (L2 - L1) / Denom
+        if (.not. (dL * dA2 > 0.0_dp)) dL = julia_sign(dA2) * dLmax
+        if (abs(dL) > dLmax) dL = julia_sign(dL) * dLmax
+        L = L2 + dL
+        if (Has_lo .and. Has_hi) then
+            if (L <= Lo .or. L >= Hi) L = 0.5_dp * (Lo + Hi)
+        end if
     contains
         pure real(dp) function julia_sign(x)
             real(dp), intent(in) :: x
@@ -1173,7 +1486,80 @@ contains
             if (x > 0.0_dp) julia_sign = 1.0_dp
             if (x < 0.0_dp) julia_sign = -1.0_dp
         end function julia_sign
-    end function HFB_Lambda_secant
+    end function HFB_chemical_potential_secant_step
+
+    ! Chemical potential in the middle of the shell gap for a collapsed pairing field ... HFB_chemical_potential_gap ...
+        ! Has_gap = .false. is dev's NaN (not a closed shell, Lambda from the secant method) ...
+    subroutine HFB_chemical_potential_gap(Params,H,Lambda_H,Delta,Orb,Lambda_gap,Has_gap)
+        type(params_t), intent(in) :: Params
+        type(o1b_t), intent(in) :: H, Delta
+        type(pnfloat_t), intent(in) :: Lambda_H
+        type(orb1b_t), intent(in) :: Orb(:)
+        real(dp), intent(out) :: Lambda_gap(2)
+        logical, intent(out) :: Has_gap(2)
+        real(dp) :: Tol
+        Tol = Params%Calc%HFB%Tol
+        Lambda_gap = 0.0_dp
+        Has_gap = .false.
+        if (maxval(abs(Delta%p)) < Tol) call HFB_chemical_potential_gap_species(H%p,Lambda_H%p,real(Params%Calc%Z,dp), &
+                                                                                 Orb,Lambda_gap(1),Has_gap(1))
+        if (maxval(abs(Delta%n)) < Tol) call HFB_chemical_potential_gap_species(H%n,Lambda_H%n, &
+                                                 real(Params%Calc%A - Params%Calc%Z,dp),Orb,Lambda_gap(2),Has_gap(2))
+    end subroutine HFB_chemical_potential_gap
+
+    ! Levels of h = H + Lambda_H per (l,j) block (first appearance order, ascending eigenvalues), stable sort, filling ...
+    subroutine HFB_chemical_potential_gap_species(Hm,Lambda_H,A_target,Orb,Lambda,Found)
+        real(dp), intent(in) :: Hm(:,:), Lambda_H, A_target
+        type(orb1b_t), intent(in) :: Orb(:)
+        real(dp), intent(out) :: Lambda
+        logical, intent(out) :: Found
+        real(dp), allocatable :: SPE(:), Deg(:), Hb(:,:), Ev(:), Zv(:,:)
+        integer, allocatable :: Blk(:), Order(:)
+        integer :: a_max, a, b, n, nS, i
+        logical :: First
+        real(dp) :: A_filled
+
+        a_max = size(Orb)
+        allocate(SPE(a_max), Deg(a_max))
+        nS = 0
+        do a = 1, a_max
+            First = .true.
+            do b = 1, a - 1
+                if (Orb(b)%l == Orb(a)%l .and. Orb(b)%j == Orb(a)%j) then
+                    First = .false.
+                    exit
+                end if
+            end do
+            if (.not. First) cycle
+            Blk = pack([(b, b = 1, a_max)], [((Orb(b)%l == Orb(a)%l .and. Orb(b)%j == Orb(a)%j), b = 1, a_max)])
+            n = size(Blk)
+            Hb = Hm(Blk,Blk)
+            if (allocated(Ev)) deallocate(Ev, Zv)
+            allocate(Ev(n), Zv(n,n))
+            call eig_sym(Hb,Ev,Zv)
+            do i = 1, n
+                nS = nS + 1
+                SPE(nS) = Ev(i) + Lambda_H
+                Deg(nS) = real(Orb(a)%j + 1,dp)
+            end do
+        end do
+
+        Lambda = 0.0_dp
+        Found = .false.
+        allocate(Order(nS))
+        call sortperm(SPE(1:nS),Order)
+        A_filled = 0.0_dp
+        do i = 1, nS - 1
+            A_filled = A_filled + Deg(Order(i))
+            if (abs(A_filled - A_target) < 1.0e-8_dp) then
+                Lambda = 0.5_dp * (SPE(Order(i)) + SPE(Order(i+1)))
+                Found = .true.
+                return
+            else if (A_filled > A_target) then
+                exit
+            end if
+        end do
+    end subroutine HFB_chemical_potential_gap_species
 
     subroutine HFB_particle_number(Params,Rho,Orb,Z,N)
         type(params_t), intent(in) :: Params
@@ -1237,7 +1623,7 @@ contains
         integer :: a_max, a, u
 
         Lambda_2 = HFB_Lipkin_Nogami_Lambda_2(Params,Orb,Orb_NN,Orb_NNN,Rho,Kappa,V_NN,V_NNN)
-        open(newunit=u, file=io_path(Params,'/Bin/Lambda_2.bin'), access='stream', form='unformatted', status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/HFB/bin/lambda_2.bin'), access='stream', form='unformatted', status='replace', action='write')
         write(u) Lambda_2%p, Lambda_2%n
         close(u)
         a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
@@ -1253,7 +1639,7 @@ contains
         type(params_t), intent(in) :: Params
         type(pnfloat_t) :: Lambda_2
         integer :: u
-        open(newunit=u, file=io_path(Params,'/Bin/Lambda_2.bin'), access='stream', form='unformatted', status='old', action='read')
+        open(newunit=u, file=io_path(Params,'/HFB/bin/lambda_2.bin'), access='stream', form='unformatted', status='old', action='read')
         read(u) Lambda_2%p, Lambda_2%n
         close(u)
     end function HFB_Lipkin_Nogami_Lambda_2_import
@@ -1267,7 +1653,7 @@ contains
         type(o2b_t), intent(in) :: V_NN
         type(v3b_t), intent(in) :: V_NNN
         type(pnfloat_t) :: Lambda_2
-        real(dp), allocatable :: pRb(:,:), nRb(:,:), pKb(:,:), nKb(:,:), pM2(:,:), nM2(:,:)
+        real(dp), allocatable :: pRb(:,:), nRb(:,:), pKb(:,:), nKb(:,:), pM2(:,:), nM2(:,:), Tr_a(:,:)
         real(dp) :: p2, p3, Tol, pTr1, pTr2, nTr1, nTr2, pRho_ad, nRho_ad, pRho_be, nRho_be, pRho_cf, nRho_cf, J_hat
         real(dp) :: ME111, ME113, pKappa_ad, nKappa_ad, pKappa_be, nKappa_be, Amp, j_a_hat, pDen, nDen, pTS, nTS
         integer :: a_max, N_2max, N_3max, a, b, c, d, e, f, J, P_ab, P_abc, P_adc
@@ -1306,11 +1692,18 @@ contains
         pTr2 = 0.0_dp
         nTr1 = 0.0_dp
         nTr2 = 0.0_dp
-        !$omp parallel do schedule(dynamic) reduction(+:pTr1,pTr2,nTr1,nTr2) private(d,n_a,l_a,j_a,n_d,l_d,j_d,j_a_hat, &
+        ! Deterministic (thread-count independent) traces: per-a partial sums, added in a order afterwards (the LN field
+            ! feeds back into the iteration, a reduction would make 1 vs 8 threads differ) ...
+        allocate(Tr_a(4,a_max))
+        !$omp parallel do schedule(dynamic) private(pTr1,pTr2,nTr1,nTr2,d,n_a,l_a,j_a,n_d,l_d,j_d,j_a_hat, &
         !$omp pRho_ad,nRho_ad,b,e,n_b,l_b,j_b,n_e,l_e,j_e,P_ab,pRho_be,nRho_be,J,J_hat,c,n_c,l_c,j_c,P_abc,f,n_f,l_f,j_f, &
         !$omp pRho_cf,nRho_cf,ME111,ME113,pKappa_ad,nKappa_ad,Amp,pKappa_be,nKappa_be,P_adc)
         do a = 1, a_max
             d = a
+            pTr1 = 0.0_dp
+            pTr2 = 0.0_dp
+            nTr1 = 0.0_dp
+            nTr2 = 0.0_dp
             n_a = Orb(a)%n
             l_a = Orb(a)%l
             j_a = Orb(a)%j
@@ -1400,8 +1793,19 @@ contains
                     end do
                 end do
             end if
+            Tr_a(:,a) = [pTr1, pTr2, nTr1, nTr2]
         end do
         !$omp end parallel do
+        pTr1 = 0.0_dp
+        pTr2 = 0.0_dp
+        nTr1 = 0.0_dp
+        nTr2 = 0.0_dp
+        do a = 1, a_max
+            pTr1 = pTr1 + Tr_a(1,a)
+            pTr2 = pTr2 + Tr_a(2,a)
+            nTr1 = nTr1 + Tr_a(3,a)
+            nTr2 = nTr2 + Tr_a(4,a)
+        end do
 
         pM2 = mm(pRb,pRb)
         nM2 = mm(nRb,nRb)
@@ -1510,7 +1914,7 @@ contains
         A = real(Params%Calc%A,dp)
         N_max = Params%Calc%Nmax
         write(*,'(/,a)') 'Exporting HFB calculation summary ...'
-        open(newunit=u, file=io_path(Params,'/HFB/HFB_Summary.dat'), position='append', action='write')
+        open(newunit=u, file=io_path(Params,'/HFB/HFB_summary.dat'), position='append', action='write')
         write(u,'(a)') 'Spherical Hartree-Fock-Bogoliubov mean-field calculation summary'
         write(u,'(/,a)') 'Target nuclid:       A = ' // istr(Params%Calc%A) // ', Z = ' // istr(Params%Calc%Z)
         write(u,'(/,a)') 'Calculation data:    hw = ' // jstr(Params%Calc%hw) // ' , N_max = ' // istr(N_max) // &
@@ -1583,7 +1987,7 @@ contains
         a_max = (N_max + 1)*(N_max + 2)/2
         allocate(nr(0:N_max,0:max(Params%Calc%N2max+1,2*N_max+1)))
         write(*,'(/,a)') 'Exporting information on single-quasiparticle orbits ...'
-        open(newunit=u, file=io_path(Params,'/HFB/HFB_Summary.dat'), position='append', action='write')
+        open(newunit=u, file=io_path(Params,'/HFB/HFB_summary.dat'), position='append', action='write')
         do iso = 1, 2
             nr = 0
             if (iso == 1) then

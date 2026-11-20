@@ -20,6 +20,7 @@ module nj_input
         character(len=Str_Len) :: File_Name = ''
         integer :: xN_grid = 40
         integer :: zN_grid = 40
+        real(dp) :: Cut = 0.1_dp      ! &transition_analysis (stage 3)
     end type export_request_t
 
     ! Output truncation & files of the interaction parse actions (V2b_parse / V3b_no2b_parse, &parse) ... -1 = not given ...
@@ -34,6 +35,7 @@ module nj_input
         integer :: N_Actions = 0
         character(len=64) :: Actions(Max_Actions) = ''
         type(export_request_t) :: Densities, Currents
+        type(export_request_t) :: Op_Densities, Analysis   ! &transition_operator_densities, &transition_analysis (stage 3)
         type(parse_request_t) :: Parse
     end type run_input_t
 
@@ -68,6 +70,8 @@ contains
         call read_run()
         call read_transition_densities(Inp%Densities)
         call read_transition_currents(Inp%Currents)
+        call read_transition_operator_densities(Inp%Op_Densities)
+        call read_transition_analysis(Inp%Analysis)
         call read_parse(Inp%Parse)
 
         close(u)
@@ -637,6 +641,49 @@ contains
             X%xN_grid = xN_grid
             X%zN_grid = zN_grid
         end subroutine read_transition_currents
+
+        ! TDA_/RPA_transition_operator_densities (stage 3) ... dev kwargs JP, nu_list, File_Name ...
+        subroutine read_transition_operator_densities(X)
+            type(export_request_t), intent(inout) :: X
+            character(len=16) :: JP
+            integer :: nu_list(256), Ios
+            character(len=Str_Len) :: File_Name
+            character(len=512) :: Msg
+            namelist /transition_operator_densities/ JP, nu_list, File_Name
+            JP = X%JP
+            nu_list = 0
+            File_Name = 'Phonon_Transition_Operator_Densities'
+            rewind(u)
+            read(u, nml=transition_operator_densities, iostat=Ios, iomsg=Msg)
+            call check(Ios,Msg,'transition_operator_densities')
+            X%JP = JP
+            X%nu_list = nu_list
+            X%N_nu = count(nu_list > 0)
+            X%File_Name = File_Name
+        end subroutine read_transition_operator_densities
+
+        ! TDA_/RPA_transition_analysis (stage 3) ... dev kwargs JP, nu_list, File_Name (dev spelling "Transtion"), Cut ...
+        subroutine read_transition_analysis(X)
+            type(export_request_t), intent(inout) :: X
+            character(len=16) :: JP
+            integer :: nu_list(256), Ios
+            character(len=Str_Len) :: File_Name
+            real(dp) :: Cut
+            character(len=512) :: Msg
+            namelist /transition_analysis/ JP, nu_list, File_Name, Cut
+            JP = X%JP
+            nu_list = 0
+            File_Name = 'Phonon_Transtion_Analysis'
+            Cut = X%Cut
+            rewind(u)
+            read(u, nml=transition_analysis, iostat=Ios, iomsg=Msg)
+            call check(Ios,Msg,'transition_analysis')
+            X%JP = JP
+            X%nu_list = nu_list
+            X%N_nu = count(nu_list > 0)
+            X%File_Name = File_Name
+            X%Cut = Cut
+        end subroutine read_transition_analysis
 
         ! Output space & files of V2b_parse / V3b_no2b_parse (Julia function arguments N_max_Out, N_2max_Out, N_3max_Out,
             ! Out_File) ...

@@ -400,10 +400,14 @@ def main():
     ref_files = set()
     for root, _, files in os.walk(args.ref):
         for f in files:
+            if f == '.TDA_output':      # see below
+                continue
             ref_files.add(os.path.relpath(os.path.join(root, f), args.ref))
     new_files = set()
     for root, _, files in os.walk(args.new):
         for f in files:
+            if f == '.TDA_output':      # stage 3: TDA output marker written by the port only (documented deviation)
+                continue
             new_files.add(os.path.relpath(os.path.join(root, f), args.new))
 
     count = {'ok': 0, 'SIGN': 0, 'DIFF': 0, 'SIZE': 0, 'MISSING': 0, 'EXTRA': 0}

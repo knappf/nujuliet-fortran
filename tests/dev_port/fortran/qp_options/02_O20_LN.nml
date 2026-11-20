@@ -1,0 +1,18 @@
+! dev-port test case 'qp_options' (tests/dev_port/julia/qp_options.jl): 20O HFB Lipkin-Nogami (LNT, LNRes) -> QRPA
+! Run the files of this directory in order from one work directory (see ../../run_fortran.sh)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 20, Z = 8, hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+  CMS = 'CMS1+2B'
+  Path = 'O20_LN'
+/
+&hfb
+  LNT = .true., LNRes = .true.
+/
+&run
+  Solvers = 'HFB', 'QRPA'
+/

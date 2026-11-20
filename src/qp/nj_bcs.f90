@@ -1,4 +1,5 @@
-! Spherical HF-BCS solver ... counterpart of BCS/*.jl ...
+! Spherical HF-BCS solver ... counterpart of dev BCS/*.jl (BCS.jl, BCS_solver.jl, BCS_V2b.jl, BCS_chemical_potential.jl,
+    ! BCS_export.jl, ...) ... output io/<Path>/BCS/{bin,densities} ...
 module nj_bcs
     use nj_kinds
     use nj_types
@@ -11,8 +12,8 @@ module nj_bcs
     use nj_o2b
     use nj_v2b, only : V2b_read, V2b_residual_no2b
     use nj_v3b, only : V3b_no2b_read, V3b_no2b
-    use nj_obdm, only : OBDM_export
-    use nj_hf_legacy, only : HF_solve, HF_energy, HF_orbital_ordering   ! LEGACY (removed in cleanup stage)
+    use nj_obdm, only : rho_export
+    use nj_hf, only : HF_solve, HF_energy, HF_orbitals_make
     use nj_hf_driver, only : print_run_header
     use nj_qpo2b
     use nj_qp_common, only : pairing_energy
@@ -34,9 +35,9 @@ contains
 
         if (is_dir(io_path(Params,''))) call remove_dir(io_path(Params,''))
         call make_dir(io_path(Params,''))
-        call make_dir(io_path(Params,'/Bin'))
         call make_dir(io_path(Params,'/BCS'))
-        call make_dir(io_path(Params,'/BCS/Densities'))
+        call make_dir(io_path(Params,'/BCS/bin'))
+        call make_dir(io_path(Params,'/BCS/densities'))
 
         Params_Ref = BCS_reference(Params)
         write(*,'(/,a)') 'Reference closed-shell nucleus selected for BCS calculation is:'
@@ -56,10 +57,7 @@ contains
         integer, parameter :: pMagic(6) = [2,8,20,28,50,82], nMagic(7) = [2,8,20,28,50,82,126]
         integer :: N_target, Z_target, N_ref, Z_ref, dN, dZ, k
 
-        Params_Ref = Params
-        ! QTDA & QRPA parameters are not forwarded by the original ... defaults ...
-        Params_Ref%Calc%QTDA = qtda_params_t()
-        Params_Ref%Calc%QRPA = qrpa_params_t()
+        Params_Ref = Params          ! dev forwards all Calc groups (HF, TDA, RPA, BCS, HFB, QTDA, QRPA, pnQTDA) ...
         if (Params%Calc%BCS%A0 > 0 .and. Params%Calc%BCS%Z0 > 0) then
             Params_Ref%Calc%A = Params%Calc%BCS%A0
             Params_Ref%Calc%Z = Params%Calc%BCS%Z0
@@ -104,7 +102,7 @@ contains
         integer :: Iteration
         integer(i8) :: t0
 
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = orbitals_make(Params)
         T = T1b(Params,Orb)
 
         call timer_start(t0)
@@ -124,8 +122,8 @@ contains
         dA = BCS_particle_number_dispersion(Params,U,V,Orb)
         call BCS_summary(Params,Params_Ref,E_MF,E_BCS,T_BCS,Lambda,dA,Convergence,Iteration)
 
-        call OBDM_export(Params_Ref,Orb,io_path(Params,'/BCS/BCS_Summary.dat'), &
-                         io_path(Params,'/BCS/Densities/BCS_Radial_Densities.dat'),Rho,C)
+        call rho_export(Params_Ref,Orb,io_path(Params,'/BCS/BCS_summary.dat'), &
+                        io_path(Params,'/BCS/densities/BCS_radial_densities.dat'),Rho,C)
         call BCS_summary_SQS(Params_Ref,SPE,SQE,U,V)
 
         if (Params%Calc%BCS%BMF) then
@@ -144,14 +142,14 @@ contains
             call qpO2b(Params,Orb,Orb_NN,V_NN,C,U_m,V_m,H_NN)
             call timer_report(t0)
             call BCS_export(Params,Orb,Orb_NN,C,U_m,V_m,H_N,H_NN)
-            call qp_BMBPT_energy(Params,Orb,Orb_NN,H_N,H_NN,'HF-BCS',io_path(Params,'/BCS/BCS_Summary.dat'))
+            call qp_BMBPT_energy(Params,Orb,Orb_NN,H_N,H_NN,'HF-BCS',io_path(Params,'/BCS/BCS_summary.dat'))
         end if
     end subroutine BCS_solver
 
     subroutine HF_BCS_solve(Params,Params_Ref,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN,Lambda,SPE,SQE,C,U,V,Rho,Kappa,Delta, &
                             Convergence,Iteration)
         type(params_t), intent(in) :: Params, Params_Ref
-        type(orb1b_t), intent(in) :: Orb(:)
+        type(orb1b_t), intent(inout) :: Orb(:)          ! dev HF_orbitals_make fills the target occupations in place
         type(orb2b_t), intent(in) :: Orb_NN
         type(orb3b_t), intent(in) :: Orb_NNN
         type(o1b_t), intent(in) :: T
@@ -184,9 +182,10 @@ contains
 
         write(*,'(/,a,/)') 'Starting iteration of HF-BCS with NO2B NN+NNN interaction ...'
 
-        ! Reference HF calculation ... occupations of the reference closed-shell nucleus ...
+        ! Reference HF calculation ... Orb_HF of the reference nucleus seeds the first density, but dev HF_solve refills
+            ! the occupations with the TARGET (A,Z) of Params every iteration (UPSTREAM_BUGS: BCS reference HF) ...
         call timer_start(t0)
-        Orb_HF = orbitals_make(Params_Ref,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb_HF = orbitals_make(Params_Ref)
         ! The original also reads the NN interaction once more here (V_NN_Ref) without ever using it ... skipped ...
         write(*,'(/,a)') 'Solving the HF equations for reference closed-shell system ...'
         write(*,'(a,/)') 'Reference nucleus:     A = ' // istr(Params_Ref%Calc%A) // ',     Z = ' // istr(Params_Ref%Calc%Z)
@@ -266,7 +265,7 @@ contains
                 h = HF_BCS_allocate(Params,Rho,Kappa,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN)
                 call eig_sym(h%p,SPE%p,C%p)
                 call eig_sym(h%n,SPE%n,C%n)
-                call HF_orbital_ordering(Orb,a_max,C,SPE)
+                call HF_orbitals_make(Params,SPE,C,Orb)
 
                 ! The original silences the terminal output of this call ...
                 call BCS_V2b_res(Params,Orb,Orb_NN,Orb_NNN,V_NN,V_NNN,C,Rho,V_NN_Res)
@@ -530,18 +529,19 @@ contains
         nEps_particle = 1000.0_dp
         nEps_hole = -1000.0_dp
         do a = 1, a_max
-            if (Orb(a)%pO == 1) then
+            if (Orb(a)%pO == 1.0_dp) then
                 if (pEps_hole < SPE%p(a)) pEps_hole = SPE%p(a)
-            else if (Orb(a)%pO == 0) then
+            else if (Orb(a)%pO == 0.0_dp) then
                 if (pEps_particle > SPE%p(a)) pEps_particle = SPE%p(a)
             end if
-            if (Orb(a)%nO == 1) then
+            if (Orb(a)%nO == 1.0_dp) then
                 if (nEps_hole < SPE%n(a)) nEps_hole = SPE%n(a)
-            else if (Orb(a)%nO == 0) then
+            else if (Orb(a)%nO == 0.0_dp) then
                 if (nEps_particle > SPE%n(a)) nEps_particle = SPE%n(a)
             end if
         end do
-        Lambda = pnfloat_t(0.5_dp * (pEps_hole - pEps_particle), 0.5_dp * (nEps_hole - nEps_particle))
+        ! Fix F3: mid-gap value (dev: 0.5*(Eps_hole - Eps_particle)) ...
+        Lambda = pnfloat_t(0.5_dp * (pEps_hole + pEps_particle), 0.5_dp * (nEps_hole + nEps_particle))
     end function HF_BCS_initialize_chemical_potential
 
     subroutine BCS_particle_number(Params,V,Orb,Z,N)
@@ -826,7 +826,7 @@ contains
         A = real(Params%Calc%A,dp)
         N_max = Params%Calc%Nmax
         write(*,'(/,a)') 'Exporting BCS calculation summary ...'
-        open(newunit=u, file=io_path(Params,'/BCS/BCS_Summary.dat'), position='append', action='write')
+        open(newunit=u, file=io_path(Params,'/BCS/BCS_summary.dat'), position='append', action='write')
         write(u,'(a)') 'Target nuclid:       A = ' // istr(Params%Calc%A) // ', Z = ' // istr(Params%Calc%Z)
         write(u,'(a)') 'Reference nuclid:    A = ' // istr(Params_Ref%Calc%A) // ', Z = ' // istr(Params_Ref%Calc%Z)
         write(u,'(/,a)') 'Calculation data:    hw = ' // jstr(Params%Calc%hw) // ' , N_max = ' // istr(N_max) // &
@@ -875,10 +875,10 @@ contains
 
         N_max = Params%Calc%Nmax
         a_max = (N_max + 1)*(N_max + 2)/2
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = orbitals_make(Params)
         allocate(nr(0:N_max,0:max(Params%Calc%N2max+1,2*N_max+1)))
         write(*,'(/,a)') 'Exporting information on single-(quasi)particle orbits ...'
-        open(newunit=u_f, file=io_path(Params,'/BCS/BCS_Summary.dat'), position='append', action='write')
+        open(newunit=u_f, file=io_path(Params,'/BCS/BCS_summary.dat'), position='append', action='write')
         do iso = 1, 2
             nr = 0
             if (iso == 1) then
@@ -891,12 +891,12 @@ contains
                              cfmt_s('e',14) // ' ' // cfmt_s('U2',14) // ' ' // cfmt_s('V2',14) // ' ' // cfmt_s('E',14)
             do a = 1, a_max
                 if (iso == 1) then
-                    O_a = merge(1.0_dp, 0.0_dp, Orb(a)%pO == 1)
+                    O_a = merge(1.0_dp, 0.0_dp, Orb(a)%pO == 1.0_dp)
                     write(u_f,'(a)') cfmt_d(nr(Orb(a)%l,Orb(a)%j),4) // ' ' // cfmt_d(Orb(a)%l,4) // ' ' // cfmt_d(Orb(a)%j,4) // ' ' // &
                                      cfmt_f(O_a,8,3) // ' ' // cfmt_f(SPE%p(a),14,5) // ' ' // cfmt_f(U%p(a)**2,14,3) // ' ' // &
                                      cfmt_f(V%p(a)**2,14,3) // ' ' // cfmt_f(SQE%p(a),14,5)
                 else
-                    O_a = merge(1.0_dp, 0.0_dp, Orb(a)%nO == 1)
+                    O_a = merge(1.0_dp, 0.0_dp, Orb(a)%nO == 1.0_dp)
                     write(u_f,'(a)') cfmt_d(nr(Orb(a)%l,Orb(a)%j),4) // ' ' // cfmt_d(Orb(a)%l,4) // ' ' // cfmt_d(Orb(a)%j,4) // ' ' // &
                                      cfmt_f(O_a,8,3) // ' ' // cfmt_f(SPE%n(a),14,5) // ' ' // cfmt_f(U%n(a)**2,14,3) // ' ' // &
                                      cfmt_f(V%n(a)**2,14,3) // ' ' // cfmt_f(SQE%n(a),14,5)
@@ -915,11 +915,11 @@ contains
         type(o1b_t), intent(in) :: C, U, V
         type(qpo1b_t), intent(in) :: H_N
         type(qpo2b_t), intent(in) :: H_NN
-        call O1b_export(Params,Orb,C,io_path(Params,'/Bin/C.bin'))
-        call O1b_export(Params,Orb,U,io_path(Params,'/Bin/U.bin'))
-        call O1b_export(Params,Orb,V,io_path(Params,'/Bin/V.bin'))
-        call qpO1B_export(Params,Orb,H_N,io_path(Params,'/Bin/qpH1B.bin'))
-        call qpO2b_export(Params,Orb_NN,H_NN,io_path(Params,'/Bin/qpH2B.bin'))
+        call O1b_export(Params,Orb,C,io_path(Params,'/BCS/bin/C.bin'))
+        call O1b_export(Params,Orb,U,io_path(Params,'/BCS/bin/U.bin'))
+        call O1b_export(Params,Orb,V,io_path(Params,'/BCS/bin/V.bin'))
+        call qpO1B_export(Params,Orb,H_N,io_path(Params,'/BCS/bin/qpH1b.bin'))
+        call qpO2b_export(Params,Orb_NN,H_NN,io_path(Params,'/BCS/bin/qpH2b.bin'))
     end subroutine BCS_export
 
     subroutine cms_lines(u,Params)

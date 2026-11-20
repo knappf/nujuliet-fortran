@@ -1,4 +1,5 @@
-! Spherical quasiparticle Tamm-Dancoff approximation ... counterpart of QTDA/*.jl ...
+! Spherical quasiparticle Tamm-Dancoff approximation ... counterpart of dev QTDA/*.jl ... input io/<Path>/<Reference>/bin,
+    ! output io/<Path>/QTDA/{bin,densities,transitions,spectra} ...
 module nj_qtda
     use nj_kinds
     use nj_types
@@ -8,7 +9,7 @@ module nj_qtda
     use nj_wigner, only : wigner_init_float
     use nj_orbitals, only : orbitals_make, orbitals_2qp_make
     use nj_o1b
-    use nj_obdm, only : OBDM_chR2
+    use nj_obdm, only : rho_chR2
     use nj_tr1b, only : qptr1b_t, qpTr1b_initialize
     use nj_qpo2b, only : qpO2b_import
     use nj_hfb, only : HFB_density_operator
@@ -43,18 +44,15 @@ contains
             write(*,'(a)') '_________________________________________________________'
         end if
         write(*,'(a)') trim(Params%Calc%Path)
-        if (.not. is_dir(io_path(Params,''))) then
-            write(*,'(/,a)') 'Error! ... No precomputed reference quasiparticle mean-field (HFB, BCS) solution is available in ' // &
-                             'given Input_File path ... run HFB/BCS solver first ...'
-            return
-        end if
+        if (.not. qex_reference_check(Params,Params%Calc%QTDA%Reference,[character(len=5) :: 'C.bin', 'U.bin', 'V.bin'])) return
         if (is_dir(io_path(Params,'/QTDA'))) call remove_dir(io_path(Params,'/QTDA'))
-        call make_dir(io_path(Params,'/QTDA/Densities'))
-        call make_dir(io_path(Params,'/QTDA/Transitions/E0'))
-        call make_dir(io_path(Params,'/QTDA/Transitions/E1'))
-        call make_dir(io_path(Params,'/QTDA/Transitions/E2'))
-        call make_dir(io_path(Params,'/QTDA/Transitions/E3'))
-        call make_dir(io_path(Params,'/QTDA/Spectra'))
+        call make_dir(io_path(Params,'/QTDA/bin'))
+        call make_dir(io_path(Params,'/QTDA/densities'))
+        call make_dir(io_path(Params,'/QTDA/transitions/E0'))
+        call make_dir(io_path(Params,'/QTDA/transitions/E1'))
+        call make_dir(io_path(Params,'/QTDA/transitions/E2'))
+        call make_dir(io_path(Params,'/QTDA/transitions/E3'))
+        call make_dir(io_path(Params,'/QTDA/spectra'))
 
         write(*,'(/,a)') 'Starting QTDA calculation ...'
         call timer_start(t0)
@@ -79,16 +77,18 @@ contains
         type(reduced_transition_t) :: rB
         real(dp) :: chR2
         integer :: J, P
+        character(len=:), allocatable :: Ref
 
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Ref = '/' // trim(Params%Calc%QTDA%Reference) // '/bin/'
+        Orb = orbitals_make(Params)
         Orb_2qp = orbitals_2qp_make(Params,Orb)
-        C = O1b_import(Params,Orb,io_path(Params,'/Bin/C.bin'))
-        U = O1b_import(Params,Orb,io_path(Params,'/Bin/U.bin'))
-        V = O1b_import(Params,Orb,io_path(Params,'/Bin/V.bin'))
+        C = O1b_import(Params,Orb,io_path(Params,Ref // 'C.bin'))
+        U = O1b_import(Params,Orb,io_path(Params,Ref // 'U.bin'))
+        V = O1b_import(Params,Orb,io_path(Params,Ref // 'V.bin'))
         call HFB_density_operator(Params,U,V,Orb,Rho,Kappa)
-        H_N = qpO1B_import(Params,Orb,io_path(Params,'/Bin/qpH1B.bin'))
-        call qpO2b_import(Params,Orb,io_path(Params,'/Bin/qpH2B.bin'),H_NN,Orb_NN)
-        chR2 = OBDM_chR2(Params,Orb,C,Rho)
+        H_N = qpO1B_import(Params,Orb,io_path(Params,Ref // 'qpH1b.bin'))
+        call qpO2b_import(Params,Orb,io_path(Params,Ref // 'qpH2b.bin'),H_NN,Orb_NN)
+        chR2 = rho_chR2(Params,Orb,C,Rho)
         qpTrOp = qpTr1b_initialize(Params,Orb,chR2,C,U,V)
         qpN = qpN1B_make(Params,U,V)
 
@@ -190,7 +190,7 @@ contains
 
         ! Summary ...
         write(*,'(/,a)') 'Preparing QTDA summary file ...'
-        open(newunit=u, file=io_path(Params,'/QTDA/QTDA_Summary.dat'), status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QTDA/QTDA_summary.dat'), status='replace', action='write')
         write(u,'(a)') 'Spherical Quasiparticle Tamm-Dancoff Approximation review:'
         call qex_header(u,Params,Params%Calc%QTDA%Ortho)
         call qex_dimensions_summary(u,Orb_2qp,J_max,'QTDA 1-phonon subspaces ...')
@@ -199,14 +199,14 @@ contains
 
         ! Binary export ... X column by column, then E ...
         write(*,'(/,a)') 'Performing binary export of QTDA energies E & amplitudes X ...'
-        open(newunit=u, file=io_path(Params,'/Bin/QTDA_X.bin'), access='stream', form='unformatted', status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QTDA/bin/QTDA_X.bin'), access='stream', form='unformatted', status='replace', action='write')
         do J = 0, J_max
             do P = 1, 2
                 if (size(X(P,J)%v) > 0) write(u) real(X(P,J)%v)
             end do
         end do
         close(u)
-        open(newunit=u, file=io_path(Params,'/Bin/QTDA_E.bin'), access='stream', form='unformatted', status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QTDA/bin/QTDA_E.bin'), access='stream', form='unformatted', status='replace', action='write')
         do J = 0, J_max
             do P = 1, 2
                 if (size(E(P,J)%v) > 0) write(u) E(P,J)%v
@@ -217,7 +217,7 @@ contains
 
         ! Spectrum ...
         write(*,'(/,a)') 'Preparing export of QTDA spectra ...'
-        open(newunit=u, file=io_path(Params,'/QTDA/Spectra/QTDA.dat'), status='replace', action='write')
+        open(newunit=u, file=io_path(Params,'/QTDA/spectra/QTDA.dat'), status='replace', action='write')
         write(u,'(a)') cfmt_s('J',5,.true.) // ' ' // cfmt_s('P',5,.true.) // ' ' // cfmt_s('E',10,.true.)
         do J = 0, J_max
             do P = 1, 2
@@ -232,7 +232,7 @@ contains
         write(*,'(a)') TAB // 'Export of QTDA spectra succesfully finished ...'
 
         call qex_spectrum_plot_export(Params,Orb_2qp,E,'QTDA')
-        call qex_transitions_export(Params,Orb,Orb_2qp,Rho,E,rB,'QTDA')
+        call qex_transitions_export(Params,Orb,Orb_2qp,Rho,E,rB,'QTDA',Params%Calc%QTDA%Reference)
     end subroutine QTDA_export
 
     ! Common header of the QTDA & QRPA summaries ...

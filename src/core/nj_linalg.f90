@@ -7,6 +7,17 @@ module nj_linalg
 
     public :: eig_sym, eig_general, eig_general_complex, isposdef, mm, mtm, mmt, mtmm, identity, diagm, diag
     public :: zmm, zmhm, isposdef_c, hungarian
+    public :: eig_sym_gen        ! stage 3 (TDA): generalized symmetric-definite problem ...
+
+    interface
+        subroutine dsygvd(Itype,Jobz,Uplo,n,A,Lda,B,Ldb,w,Work,Lwork,Iwork,Liwork,Info)
+            import :: dp
+            character :: Jobz, Uplo
+            integer :: Itype, n, Lda, Ldb, Lwork, Liwork, Info
+            real(dp) :: A(Lda,*), B(Ldb,*), w(*), Work(*)
+            integer :: Iwork(*)
+        end subroutine dsygvd
+    end interface
 
     interface
         subroutine dsyevr(Jobz,Range,Uplo,n,A,Lda,Vl,Vu,Il,Iu,Abstol,m,w,z,Ldz,Isuppz,Work,Lwork,Iwork,Liwork,Info)
@@ -102,6 +113,29 @@ contains
             end if
         end if
     end subroutine eig_sym
+
+    ! Julia eigen!(Symmetric(A),Symmetric(B)) ... LAPACK sygvd(1,'V','U'), eigenvalues ascending (stable sort as Julia's
+        ! sorteig!, a no-op on sygvd's ascending output), eigenvectors normalized to Z' B Z = 1 ... (stage 3, TDA_diagonalize)
+    subroutine eig_sym_gen(A,B,w,Z)
+        real(dp), intent(in) :: A(:,:), B(:,:)
+        real(dp), intent(out) :: w(:)
+        real(dp), intent(out) :: Z(:,:)
+        real(dp), allocatable :: Bw(:,:), Work(:)
+        integer, allocatable :: Iwork(:)
+        real(dp) :: Work_q(1)
+        integer :: n, Info, Lwork, Liwork, Iwork_q(1)
+
+        n = size(A,1)
+        if (n == 0) return
+        Z(1:n,1:n) = A
+        Bw = B
+        call dsygvd(1,'V','U',n,Z,size(Z,1),Bw,n,w,Work_q,-1,Iwork_q,-1,Info)
+        Lwork = int(Work_q(1))
+        Liwork = Iwork_q(1)
+        allocate(Work(Lwork), Iwork(Liwork))
+        call dsygvd(1,'V','U',n,Z,size(Z,1),Bw,n,w,Work,Lwork,Iwork,Liwork,Info)
+        if (Info /= 0) call fatal('dsygvd failed ... Info = ' // achar(48 + min(9,max(0,Info))))
+    end subroutine eig_sym_gen
 
     ! Julia eigen(A::Matrix{Float64}) ... symmetric matrices dispatch to syevr, otherwise geevx('B','N','V','N') ...
         ! Eigenpairs are sorted by (real, imag) as with Julia's default eigsortby ...

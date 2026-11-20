@@ -6,7 +6,7 @@ module nj_qex
     use nj_params
     use nj_utils
     use nj_tr1b, only : qptr1b_t
-    use nj_obdm, only : OBDM_rN
+    use nj_obdm, only : rho_rN
     use nj_o1b, only : O1b_import
     use nj_qpo2b
     implicit none
@@ -14,6 +14,7 @@ module nj_qex
 
     public :: qex_allocate, spurious_PN_initialize, spurious_CM_initialize, spurious_orthogonalize
     public :: qex_rM, qex_rB, qex_transitions_export, qex_spectrum_plot_export, qex_dimensions_summary
+    public :: qex_file_exists, qex_reference_check
 
 contains
 
@@ -361,7 +362,29 @@ contains
         end do
     end subroutine qex_dimensions_summary
 
-    ! Plot-ready spectrum ... the original writes N_qp of the N_qp + 1 sorted rows (including the 0+ ground state) ...
+    ! inquire(exist) ... Julia isfile ...
+    logical function qex_file_exists(Path)
+        character(len=*), intent(in) :: Path
+        inquire(file=trim(Path), exist=qex_file_exists)
+    end function qex_file_exists
+
+    ! Precondition of dev QTDA.jl / QRPA.jl / pnQTDA.jl: the given reference files exist in io/<Path>/<Reference>/bin ...
+        ! otherwise the dev error text is printed & .false. returned ...
+    logical function qex_reference_check(Params,Ref,Files) result(Ok)
+        type(params_t), intent(in) :: Params
+        character(len=*), intent(in) :: Ref
+        character(len=*), intent(in) :: Files(:)
+        integer :: k
+        Ok = .true.
+        do k = 1, size(Files)
+            if (.not. qex_file_exists(io_path(Params,'/' // trim(Ref) // '/bin/' // trim(Files(k))))) Ok = .false.
+        end do
+        if (.not. Ok) write(*,'(/,a)') 'Error! ... No precomputed reference quasiparticle mean-field (HFB, BCS) solution is ' // &
+                                       'available in given Input_File path ... run HFB/BCS solver first ...'
+    end function qex_reference_check
+
+    ! Plot-ready spectrum ... dev writes N_qp of the N_qp + 1 sorted rows (including the 0+ ground state) ... file
+        ! spectra/QTDA_plot.dat (QTDA) or spectra/QRPA_Plot.dat (QRPA), as dev ...
     subroutine qex_spectrum_plot_export(Params,Orb_2qp,E,Label)
         type(params_t), intent(in) :: Params
         type(orb2b_2qp_t), intent(in) :: Orb_2qp
@@ -397,7 +420,11 @@ contains
         end do
 
         write(*,'(/,a)') 'Performing the export of plot-ready ' // Label // ' spectra ...'
-        open(newunit=u, file=io_path(Params,'/' // Label // '/Spectra/' // Label // '_Plot.dat'), status='replace', action='write')
+        if (Label == 'QTDA') then
+            open(newunit=u, file=io_path(Params,'/QTDA/spectra/QTDA_plot.dat'), status='replace', action='write')
+        else
+            open(newunit=u, file=io_path(Params,'/' // Label // '/spectra/' // Label // '_Plot.dat'), status='replace', action='write')
+        end if
         write(u,'(a)') cfmt_s('J',5,.true.) // ' ' // cfmt_s('P',5,.true.) // ' ' // cfmt_s('E',12,.true.) // ' ' // cfmt_s('label',12,.true.)
         do nu = 1, N_qp
             Ps = merge('+', '-', abs(Ex(2,nu) - 1.0_dp) < 1.0e-3_dp)
@@ -408,14 +435,14 @@ contains
     end subroutine qex_spectrum_plot_export
 
     ! Sum-rule moments m_k, TRK values & B(EX) tables ... QTDA_transitions_export / QRPA_transitions_export ...
-    subroutine qex_transitions_export(Params,Orb,Orb_2qp,Rho,E,rB,Label)
+    subroutine qex_transitions_export(Params,Orb,Orb_2qp,Rho,E,rB,Label,Ref)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(o1b_t), intent(in) :: Rho
         type(rvec_t), intent(in) :: E(:,0:)
         type(reduced_transition_t), intent(in) :: rB
-        character(len=*), intent(in) :: Label
+        character(len=*), intent(in) :: Label, Ref       ! Ref ... reference folder (Calc%QTDA/QRPA%Reference)
         type(o1b_t) :: C
         real(dp) :: pR2, pR4, Zr, m(5,3,4), TRK(4)
         character(len=3) :: Unit_MeV
@@ -426,9 +453,9 @@ contains
 
         Zr = real(Params%Calc%Z,dp)
         if (Label == 'QTDA') write(*,'(/,a)') 'Preparing export of information on QTDA 1-phonon electromagnetic transitions ...'
-        C = O1b_import(Params,Orb,io_path(Params,'/Bin/C.bin'))
-        pR2 = OBDM_rN(Params,2,Rho,C,Orb)
-        pR4 = OBDM_rN(Params,4,Rho,C,Orb)
+        C = O1b_import(Params,Orb,io_path(Params,'/' // trim(Ref) // '/bin/C.bin'))
+        pR2 = rho_rN(Params,2,Rho,C,Orb)
+        pR4 = rho_rN(Params,4,Rho,C,Orb)
         if (Label == 'QRPA') write(*,'(/,a)') 'Preparing export of information on QRPA 1-phonon electromagnetic transitions ...'
 
         TRK(1) = HbarC**2 / m_p / (2.0_dp * pi) * Zr * pR2
@@ -443,7 +470,7 @@ contains
         call moments(E(1,2)%v, rB%E2, 3, .false.)
         call moments(E(2,3)%v, rB%E3, 4, .false.)
 
-        open(newunit=u, file=io_path(Params,'/' // Label // '/' // Label // '_Summary.dat'), position='append', action='write')
+        open(newunit=u, file=io_path(Params,'/' // Label // '/' // Label // '_summary.dat'), position='append', action='write')
         write(u,'(/,a)') 'Review of ' // Label // ' electrogmagnetic transition moments m_k ...'
         do iso = 1, 3
             do X = 1, 4
@@ -465,7 +492,7 @@ contains
         close(u)
 
         write(*,'(a)') TAB // 'Preparing export of ' // Label // ' 1-phonon electromagnetic transition intensities ...'
-        Dir = io_path(Params,'/' // Label // '/Transitions/')
+        Dir = io_path(Params,'/' // Label // '/transitions/')
         call table(Dir // 'E0/' // Label // '_E0.dat', E(1,0)%v, rB%E0)
         call table(Dir // 'E1/' // Label // '_E1.dat', E(2,1)%v, rB%E1)
         call table(Dir // 'E1/' // Label // '_E1_V.dat', E(2,1)%v, rB%E1_V)

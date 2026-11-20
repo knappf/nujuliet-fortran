@@ -88,3 +88,7 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   HF iterations, `V2b_residual_no2b` and every RRPA iteration. 40Ca, 9 shells, 16 threads, total wall time:
   old 48:35, new 3:02, Julia 13:49. HF_RRPA alone: 2796 s, then 166 s. The outputs are identical to 1e-12. The
   old binary is kept as `nujuliet.old_dicget`.
+- 2026-11-20: prepared `runs/Pb208_13sh_hw12_v2/` (same physics as `Pb208_13sh_hw12`) with a frozen binary
+  `nujuliet_78c3588` (dev-port stage 2, built in the worktree `../nujuliet-snap-78c3588`). Outputs go to `io/`; 'HF'
+  runs HF_LEGACY automatically because HF_RPA/HF_RRPA are in the same &run. 16O smoke test of the chain passed. The user
+  launches it: `./run.sh [NTHREADS]`.

@@ -1,6 +1,6 @@
-! 2-body operators in the quasiparticle representation ... counterpart of MatrixElements/qpO2B.jl, qpO2B_40.jl & qpO2B_22.jl ...
-    ! Only the components used by the solvers are computed (O^40 & O^22 without the 1111 part); O^31 & pn1111 stay zero
-    ! exactly as in the original (their allocation calls are commented out there) ...
+! 2-body operators in the quasiparticle representation ... counterpart of dev common/qpO2b.jl, qpO2b_40.jl & qpO2b_22.jl ...
+    ! O^40 & O^22 incl. the proton-neutron (11,11) part (dev) are computed; O^31 stays zero exactly as in dev (its
+    ! allocation call is commented out there) ... dev flipped the sign of the direct terms of O^40 pp & nn ...
 module nj_qpo2b
     use nj_kinds
     use nj_types
@@ -12,7 +12,7 @@ module nj_qpo2b
     private
 
     public :: qpO2b_initialize, qpO2b, qpO2b_export, qpO2b_import
-    public :: qpO2b_40_pp, qpO2b_40_pn, qpO2b_40_nn, qpO2b_22_pp, qpO2b_2002_pn, qpO2b_22_nn
+    public :: qpO2b_40_pp, qpO2b_40_pn, qpO2b_40_nn, qpO2b_22_pp, qpO2b_2002_pn, qpO2b_22_nn, qpO2b_1111_pn
     public :: qp_BMBPT_energy
 
     ! Specification of the 4-index quasiparticle transformations ... source term, U/V selectors & signs ...
@@ -68,8 +68,8 @@ contains
         type(o1b_t), intent(in) :: C, U, V
         type(qpo2b_t), intent(out) :: Q_NN
         type(orb2b_t) :: Orb_NN_q
-        type(o2b_temp_t) :: F_NN
-        type(orb2b_temp_t) :: Orb_NN_t
+        type(o2b_pandya_t) :: F_NN
+        type(orb2b_temp_t) :: Orb_NN_t, Orb_NN_P
         type(ivec_t), allocatable :: Orb_lj(:,:)
         real(dp), allocatable :: UV(:,:,:,:)
         integer :: a_max, J_t
@@ -77,12 +77,16 @@ contains
 
         write(*,'(/,a)') 'Preparing the given 2-body NN operator O expressed in the J-scheme quasiparticle representation ...'
         a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
+        ! The direct terms read O2b_pp/pn/nn of all pairs with 2(n_a+n_b)+l_a+l_b <= 2*Nmax, which exist only for
+            ! N2max >= 2*Nmax (dev: KeyError of O2b_lookup) ... fatal instead of an out-of-bounds access ...
+        if (Params%Calc%N2max < 2*Params%Calc%Nmax) call fatal('qpO2b: N2max = ' // istr(Params%Calc%N2max) // &
+            ' < 2*Nmax = ' // istr(2*Params%Calc%Nmax) // ' is not supported (dev throws a KeyError here)')
 
         call O2b_transformation(Params,Orb,Orb_NN,O_NN,C)
         call qpO2b_initialize(Params,Orb,Q_NN,Orb_NN_q)
 
         call timer_start(t0)
-        call O2b_Pandya_transformation(Params,Orb,Orb_NN,O_NN,F_NN)
+        call O2b_Pandya_transformation(Params,Orb,Orb_NN,O_NN,F_NN,Orb_NN_P)
         call timer_report(t0)
 
         ! UV(:,:,Sel,iso) ... U & V amplitudes for protons (1) & neutrons (2) ...
@@ -101,7 +105,7 @@ contains
         call engine(1, 6, [Src_V,Src_V,Src_Fdc,Src_Fdc,Src_Fcd,Src_Fcd], &
                     reshape([Sel_U,Sel_U,Sel_V,Sel_V, Sel_V,Sel_V,Sel_U,Sel_U, Sel_U,Sel_V,Sel_U,Sel_V, &
                              Sel_V,Sel_U,Sel_V,Sel_U, Sel_U,Sel_V,Sel_V,Sel_U, Sel_V,Sel_U,Sel_U,Sel_V],[4,6]), &
-                    [1,1,1,1], [-1.0_dp,-1.0_dp,1.0_dp,1.0_dp,-1.0_dp,-1.0_dp], 1)
+                    [1,1,1,1], [1.0_dp,1.0_dp,1.0_dp,1.0_dp,-1.0_dp,-1.0_dp], 1)     ! dev sign of the direct terms
         write(*,'(/,a)') TAB // TAB // 'Allocating the components of the 2-body proton-neutron operator O^(40) ...'
         call engine(2, 4, [Src_Fdc,Src_Fdc,Src_Fcd,Src_Fcd,0,0], &
                     reshape([Sel_U,Sel_V,Sel_U,Sel_V, Sel_V,Sel_U,Sel_V,Sel_U, Sel_U,Sel_V,Sel_V,Sel_U, &
@@ -111,7 +115,7 @@ contains
         call engine(3, 6, [Src_V,Src_V,Src_Fdc,Src_Fdc,Src_Fcd,Src_Fcd], &
                     reshape([Sel_U,Sel_U,Sel_V,Sel_V, Sel_V,Sel_V,Sel_U,Sel_U, Sel_U,Sel_V,Sel_U,Sel_V, &
                              Sel_V,Sel_U,Sel_V,Sel_U, Sel_U,Sel_V,Sel_V,Sel_U, Sel_V,Sel_U,Sel_U,Sel_V],[4,6]), &
-                    [2,2,2,2], [-1.0_dp,-1.0_dp,1.0_dp,1.0_dp,-1.0_dp,-1.0_dp], 3)
+                    [2,2,2,2], [1.0_dp,1.0_dp,1.0_dp,1.0_dp,-1.0_dp,-1.0_dp], 3)     ! dev sign of the direct terms
         write(*,'(/,a)') TAB // 'Components of O^(40) of the given 2-body NN quasiparticle operator succesfully allocated ...'
 
         write(*,'(/,a)') TAB // 'Allocating components O^(22) of the given NN operator 2-body in the quasiparticle representation ...'
@@ -125,6 +129,11 @@ contains
                     reshape([Sel_U,Sel_V,Sel_U,Sel_V, Sel_V,Sel_U,Sel_V,Sel_U, Sel_U,Sel_V,Sel_V,Sel_U, &
                              Sel_V,Sel_U,Sel_U,Sel_V, 0,0,0,0, 0,0,0,0],[4,6]), &
                     [1,1,2,2], [1.0_dp,1.0_dp,-1.0_dp,-1.0_dp,0.0_dp,0.0_dp], 5)
+        write(*,'(/,a)') TAB // TAB // 'Allocating the components of the 2-body proton-neutron operator O^(11,11) ...'
+        call engine(4, 4, [Src_V,Src_V,Src_Fcd,Src_Fcd,0,0], &
+                    reshape([Sel_U,Sel_U,Sel_U,Sel_U, Sel_V,Sel_V,Sel_V,Sel_V, Sel_U,Sel_V,Sel_U,Sel_V, &
+                             Sel_V,Sel_U,Sel_V,Sel_U, 0,0,0,0, 0,0,0,0],[4,6]), &
+                    [1,2,1,2], [1.0_dp,1.0_dp,1.0_dp,1.0_dp,0.0_dp,0.0_dp], 7)
         write(*,'(/,a)') TAB // TAB // 'Allocating the components of the 2-body neutron-neutron operator O^(22) ...'
         call engine(3, 6, [Src_V,Src_V,Src_Fcd,Src_Fcd,Src_Fdc,Src_Fdc], &
                     reshape([Sel_U,Sel_U,Sel_U,Sel_U, Sel_V,Sel_V,Sel_V,Sel_V, Sel_U,Sel_V,Sel_U,Sel_V, &
@@ -137,15 +146,15 @@ contains
 
     contains
 
-        ! One quasiparticle transformation ... Fch = 1 pp, 2 pn, 3 nn (F_NN channel & direct V) ...
+        ! One quasiparticle transformation ... Fch = 1 pp, 2 pn (F_NN%pnnp), 3 nn, 4 pn(11,11) (direct O2b_pn & F_NN%pnpn) ...
             ! Sel(s,k) is the U/V selector of index s for component k, Iso(s) the isospin of index s ...
-            ! Out = 1 qp40%pp, 2 qp40%pn, 3 qp40%nn, 4 qp22%pp, 5 qp22%pn2002, 6 qp22%nn ...
+            ! Out = 1 qp40%pp, 2 qp40%pn, 3 qp40%nn, 4 qp22%pp, 5 qp22%pn2002, 6 qp22%nn, 7 qp22%pn1111 (T = 0 pairs) ...
         subroutine engine(Fch,K,Src,Sel,Iso,Sgn,Out)
             integer, intent(in) :: Fch, K, Src(6), Sel(4,6), Iso(4), Out
             real(dp), intent(in) :: Sgn(6)
             type(rmat_t), allocatable :: T1(:,:,:), T2(:,:,:)
             integer :: J, P, N, Bra, Ket, BraKet, a, b, c, d, i, ii, kk, Ket_dc, Bra_ib, Bra_ai, Ket_id, Bra_ab, Ket_ci
-            integer :: N1, Ind, Ket_max
+            integer :: N1, Ind, Ket_max, iT
             real(dp) :: Sums(6), Ph, V_ibcd, F_ibcd, F_ibdc, Src_val(3), Tot
 
             allocate(T1(6,2,0:J_t), T2(6,2,0:J_t))
@@ -182,8 +191,12 @@ contains
                                 F_ibdc = F_NN%pp(P,J)%v(Bra_ib,Ket_dc)
                                 F_ibcd = F_NN%pp(P,J)%v(Bra_ib,Ket)
                             else if (Fch == 2) then
-                                F_ibdc = F_NN%pn(P,J)%v(Bra_ib,Ket_dc)
-                                F_ibcd = F_NN%pn(P,J)%v(Bra_ib,Ket)
+                                F_ibdc = F_NN%pnnp(P,J)%v(Bra_ib,Ket_dc)
+                                F_ibcd = F_NN%pnnp(P,J)%v(Bra_ib,Ket)
+                            else if (Fch == 4) then
+                                V_ibcd = O2b_pn(i,b,c,d,J,P,O_NN,Orb_NN)
+                                F_ibdc = 0.0_dp
+                                F_ibcd = F_NN%pnpn(P,J)%v(Bra_ib,Ket)
                             else
                                 if (any(Src(1:K) == Src_V)) V_ibcd = O2b_nn(i,b,c,d,J,P,O_NN,Orb,Orb_NN)
                                 F_ibdc = F_NN%nn(P,J)%v(Bra_ib,Ket_dc)
@@ -254,20 +267,22 @@ contains
                 end do
             end do
 
-            ! 4th index & allocation of the quasiparticle components ...
+            ! 4th index & allocation of the quasiparticle components ... T = 1 pairs, T = 0 (all ordered) pairs for pn(11,11) ...
+            iT = 2
+            if (Out == 7) iT = 1
             do J = 0, J_t
                 do P = 1, 2
-                    N1 = Orb_NN%N(2,P,J)
+                    N1 = Orb_NN%N(iT,P,J)
                     !$omp parallel do schedule(dynamic) private(a,b,Bra_ab,Ket_max,Ket,c,d,Tot,ii,i,Ket_ci,kk,Ind)
                     do Bra = 1, N1
-                        a = Orb_NN%Ind(2,P,J)%v(1,Bra)
-                        b = Orb_NN%Ind(2,P,J)%v(2,Bra)
+                        a = Orb_NN%Ind(iT,P,J)%v(1,Bra)
+                        b = Orb_NN%Ind(iT,P,J)%v(2,Bra)
                         Bra_ab = Orb_NN_t%Dic(a,b,J)
                         Ket_max = Bra
                         if (Out == 2 .or. Out == 5) Ket_max = N1
                         do Ket = 1, Ket_max
-                            c = Orb_NN%Ind(2,P,J)%v(1,Ket)
-                            d = Orb_NN%Ind(2,P,J)%v(2,Ket)
+                            c = Orb_NN%Ind(iT,P,J)%v(1,Ket)
+                            d = Orb_NN%Ind(iT,P,J)%v(2,Ket)
                             Tot = 0.0_dp
                             do ii = 1, size(Orb_lj(Orb(d)%l,Orb(d)%j)%v)
                                 i = Orb_lj(Orb(d)%l,Orb(d)%j)%v(ii)
@@ -290,6 +305,8 @@ contains
                                 Q_NN%qp22%pn2002(P,J)%v(Bra,Ket) = Tot
                             case (6)
                                 Q_NN%qp22%nn(P,J)%v(Ind) = Tot
+                            case (7)
+                                Q_NN%qp22%pn1111(P,J)%v(Ind) = Tot
                             end select
                         end do
                     end do
@@ -437,6 +454,26 @@ contains
         qpO2b_2002_pn = Amp * Q%qp22%pn2002(P,J)%v(Orb_NN%Dic(a_s,b_s,J,1),Orb_NN%Dic(c_s,d_s,J,1))
     end function qpO2b_2002_pn
 
+    ! pn (11,11) element ... counterpart of qpO2b_1111_pn & qpO2b_1111_index (dev qpO2b_22.jl:837,899) ... a, c protons,
+        ! b, d neutrons over the T = 0 (all ordered) pairs of Orb_NN, packed lower triangle, no sign or reordering ...
+        ! a missing pair is fatal (dev KeyError of O2b_lookup) ...
+    real(dp) function qpO2b_1111_pn(a,b,c,d,J,P,Q,Orb_NN) result(ME)
+        integer, intent(in) :: a, b, c, d, J, P
+        type(qpo2b_t), intent(in) :: Q
+        type(orb2b_t), intent(in) :: Orb_NN
+        integer :: Bra, Ket
+        Bra = 0
+        Ket = 0
+        if (J <= ubound(Orb_NN%Dic,3)) then
+            Bra = Orb_NN%Dic(a,b,J,0)
+            Ket = Orb_NN%Dic(c,d,J,0)
+        end if
+        if (Bra == 0 .or. Ket == 0) call fatal('qpO2b_1111_pn: no T = 0 2-body pair for (' // istr(a) // ',' // istr(b) // &
+                                               ') or (' // istr(c) // ',' // istr(d) // ') at J = ' // istr(J) // &
+                                               ' (dev KeyError; the pairs exist only for 2(n_a+n_b)+l_a+l_b <= N2max)')
+        ME = Q%qp22%pn1111(P,J)%v(packed_index(max(Bra,Ket),min(Bra,Ket),Orb_NN%N(1,P,J)))
+    end function qpO2b_1111_pn
+
     ! Binary layout: 11 blocks (H = 1..11), each over J = 0..2*Nmax+1 & P = 1,2 ... packed lower triangles or full matrices ...
     subroutine qpO2b_export(Params,Orb_NN,Q,Export_Path)
         type(params_t), intent(in) :: Params
@@ -460,10 +497,33 @@ contains
         character(len=*), intent(in) :: Import_Path
         type(qpo2b_t), intent(out) :: Q
         type(orb2b_t), intent(out) :: Orb_NN
-        integer :: u
+        integer :: u, H, J, P, N, J_e
+        integer(i8) :: N_ME, File_Size
+        integer, parameter :: H_Orb(11) = [2, 2, 2, 1, 1, 1, 1, 2, 2, 1, 2]
+        logical, parameter :: H_symm(11) = [.true., .false., .true., .false., .false., .false., .false., .true., .false., &
+                                             .true., .true.]
 
         call qpO2b_initialize(Params,Orb,Q,Orb_NN)
         write(*,'(/,a)') 'Reading given 2-body quasiparticle NN operator ...'
+
+        ! Size check of dev qpO2b_import (8 B per ME) ... with the channel range of stream_qp (port-note B.3) ...
+        J_e = min(2*Params%Calc%Nmax + 1, Orb_NN%J_max)
+        N_ME = 0
+        do H = 1, 11
+            do J = 0, J_e
+                do P = 1, 2
+                    N = Orb_NN%N(H_Orb(H),P,J)
+                    if (H_symm(H)) then
+                        N_ME = N_ME + int(N,i8)*int(N+1,i8)/2
+                    else
+                        N_ME = N_ME + int(N,i8)**2
+                    end if
+                end do
+            end do
+        end do
+        inquire(file=Import_Path, size=File_Size)
+        if (File_Size /= 8*N_ME) call fatal("Size of the binary file ''" // trim(Import_Path) // "'' (" // istr(File_Size) // &
+            " B) does not match the expected size of the 2-body quasiparticle operator (" // istr(8*N_ME) // " B) ...")
         open(newunit=u, file=Import_Path, access='stream', form='unformatted', status='old', action='read')
         call stream_qp(u,Params,Orb_NN,Q,.false.)
         close(u)

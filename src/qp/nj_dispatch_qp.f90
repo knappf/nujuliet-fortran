@@ -1,10 +1,11 @@
-! Dispatcher of the &run actions handled by chain B (BCS, HFB, QTDA & QRPA) ...
+! Dispatcher of the &run actions handled by chain B (BCS, HFB, QTDA, QRPA & pnQTDA) ...
 module nj_dispatch_qp
     use nj_input, only : run_input_t
     use nj_bcs, only : BCS
     use nj_hfb, only : HFB
     use nj_qtda, only : QTDA
     use nj_qrpa, only : QRPA
+    use nj_pnqtda, only : pnQTDA
     implicit none
     private
     public :: dispatch_qp
@@ -23,6 +24,8 @@ contains
             call QTDA(Inp%Params)
         case ('QRPA')
             call QRPA(Inp%Params)
+        case ('pnQTDA')
+            call pnQTDA(Inp%Params)
         case default
             Handled = .false.
         end select

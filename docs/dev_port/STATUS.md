@@ -209,3 +209,170 @@ Open items:
 - The temp-file hand-over (`HF/bin/*_temp.bin`) is kept as in dev; an in-memory hand-over is possible (no output change).
 
 Not ported (dead in dev): `Orb1B_HF_MBPT3` (unused struct), the unreachable `return 0.0` of `HF_MBPT_h1b`.
+
+## 2026-11-20 — stage 3, track QP (spec `qp.md`: BCS, HFB, qpO2b, QTDA, QRPA, pnQTDA)
+
+Done (details & deviations in `docs/PORTING_NOTES.md`, section "stage 3, quasiparticle chain"):
+- Legacy: no legacy consumer of the BCS/HFB/QTDA/QRPA outputs (`consumers.md`), so the chain was replaced in place
+  (actions `BCS`, `HFB`, `QTDA`, `QRPA`, new `pnQTDA`); it no longer uses `nj_hf_legacy`.
+- `nj_qpo2b`: O^40 pp/nn direct-term sign (dev), H^22 pn(11,11) (engine `Fch = 4`, `Out = 7`, 4-block Pandya `pnpn`
+  of common A), `qpO2b_1111_pn`, import file-size check, guard `N2max >= 2*Nmax`.
+- `nj_bcs`: dev layout `BCS/{bin,densities}`, dev `HF_solve`/`HF_energy`/`HF_orbitals_make`, real occupation tests,
+  **F3** (mid-gap Lambda).
+- `nj_hfb`: dev layout `HFB/{bin,densities}` (+ `bin/lambda_2.bin`), modified Broyden mixing (`broyden_t`, `dsysv`),
+  `HFB_chemical_potential_secant/_step/_gap/_gap_species` with the `Lambda_H` scheme, `HFB_orbital_matching`
+  (Hungarian of core `nj_linalg` + Loewdin) in all orderings and both canonical bases, `HF_orbitals_make` in
+  `HFB_diagonalize_BCS`, deterministic Lipkin-Nogami traces.
+- `nj_qtda`/`nj_qrpa`/`nj_qex`: `Reference` folders, dev layout and file names (`transitions/`, `spectra/`,
+  `amplitudes/`, `*_summary.dat`, `QTDA_plot.dat`/`QRPA_Plot.dat`); F/GT qp operators and the dev E1 current formulas come
+  from stage-1 `nj_tr1b` (`qpTr1b_initialize`), the strength combination of `qex_rB` is unchanged in dev (verified).
+- New `src/qp/nj_pnqtda.f90` (driver, `orbitals_pn2qp_make`, allocate, diagonalize, export) + `files.mk` + dispatcher.
+- Harness: new case `qp_options` (`julia/qp_options.jl`, `fortran/qp_options/0[1-5]_*.nml`, reference
+  `work/julia_t8/qp_options`); new tool `tests/dev_port/qp_gauge_check.py` (quasiparticle sign gauge for qpH2b and the
+  QTDA/QRPA/pnQTDA amplitudes). The existing `bundled` namelists 11/12 were already correct.
+
+Verification (binary `nujuliet_qp`, build dir `build_qp`, full tree; compare.py tol 1e-8; SIGN files with
+qp_gauge_check.py):
+- bundled O18_BCS (BCS -> QTDA -> QRPA, Reference BCS): 51 files, 47 ok, 4 SIGN (qpH2b, QTDA_X, QRPA_X/Y); gauge:
+  qpH2b 3.0e-15, QTDA_X 1.9e-13, QRPA_X+Y 9.4e-12. All other files (BCS summary, C/U/V, qpH1b, densities, spectra,
+  transitions incl. E1 currents) <= 3.7e-12 (QRPA_E.bin), text files to the printed digit.
+- bundled O18_HFB (HFB -> QTDA -> pnQTDA -> QRPA): 58 files, 53 ok, 5 SIGN; gauge: qpH2b 3.6e-11, QTDA_X 3.5e-11,
+  QRPA_X+Y 5.2e-11, pnQTDA_X 3.1e-11; same HFB iteration count (13) and history as Julia.
+- qp_options (167 files): Ne22_HFB (Full pairing, open p & n; QTDA Ortho=false; pnQTDA), O20_LN (LNT/LNRes, Broyden
+  restart, QRPA), O20_MCA, O20_ScBCS (ScBCS, A0/Z0, QTDA, pnQTDA, QRPA Ortho=false): all ok or SIGN, gauge <= 4.0e-10.
+  O20_HBCS (HFB Pairing=BCS -> pnQTDA): same 14-iteration history, energies agree to 4e-10 rel., qpH2b/pnQTDA_X gauge
+  1.3e-8 / 5.0e-8 and the printed dZ dispersion 4.5e-5 vs 5.5e-5: ill-conditioned converged solution (debug vs optimized
+  Fortran builds differ by the same amount; see UPSTREAM_BUGS). 22Ne QRPA stops in both codes (complex eigenvectors).
+- Threads: 1 vs 8 threads, bundled O18 steps and qp_options: every file identical to 1e-12 with `--strict-sign`
+  (after making the LN traces deterministic).
+- Debug build (`-check all -warn all`, `build_qp_dbg`): bundled O18 steps and qp_options run without runtime errors
+  (only array-temporary warnings of the qpO2b engine call); no compiler warnings.
+- Timing (8 threads, bundled interaction): bundled O18 BCS/HFB chains Fortran 1.6 s wall (whole run incl. reads) vs Julia
+  30.1 s (sum of steps, excl. JIT); qp_options Fortran 2.7 s vs Julia 50.4 s.
+
+Open items:
+- `README.md` (top level) still documents the base chain-B layout; to be updated in the cleanup stage.
+- The BCS reference-HF occupation question (UPSTREAM_BUGS, stage 3) is open for the owner.
+
+Not ported (dead in dev): `HFB_Broyden_BackUp.jl` (not included), `HFB_canonical_basis_diagonalize`, `qpO2b_31`
+(caller commented out), `QTDA/QRPA/pnQTDA_import_binary` (`*_external.jl`, no caller).
+
+## 2026-11-20 — stage 3, TDA & RPA part 1 (spec `tda_rpa.md` sections 2-5 + section 9; track RPA)
+
+Done:
+- New `src/rpa/nj_ph_common.f90`, `nj_tda.f90`, `nj_rpa.f90`, `nj_rpa_export.f90`, `nj_tda_rpa_driver.f90`
+  (`src/rpa/files.mk`), `&run` actions `TDA` and `RPA` in `nj_dispatch_rpa.f90`. Reference import from
+  `io/<Path>/<Reference>/bin/{orb,C,rho,H1b,H2b[,sigma]}.bin` (HF or HF-MBPT, `Reference_TBCF`), 1p1h space from
+  `orbitals_1p1h_make` (fractional occupations, Tol_par/Tol_hol), A/B/N with the metric and `h_N`, TBCF box diagrams
+  (A & B; DEV pf/nf contact terms), TDA (dsyevr / dsygvd in the spurious complement) and RPA (H_p H_m product form,
+  metric normalization, zero-norm states, 2x2 spurious problem) diagonalization, `RPA_OBDM_oY2`, QBA / density /
+  dressing energies, `RPA_sigma` with **F2**, TDA exact kernel (incl. reference Sigma), RPA `Linear` / `Exact` rM (incl.
+  RPA Sigma), shared rB (f3f7a33 E1 fixes), dev output layout `io/<Path>/<Name>/{bin,densities,transitions,spectra,
+  amplitudes}` incl. RPA radii, natural orbitals (`RPA_Orb`), `sigma.bin`, summaries, spectra, amplitudes, 15 transition
+  tables per solver. Shared: `nj_linalg::eig_sym_gen`; `compare.py` ignores the port-only `.TDA_output` marker.
+- Legacy kept unchanged: `HF_RPA`, `HF_RPA_transition_densities/currents`, `HF_RRPA*` (+ `HF_LEGACY` routing).
+- New test case `rpa_options` (`julia/rpa_options.jl`, reference `work/julia_t8/rpa_options`, `fortran/rpa_options/`):
+  Ortho = false, RPA TBCF + RPA_Orb + Exact, RPA on HF-MBPT with Reference_TBCF + TBCF (dressing energy), and
+  `RPA-DEV-TBCF` (step 06, DEV with Reference_TBCF, for part 2).
+
+Left to PART 2 (not done here): `TDA_/RPA_transition_densities`, `_transition_operator_densities`,
+`_transition_analysis`, `_transition_currents`, `_transitions_recalculate` (the external actions of the `02_*` / `06_*`
+namelists of bundled, ca40_5sh, o16_open are still unknown actions), `RPA_allocate_SE` (RPA `DEV = .true.` with
+`Reference_TBCF` stops with "not ported yet"; step `rpa_options/06`), the `levels/` dir. `Transitions = 'Exact'` is not
+separate and is done. Part 2 can reuse `ph_operators`, `ph_metric`, `ph_occ`, `TDA_transition_kernel`, the X/Y layout
+(channel arrays `(P,0:J_max)`, row-major binaries) and `ph_allocate_tbcf(...,DEV=.true.,...)` (pf/nf done).
+
+Verification (compare.py tol 1e-8, TDA/RPA steps only, external actions stripped from `&run`; X/Y binaries checked
+element-wise with the HF/natural-orbital row-sign gauge of `C.bin` plus the column gauge, scratch script):
+- bundled O16 `TDA`, `RPA`, `RPA-Exact`, `RPA-DEV` (HF reference) and O16_MBPT `TDA-MBPT`, `RPA-MBPT` (HF-MBPT with
+  Reference_TBCF): all summaries, spectra, amplitudes, radii, occupations, `orb/C/rho.bin`, all 15 transition tables per
+  solver ok (0 DIFF); `TDA_X` <= 6.4e-14, `RPA_X/Y` <= 1.7e-13 with the gauge.
+- rpa_options (`TDA-noOrtho`, `RPA-noOrtho`, `RPA-TBCF`, `RPA-dress`): 0 DIFF; `RPA_X/Y` <= 2.2e-12; `sigma.bin` gauge
+  2.7e-14 (RPA-TBCF, HF basis, F2 active) and 2.1e-15 (RPA-dress); `RPA_Orb` `H1b.bin` 1.3e-14, `rho.bin` 5.5e-14.
+- o16_open O20 `TDA`, `RPA` (0d5/2 dropped) and `TDA-frac`, `RPA-frac` (fractional 1p1h): 0 DIFF, X/Y <= 1.9e-13.
+- ca40_5sh Ca40 `TDA`, `RPA` (16 threads): 0 DIFF, X/Y <= 5.8e-13. Fortran TDA 0.02 s, RPA 0.21 s.
+- Threads: bundled 1 vs 8 threads, all 180 files equal at 1e-12 with `--strict-sign`.
+- Debug build (`-check all -warn all`): bundled, rpa_options, o16_open TDA/RPA steps without runtime errors.
+- Legacy: `runs/test_Ca40_9sh/stage3_rpa_legacy` (Ca40.nml, HF → HF_LEGACY, HF_RPA, HF_RRPA, 16 threads, 2:32 wall)
+  byte-identical to `stage2_mbpt_legacy/io` (`diff -rq`).
+
+Open items:
+- Part 2 items above. Cleanup stage: the LEGACY `nj_hf_rpa*` / `nj_hf_rrpa*` files once EMPM (stage 5) and HF_ScRPA
+  (stage 4) no longer need them.
+
+Not ported (dead in dev): Sigma variant of `RPA_spurious_ini`, `RPA_OBDM_sigma`, commented-out blocks of
+`TDA_allocate_TBCF` (pf/nf) and `RPA_export` (Sigma_NAT).
+
+## 2026-11-20 — stage 3, TDA & RPA part 2 (spec `tda_rpa.md` sections 4.4, 6, 7; track RPA)
+
+Done (details & deviations in `docs/PORTING_NOTES.md`, section "stage 3, TDA & RPA part 2"):
+- New `src/rpa/nj_ph_external.f90`: `&run` actions `TDA_/RPA_transition_densities`, `_transition_operator_densities`,
+  `_transition_analysis` (`levels/`), `_transition_currents`, `_transitions_recalculate` (dev names, files and folders),
+  `RPA_transition_kernel` (`Linear`, `Exact` incl. the RPA Sigma), TDA with the exact kernel incl. the reference Sigma.
+  New namelists `&transition_operator_densities`, `&transition_analysis` (`Cut`) in `nj_input` (additive).
+- New `src/rpa/nj_rpa_se.f90`: `RPA_allocate_SE` (DEV, Mode OnShell, DSRG), called from the RPA allocation and from the
+  dressing energy as in dev; the part-1 "not ported yet" stop is removed.
+- Section 7: no races in the new code (disjoint writes per thread), guards for JP / nu range and missing inputs,
+  `mkdir -p` of `levels/`, `densities/`, `transitions/E0..E3` (the part-1 guards: `.TDA_output`, Name == Reference,
+  spurious 1e-8 else-branch, Reference_TBCF without sigma.bin).
+- Test case `rpa_options` extended (Julia driver + reference regenerated, `fortran/rpa_options/07..12`): externals on
+  TDA/RPA-noOrtho (analysis of the non-EJ 2-, 2+ densities with File_Name, 0+/3- operator densities, 2+ currents with
+  M = 1 on 20 x 30, both recalculations), `RPA-Exact` + externals, `RPA-DEV-dress` (Reference_TBCF, TBCF, DEV, Exact:
+  SE in A and in the dressing energy) + all RPA externals with the RPA sigma.bin, `TDA-MBPT` + externals with the
+  reference Sigma, `RPA-DEV-frac` (Tol_par 0.9, Tol_hol 0.02: overlapping particle/hole sets, backward B_12 coupling).
+  The old `O20_MBPT` idea was dropped: dev skips HF-MBPT for the non-idempotent open-shell HF.
+
+Verification (binary `build_rpa/nujuliet_rpa`; compare.py tol 1e-8; work dirs `tests/dev_port/work/fortran_rpa*_t*`):
+- bundled `io/O16` (steps 01-04: TDA, RPA, RPA-Exact, RPA-DEV + 1- densities, currents, operator densities, analysis
+  of TDA and RPA): 153 files, 141 ok, 12 SIGN (eigenvector / HF-orbital signs of the binaries and of the analysis
+  files), 0 DIFF; `io/O16_MBPT` (TDA-MBPT/RPA-MBPT + densities & currents): 89 files, 82 ok, 7 SIGN.
+- rpa_options (new reference): 337 files, 308 ok, 29 SIGN, 0 DIFF/MISSING/EXTRA; `RPA-DEV-TBCF`, `RPA-DEV-dress`,
+  `RPA-DEV-frac` (SE path) all ok. The analysis SIGN files (13 in rpa_options, 6 in bundled) were checked with a
+  scratch script: identical a_p/a_h/T rows, |values| equal to 1e-8, the M columns flip with one sign per level.
+- o16_open (TDA/RPA, TDA-frac/RPA-frac + 2+ densities): 113 files, 106 ok, 7 SIGN. ca40_5sh steps 01-02 (incl. the 1-
+  densities): 66 ok, 6 SIGN (only HF-ScRPA, stage 4, missing).
+- Threads: bundled, rpa_options, o16_open, ca40_5sh: 1 vs 8 (ca40 16) threads all files equal at 1e-12 with
+  `--strict-sign`. Debug build (`build_rpa_dbg`, `-check all -warn all`): bundled 01-06 and rpa_options without
+  runtime errors, results equal to the optimized build (tol 1e-10, eigenvector signs).
+- Timing ca40_5sh (8 threads, wall per action incl. start-up and imports): TDA 0.41 s, RPA 0.63 s, TDA+RPA 1- densities
+  0.97 s; Julia (`timings_julia.txt`, 8 threads) TDA 3.67 s, RPA 4.45 s, densities 0.94 s.
+- Legacy: `runs/test_Ca40_9sh/stage3_rpa2_legacy` (HF → HF_LEGACY, HF_RPA, HF_RRPA, 16 threads, 3:07 wall)
+  byte-identical to `stage2_mbpt_legacy/io` (`diff -rq`).
+
+Open items:
+- Cleanup stage: LEGACY `nj_hf_rpa*` / `nj_hf_rrpa*` (EMPM stage 5, HF_ScRPA stage 4). The full-namelist runs of
+  bundled/ca40_5sh still stop at the stage-4 HF_ScRPA steps (not this track).
+- `RPA_allocate_SE` memory: the configuration list of a channel is kept in memory (8 ints + 2 reals per 2p-2h
+  configuration); fine for the test cases, large for production bases (DEV path only).
+
+Not ported (unreachable in dev): `RPA_allocate_SE` modes `"QP"` (`SE_QP`) and `"Fixed"`, regularizations
+`"Imaginary"`/`"None"`, `RPA_allocate_SE_Old`.
+
+## 2026-11-20 — stage 3, independent verification (merged tree, no code changes)
+
+- Clean build of the whole tree (`build/`, `./nujuliet`, plain `make`): no errors, no warnings (`build_rpa`, `build_qp`,
+  `nujuliet_rpa`, `nujuliet_qp` removed).
+- All cases, 8 threads, vs `work/julia_t8` (compare.py 1e-8): hf_options 14 ok; mbpt_options 23 ok + 6 SIGN; o16_open
+  106 ok + 7 SIGN; rpa_options 308 ok + 29 SIGN; ca40_5sh 66 ok + 6 SIGN + 28 MISSING (HF-ScRPA, stage 4); bundled 333 ok
+  + 29 SIGN + 85 MISSING (He4 HF-ScRPA*, stage 4; steps 08-10 / ca40 03 not run); qp_options 150 ok + 14 SIGN + 3 DIFF
+  (O20_HBCS: HFB summary dZ 4.5e-5 vs 5.5e-5, qpH2b gauge 1.3e-8, pnQTDA_X gauge 5.0e-8; Julia -t 1 vs -t 8 differs by
+  the same amount there (6.6e-9 / 2.0e-8, dZ 5e-5): ill-conditioned converged HFB, not a port defect). No EXTRA.
+- SIGN files re-checked with gauges: H1b/H2b/sigma (gauge_check.py) <= 2.3e-13; TDA_X/RPA_X+Y with the HF / natural
+  orbital row gauge + column gauge <= 5.7e-12 (RPA-DEV-frac), all others <= 2.2e-12; transition-analysis `levels/`
+  files exact to the printed digits; qp files (qp_gauge_check.py) <= 4.0e-10 (except O20_HBCS above); HFB Rho/Kappa
+  (canonical-basis gauge) <= 2.1e-12, U/V <= 1.3e-11.
+- bundled Fortran -t 1 vs Julia -t 1: 350 ok + 12 SIGN, 0 DIFF. Fortran 1 vs 8 threads (--strict-sign, 1e-12): all cases
+  identical except rpa_options RPA-DEV-frac RPA_E/rho 1.5e-12: the stage-1/2 `reduction(+)` loops with dynamic schedule
+  (e.g. `nj_hamiltonian` H1b, used for HF-MBPT `H1b.bin`) vary at 1 ulp from run to run (also with 8 threads twice);
+  RPA-DEV-frac amplifies this to ~1e-12. With a fixed input the RPA step is bitwise reproducible with 8 threads.
+- Legacy: Ca40.nml (HF, HF_RPA, HF_RRPA, 16 threads, 2:54) byte-identical to `stage2_mbpt_legacy/io`.
+- 40Ca 9 shells dev actions (`runs/test_Ca40_9sh/stage3_dev`, HF + TDA + RPA, 16 threads, 8.6 s wall): TDA 0.18 s, RPA
+  0.50 s vs legacy HF_RPA 0.71 s (TDA+RPA). Spectra equal to the legacy ones except the spurious 1- energy (dev keeps
+  0.586 / 0.433 MeV, legacy 0) and the sign of Im E of the unstable 3- pair (legacy prints the channel as "3+").
+- Timing (8 threads, whole runs incl. reads): Fortran bundled 9.0 s (Julia steps 90 s), ca40_5sh 2.5 s (101 s),
+  o16_open 1.8 s (21 s), rpa_options 8.0 s (55 s), hf_options 1.4 s (12.6 s), mbpt_options 1.6 s (22 s), qp_options
+  2.9 s (50 s). No step slower than Julia.
+- Edge cases: Name == Reference fatal (TDA & RPA); TDA re-run with the same Name in the same io dir works (old folder
+  replaced, identical results); a TDA into a non-TDA folder is refused; RPA Reference_TBCF without sigma.bin fatal.
+  TDA Reference_TBCF without sigma.bin prints dev's error and skips the step (exit status 0, as dev); the RPA fatal
+  comes after the output folder tree has been created (empty `<Name>/` tree remains).
