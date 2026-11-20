@@ -66,7 +66,7 @@ contains
         call make_dir(io_path(Params,'/EMPM/Spectra'))
         call timer_start(t0)
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         C = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
         call EMPM_space_make(Params,Orb,Space)
         call EMPM_space_export(Params,Space)
@@ -129,7 +129,7 @@ contains
         call make_dir(io_path(Params,'/EMPM/2Phonon'))
         call timer_start(t0)
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call EMPM_space_make(Params,Orb,Space)
         call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
@@ -352,7 +352,7 @@ contains
         call make_dir(io_path(Params,'/EMPM/3Phonon'))
         call timer_start(t0)
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call EMPM_space_make(Params,Orb,Space)
         call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
@@ -621,7 +621,7 @@ contains
         call make_dir(io_path(Params,'/EMPM/4Phonon'))
         call timer_start(t0)
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call EMPM_space_make(Params,Orb,Space)
         call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
@@ -712,7 +712,7 @@ contains
         end do
         call timer_start(t0)
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call EMPM_space_make(Params,Orb,Space)
         call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
@@ -1533,7 +1533,7 @@ contains
         write(*,'(a)') 'Starting B(E1; 0+ -> 1-) of the full EMPM states with up to 1 .. ' // istr(Nf) // ' phonons ...'
         write(*,'(a)') trim(Params%Calc%Path)
         call timer_start(t0)
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call EMPM_space_make(Params,Orb,Space)
         call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
@@ -1843,7 +1843,7 @@ contains
             call fatal('EMPM_SF ... SF_Op must be ''iv'', ''is'' or ''ph''')
         end select
         call timer_start(t0)
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call EMPM_space_make(Params,Orb,Space)
         call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)

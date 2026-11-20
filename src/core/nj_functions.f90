@@ -11,7 +11,12 @@ module nj_functions
     public :: radial_moment_matrix_LHO, radial_moment_LHO, differentiate_Oh6
     public :: associated_legendre_polynomial, normalize_spherical_angles
     public :: scalar_spherical_harmonic_function, vector_spherical_harmonic_function
-    public :: J1b_convective, J1b_spin
+    public :: J1b_convective, J1b_spin, phonon_weights
+
+    ! Julia phonon_weights!(M) ... M -> |M| / sqrt(sum |M|^2), only |M| if all M vanish ... real & complex vectors ...
+    interface phonon_weights
+        module procedure phonon_weights_r, phonon_weights_c
+    end interface phonon_weights
 
 contains
 
@@ -298,11 +303,13 @@ contains
 
     contains
 
+        ! Dev fixes (functions.jl:504-623): the 2nd terms (Y_{l,l+1}) are outside the if (l > 0) blocks, with Y recomputed
+            ! before them & the factor sqrt(l+1) (the original had sqrt(l-1) inside the blocks) ...
         subroutine add_terms(Amp,ma2,mb2)
             real(dp), intent(in) :: Amp
             integer, intent(in) :: ma2, mb2
             complex(dp) :: Y, Y_x, Y_y, Y_z, Jc
-            ! First bracket ...
+            ! First bracket ... 1st term ...
             if (l_a > 0) then
                 Y = scalar_spherical_harmonic_function(l_b,mb2,theta,phi)
                 call vector_spherical_harmonic_function(l_a,l_a-1,-ma2,theta,phi,Y_x,Y_y,Y_z)
@@ -310,13 +317,15 @@ contains
                 J_x = J_x + Jc * Y_x
                 J_y = J_y + Jc * Y_y
                 J_z = J_z + Jc * Y_z
-                call vector_spherical_harmonic_function(l_a,l_a+1,-ma2,theta,phi,Y_x,Y_y,Y_z)
-                Jc = -sqrt(real(l_a - 1,dp) / real(2*l_a + 1,dp)) * (dR_a - real(l_a,dp) / r * R_a) * R_b * Y * Amp * phase(ma2)
-                J_x = J_x + Jc * Y_x
-                J_y = J_y + Jc * Y_y
-                J_z = J_z + Jc * Y_z
             end if
-            ! Second bracket ...
+            ! First bracket ... 2nd term ...
+            Y = scalar_spherical_harmonic_function(l_b,mb2,theta,phi)
+            call vector_spherical_harmonic_function(l_a,l_a+1,-ma2,theta,phi,Y_x,Y_y,Y_z)
+            Jc = -sqrt(real(l_a + 1,dp) / real(2*l_a + 1,dp)) * (dR_a - real(l_a,dp) / r * R_a) * R_b * Y * Amp * phase(ma2)
+            J_x = J_x + Jc * Y_x
+            J_y = J_y + Jc * Y_y
+            J_z = J_z + Jc * Y_z
+            ! Second bracket ... 1st term ...
             if (l_b > 0) then
                 Y = phase(ma2) * scalar_spherical_harmonic_function(l_a,-ma2,theta,phi)
                 call vector_spherical_harmonic_function(l_b,l_b-1,mb2,theta,phi,Y_x,Y_y,Y_z)
@@ -324,12 +333,14 @@ contains
                 J_x = J_x + Jc * Y_x
                 J_y = J_y + Jc * Y_y
                 J_z = J_z + Jc * Y_z
-                call vector_spherical_harmonic_function(l_b,l_b+1,mb2,theta,phi,Y_x,Y_y,Y_z)
-                Jc = sqrt(real(l_b - 1,dp) / real(2*l_b + 1,dp)) * (dR_b - real(l_b,dp) / r * R_b) * R_a * Y * Amp
-                J_x = J_x + Jc * Y_x
-                J_y = J_y + Jc * Y_y
-                J_z = J_z + Jc * Y_z
             end if
+            ! Second bracket ... 2nd term ...
+            Y = phase(ma2) * scalar_spherical_harmonic_function(l_a,-ma2,theta,phi)
+            call vector_spherical_harmonic_function(l_b,l_b+1,mb2,theta,phi,Y_x,Y_y,Y_z)
+            Jc = sqrt(real(l_b + 1,dp) / real(2*l_b + 1,dp)) * (dR_b - real(l_b,dp) / r * R_b) * R_a * Y * Amp
+            J_x = J_x + Jc * Y_x
+            J_y = J_y + Jc * Y_y
+            J_z = J_z + Jc * Y_z
         end subroutine add_terms
 
     end subroutine J1b_convective
@@ -391,6 +402,30 @@ contains
         end subroutine acc
 
     end subroutine J1b_spin
+
+    ! Weights of phonon levels for the averaged transition densities & currents ... counterpart of phonon_weights! ...
+    subroutine phonon_weights_r(M)
+        real(dp), intent(inout) :: M(:)
+        real(dp) :: Norm
+        Norm = sqrt(sum(abs(M)**2))
+        if (Norm > 0.0_dp) then
+            M = abs(M) / Norm
+        else
+            M = abs(M)
+        end if
+    end subroutine phonon_weights_r
+
+    ! Complex amplitudes ... the result |M| / Norm is real (stored with a zero imaginary part) ...
+    subroutine phonon_weights_c(M)
+        complex(dp), intent(inout) :: M(:)
+        real(dp) :: Norm
+        Norm = sqrt(sum(real(M,dp)**2 + aimag(M)**2))
+        if (Norm > 0.0_dp) then
+            M = cmplx(abs(M) / Norm, 0.0_dp, kind=dp)
+        else
+            M = cmplx(abs(M), 0.0_dp, kind=dp)
+        end if
+    end subroutine phonon_weights_c
 
     ! Julia div(a,b) truncates toward zero ... same as Fortran integer division ...
     pure integer function julia_div(a,b)

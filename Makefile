@@ -50,6 +50,7 @@ SRC_CORE = src/core/nj_kinds.f90 \
            src/core/nj_o2b.f90 \
            src/core/nj_v3b.f90 \
            src/core/nj_v2b.f90 \
+           src/core/nj_hamiltonian.f90 \
            src/core/nj_obdm.f90 \
            src/core/nj_tr1b.f90
 

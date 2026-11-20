@@ -91,7 +91,7 @@ contains
         type(params_t), intent(in) :: Params, Params_Ref
         type(orb1b_t), allocatable :: Orb(:)
         type(o1b_t) :: T, C, Rho, Kappa, U_m, V_m
-        type(o2b_t) :: V_NN
+        type(o2b_t) :: V_NN, V_NN_res
         type(orb2b_t) :: Orb_NN
         type(v3b_t) :: V_NNN
         type(orb3b_t) :: Orb_NNN
@@ -104,14 +104,14 @@ contains
         integer :: Iteration
         integer(i8) :: t0
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         T = T1b(Params,Orb)
 
         call timer_start(t0)
-        call V2b_read(Params,Orb,V_NN,Orb_NN)
+        call V2b_read(Params,V_NN,Orb_NN)
         call timer_report(t0)
         call timer_start(t0)
-        call V3b_no2b_read(Params,Orb,V_NNN,Orb_NNN)
+        call V3b_no2b_read(Params,V_NNN,Orb_NNN)
         call timer_report(t0)
 
         call timer_start(t0)
@@ -133,7 +133,8 @@ contains
             H_N%qp11%n = diagm(SQE%n)
             call o1b_alloc(H_N%qp20,size(SQE%p))
             call timer_start(t0)
-            call V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN)
+            call V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN,V_NN_res)
+            call O2b_move(V_NN_res,V_NN)
             call timer_report(t0)
             U_m%p = diagm(U%p)
             U_m%n = diagm(U%n)
@@ -185,7 +186,7 @@ contains
 
         ! Reference HF calculation ... occupations of the reference closed-shell nucleus ...
         call timer_start(t0)
-        Orb_HF = orbitals_make(Params_Ref)
+        Orb_HF = orbitals_make(Params_Ref,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         ! The original also reads the NN interaction once more here (V_NN_Ref) without ever using it ... skipped ...
         write(*,'(/,a)') 'Solving the HF equations for reference closed-shell system ...'
         write(*,'(a,/)') 'Reference nucleus:     A = ' // istr(Params_Ref%Calc%A) // ',     Z = ' // istr(Params_Ref%Calc%Z)
@@ -874,7 +875,7 @@ contains
 
         N_max = Params%Calc%Nmax
         a_max = (N_max + 1)*(N_max + 2)/2
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         allocate(nr(0:N_max,0:max(Params%Calc%N2max+1,2*N_max+1)))
         write(*,'(/,a)') 'Exporting information on single-(quasi)particle orbits ...'
         open(newunit=u_f, file=io_path(Params,'/BCS/BCS_Summary.dat'), position='append', action='write')

@@ -142,8 +142,7 @@ contains
         logical :: Verbose_Old
         Verbose_Old = Verbose
         Verbose = .false.
-        V_NN_Res = V_NN_Bare
-        call V2b_residual_no2b(Params,Orb,Orb_NN_Bare,Orb_NNN_Bare,Rho,V_NN_Res,V_NNN_Bare)
+        call V2b_residual_no2b(Params,Orb,Orb_NN_Bare,Orb_NNN_Bare,Rho,V_NN_Bare,V_NNN_Bare,V_NN_Res)
         call O2b_transformation(Params,Orb,Orb_NN_Bare,V_NN_Res,C)
         Verbose = Verbose_Old
     end subroutine HF_RRPA_V2b

@@ -9,3 +9,6 @@ build*/
 /runs_scratch
 /NN+NNN files
 *.orig_*
+# dev-port test run outputs
+/tests/dev_port/work/
+/nujuliet.old_*

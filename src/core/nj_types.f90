@@ -5,7 +5,7 @@
     !   Julia Dict lookups of 2-body orbitals are replaced by a dense index table Orb_NN%Dic(a,b,J,T) ...
 module nj_types
     use nj_kinds
-    use nj_hashmap
+    use, intrinsic :: iso_fortran_env, only : int32
     implicit none
     private
 
@@ -39,9 +39,17 @@ module nj_types
     end type cmat_t
 
     ! Orbitals & single-particle states ...
+    ! Julia Orb1B(a,n,l,j,pO,nO) ... the occupations pO & nO are Float64 since NuJuliet dev (fractional filling of open
+        ! shells, natural-orbital & correlated occupations) ...
     type, public :: orb1b_t
-        integer :: a = 0, n = 0, l = 0, j = 0, pO = 0, nO = 0
+        integer :: a = 0, n = 0, l = 0, j = 0
+        real(dp) :: pO = 0.0_dp, nO = 0.0_dp
     end type orb1b_t
+
+    ! Julia pnOrbVector(p,n) ... separate proton & neutron orbital lists (HF-MBPT) ...
+    type, public :: pnorbvector_t
+        type(orb1b_t), allocatable :: p(:), n(:)
+    end type pnorbvector_t
 
     type, public :: spstate_t
         integer :: a = 0, l = 0, j = 0
@@ -81,19 +89,34 @@ module nj_types
         integer :: p = 0, h = 0, tz = 0, J = 0, Par = 0
     end type phstate_t
 
-    type, public :: ind2qp_t
+    ! Julia Ind2B(a,b,T) (formerly Ind2qp) ... T = -1 proton, +1 neutron ...
+    type, public :: ind2b_t
         integer :: a = 0, b = 0, T = 0
-    end type ind2qp_t
+    end type ind2b_t
 
-    type, public :: ind2qp_vec_t
-        type(ind2qp_t), allocatable :: v(:)
-    end type ind2qp_vec_t
+    type, public :: ind2b_vec_t
+        type(ind2b_t), allocatable :: v(:)
+    end type ind2b_vec_t
 
-    ! 2-quasiparticle orbitals ... N(P,0:J) & i(P,0:J)%v(:) ...
-    type, public :: qporb2b_t
+    ! 2-quasiparticle orbitals ... Julia Orb2B_2qp(N, Ind, Dic) ... N(P,0:J_max), Ind(P,0:J_max)%v(:) & the dense lookup
+        ! Dic(a,b,0:J_max,iT) (iT = 1 for T = -1, 2 for T = +1; 0 = absent) replacing the Julia Dict of orb2b_2qp_key ...
+    type, public :: orb2b_2qp_t
+        integer :: a_max = 0, J_max = 0
         integer, allocatable :: N(:,:)
-        type(ind2qp_vec_t), allocatable :: i(:,:)
-    end type qporb2b_t
+        type(ind2b_vec_t), allocatable :: Ind(:,:)
+        integer, allocatable :: Dic(:,:,:,:)
+    end type orb2b_2qp_t
+
+    ! 1-particle 1-hole orbitals ... Julia Orb2B_1p1h(N, Ind, Dic) ... N(P,0:J_max), Ind(P,0:J_max)%v(:) of (a = particle,
+        ! b = hole, T) & the dense lookup Dic(a,b,0:J_max,iT) (iT = 1 for T = -1, 2 for T = +1; 0 = absent) replacing the
+        ! Julia Dict of orb2b_1p1h_key ... the parity is implied by l_a + l_b, Par(a,b) = parity_of(l_a + l_b) ...
+    type, public :: orb2b_1p1h_t
+        integer :: a_max = 0, J_max = 0
+        integer, allocatable :: N(:,:)
+        type(ind2b_vec_t), allocatable :: Ind(:,:)
+        integer, allocatable :: Dic(:,:,:,:)
+        integer, allocatable :: Par(:,:)
+    end type orb2b_1p1h_t
 
     ! 1-body operators ...
     type, public :: o1b_t
@@ -117,13 +140,24 @@ module nj_types
         integer, allocatable :: Dic(:,:,:,:)
     end type orb2b_t
 
-    ! 3-body NO2B orbitals ... hash map of 2+1-body keys & counts N(P,0:l,0:J,T,j_index) ...
+    ! Dense Int32 block of the 3-body NO2B lookup ... Julia Array{Int32,3} ...
+    type, public :: i3_t
+        integer(int32), allocatable :: m(:,:,:)
+    end type i3_t
+
+    ! 3-body NO2B orbitals ... Julia Orb3B(Map, N, nlj) of NuJuliet dev (the Dict of base NuJuliet is replaced by a dense map):
+        !   Map(ab)%m(TT, J-J_min+1, c) ... index of (ab T_ab c) in its V_NNN block (0 = not allowed), ab = a(a-1)/2 + b (b <= a),
+        !       TT = T_ab + T_ind (T_ind = 1 for T = 1/2, 2 for T = 3/2), J_min = |j_a-j_b|/2, dims (3, J_count, a_max) ...
+        !   N(P,0:l,0:J,T_ind,j_index) ... # of (ab T_ab c) states of each block ...
+        !   nlj(0:N_max/2, 0:N_max, j_index) ... orbital index a of (n,l,j), j_index = 1 for j = |2l-1|, 2 for j = 2l+1 ...
     type, public :: orb3b_t
-        type(hashmap_t) :: Dic
+        type(i3_t), allocatable :: Map(:)
         integer, allocatable :: N(:,:,:,:,:)
+        integer, allocatable :: nlj(:,:,:)
     end type orb3b_t
 
-    ! 3-body NO2B interaction in single precision ... V(P,0:l,0:J,T,j_index)%v(:) ...
+    ! 3-body NO2B interaction in single precision ... V(P,0:l,0:J,T,j_index)%v(:) ... packed lower triangle stored row by
+        ! row, Ind = Ket + Bra(Bra-1)/2 for Bra >= Ket (NuJuliet dev; base NuJuliet stored it column by column) ...
     type, public :: v3b_t
         type(svec_t), allocatable :: V(:,:,:,:,:)
     end type v3b_t
@@ -132,6 +166,12 @@ module nj_types
     type, public :: o2b_temp_t
         type(rmat_t), allocatable :: pp(:,:), pn(:,:), nn(:,:)
     end type o2b_temp_t
+
+    ! Pandya-transformed (particle-hole coupled) 2-body operator ... Julia O2B_Pandya(pp, pnnp, pnpn, nn) ... full
+        ! matrices per channel (P,0:J_max) over the pairs of orb2b_temp_t ...
+    type, public :: o2b_pandya_t
+        type(rmat_t), allocatable :: pp(:,:), pnnp(:,:), pnpn(:,:), nn(:,:)
+    end type o2b_pandya_t
 
     type, public :: orb2b_temp_t
         integer, allocatable :: N(:,:)
@@ -176,7 +216,13 @@ module nj_types
         type(transition_t) :: E0, E1, E2, E3, E1_V, E1_VC, E1_VS, E1_T, E1_TC, E1_TS, E1_C, E1_CC, E1_CS, E1_comp, E1_NLO_LWA
     end type reduced_transition_t
 
-    ! HF-RRPA auxiliary structure ...
+    ! HF-MBPT particle & hole orbitals ... Julia Orb1B_HF_MBPT(p, h, N_p, N_h) ...
+    type, public :: orb1b_hf_mbpt_t
+        type(pnorbvector_t) :: p, h
+        type(pninteger_t) :: N_p, N_h
+    end type orb1b_hf_mbpt_t
+
+    ! HF-RRPA auxiliary structure ... LEGACY (removed in cleanup stage, RRPA is gone in NuJuliet dev) ...
     type, public :: obdm_iteration_pairs_t
         integer :: N = 0
         integer, allocatable :: T(:), a(:), b(:)

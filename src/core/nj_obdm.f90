@@ -1,4 +1,5 @@
-! Radial densities & radii from the 1-body density matrix ... counterpart of MatrixElements/OBDM.jl ...
+! Radial densities & radii from the 1-body density matrix ... counterpart of src/common/rho.jl (NuJuliet dev;
+    ! MatrixElements/OBDM.jl before, OBDM_* renamed rho_*) ...
     ! Rho is given in the LHO basis, C is the transformation from the LHO to the reference basis ...
 module nj_obdm
     use nj_kinds
@@ -11,13 +12,32 @@ module nj_obdm
     implicit none
     private
 
+    public :: rho_export, rho_radial_cms, rho_radial_density_grid, rho_rN, rho_chR2
+    public :: rho_radial_chdensity_grid, rho_radial_radii, rho_radial_density_export, rho_radial_summary
+    ! LEGACY (removed in cleanup stage) ... the former OBDM_* names, still used by the not-yet-ported solvers ...
     public :: OBDM_export, OBDM_radial_cms, OBDM_radial_density_grid, OBDM_rN, OBDM_chR2
+
+    interface OBDM_export
+        module procedure rho_export
+    end interface OBDM_export
+    interface OBDM_radial_cms
+        module procedure rho_radial_cms
+    end interface OBDM_radial_cms
+    interface OBDM_radial_density_grid
+        module procedure rho_radial_density_grid
+    end interface OBDM_radial_density_grid
+    interface OBDM_rN
+        module procedure rho_rN
+    end interface OBDM_rN
+    interface OBDM_chR2
+        module procedure rho_chR2
+    end interface OBDM_chR2
 
     integer, parameter :: N_Sampling = 2**13 + 1
 
 contains
 
-    subroutine OBDM_export(Params,Orb,Summary_File,Densities_File,Rho_LHO,C)
+    subroutine rho_export(Params,Orb,Summary_File,Densities_File,Rho_LHO,C)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         character(len=*), intent(in) :: Summary_File, Densities_File
@@ -31,21 +51,21 @@ contains
         Rho%n = mtmm(C%n,Rho_LHO%n)
 
         if (Params%Calc%CMS == 'CMS1+2B' .or. Params%Calc%CMS == 'CMS2B') then
-            R_CMS = OBDM_radial_cms(Params,Rho,C,Orb)
+            R_CMS = rho_radial_cms(Params,Rho,C,Orb)
         else
             R_CMS = 0.0_dp
         end if
 
-        call OBDM_radial_density_grid(Params,Rho,C,Orb,r_grid,pRho_grid,nRho_grid)
-        call OBDM_radial_chdensity_grid(Params,Rho,C,Orb,R_CMS,r_grid,pRho_grid,nRho_grid,chRho_grid,kR2)
-        call OBDM_radial_radii(r_grid,pRho_grid,nRho_grid,chRho_grid,pR2,nR2,chR2)
-        call OBDM_radial_density_export(Densities_File,r_grid,pRho_grid,nRho_grid,chRho_grid)
-        call OBDM_radial_summary(Params,Summary_File,pR2,nR2,chR2,R_CMS,kR2)
+        call rho_radial_density_grid(Params,Rho,C,Orb,r_grid,pRho_grid,nRho_grid)
+        call rho_radial_chdensity_grid(Params,Rho,C,Orb,R_CMS,r_grid,pRho_grid,nRho_grid,chRho_grid,kR2)
+        call rho_radial_radii(r_grid,pRho_grid,nRho_grid,chRho_grid,pR2,nR2,chR2)
+        call rho_radial_density_export(Densities_File,r_grid,pRho_grid,nRho_grid,chRho_grid)
+        call rho_radial_summary(Params,Summary_File,pR2,nR2,chR2,R_CMS,kR2)
 
         write(*,'(/,a)') 'Radial densities and corresponding radii sucessfully exported ...'
-    end subroutine OBDM_export
+    end subroutine rho_export
 
-    function OBDM_radial_cms(Params,Rho,C,Orb) result(R_CMS)
+    function rho_radial_cms(Params,Rho,C,Orb) result(R_CMS)
         type(params_t), intent(in) :: Params
         type(o1b_t), intent(in) :: Rho, C
         type(orb1b_t), intent(in) :: Orb(:)
@@ -121,7 +141,7 @@ contains
         end do
 
         R_CMS = [pR2_CMS1, pR2_CMS2, nR2_CMS1, nR2_CMS2]
-    end function OBDM_radial_cms
+    end function rho_radial_cms
 
     ! Julia collect(range(r1, stop = r2, length = N)) ...
     function radial_grid(r1,r2,N) result(r_grid)
@@ -136,7 +156,7 @@ contains
         end do
     end function radial_grid
 
-    subroutine OBDM_radial_density_grid(Params,Rho,C,Orb,r_grid,pRho_grid,nRho_grid)
+    subroutine rho_radial_density_grid(Params,Rho,C,Orb,r_grid,pRho_grid,nRho_grid)
         type(params_t), intent(in) :: Params
         type(o1b_t), intent(in) :: Rho, C
         type(orb1b_t), intent(in) :: Orb(:)
@@ -174,9 +194,9 @@ contains
             nRho_grid(i) = nSum / (4.0_dp * pi)
         end do
         !$omp end parallel do
-    end subroutine OBDM_radial_density_grid
+    end subroutine rho_radial_density_grid
 
-    subroutine OBDM_radial_chdensity_grid(Params,Rho,C,Orb,R_CMS,r_grid,pRho_grid,nRho_grid,chRho_grid,kR2)
+    subroutine rho_radial_chdensity_grid(Params,Rho,C,Orb,R_CMS,r_grid,pRho_grid,nRho_grid,chRho_grid,kR2)
         type(params_t), intent(in) :: Params
         type(o1b_t), intent(in) :: Rho, C
         type(orb1b_t), intent(in) :: Orb(:)
@@ -234,17 +254,17 @@ contains
             kME = HbarC**2 * (k_p / m_p**2 * Rho%p(a,a) + k_n / m_n**2 * Rho%n(a,a)) * real(j_a + 1,dp)**2 * SO / (4.0_dp * pi * Z)
             kR2 = kR2 + kME
         end do
-    end subroutine OBDM_radial_chdensity_grid
+    end subroutine rho_radial_chdensity_grid
 
-    subroutine OBDM_radial_radii(r_grid,pRho_grid,nRho_grid,chRho_grid,pR2,nR2,chR2)
+    subroutine rho_radial_radii(r_grid,pRho_grid,nRho_grid,chRho_grid,pR2,nR2,chR2)
         real(dp), intent(in) :: r_grid(:), pRho_grid(:), nRho_grid(:), chRho_grid(:)
         real(dp), intent(out) :: pR2, nR2, chR2
         pR2 = integrate_trap(r_grid, r_grid**4 * pRho_grid) / integrate_trap(r_grid, r_grid**2 * pRho_grid)
         nR2 = integrate_trap(r_grid, r_grid**4 * nRho_grid) / integrate_trap(r_grid, r_grid**2 * nRho_grid)
         chR2 = integrate_trap(r_grid, r_grid**4 * chRho_grid) / integrate_trap(r_grid, r_grid**2 * chRho_grid)
-    end subroutine OBDM_radial_radii
+    end subroutine rho_radial_radii
 
-    subroutine OBDM_radial_density_export(Densities_File,r_grid,pRho,nRho,chRho)
+    subroutine rho_radial_density_export(Densities_File,r_grid,pRho,nRho,chRho)
         character(len=*), intent(in) :: Densities_File
         real(dp), intent(in) :: r_grid(:), pRho(:), nRho(:), chRho(:)
         integer :: u, i, N
@@ -257,9 +277,9 @@ contains
                            cfmt_f(nRho(i),14,8,.true.) // ' ' // cfmt_f(chRho(i),14,8,.true.)
         end do
         close(u)
-    end subroutine OBDM_radial_density_export
+    end subroutine rho_radial_density_export
 
-    subroutine OBDM_radial_summary(Params,Summary_File,pR2,nR2,chR2,R_CMS,kR2)
+    subroutine rho_radial_summary(Params,Summary_File,pR2,nR2,chR2,R_CMS,kR2)
         type(params_t), intent(in) :: Params
         character(len=*), intent(in) :: Summary_File
         real(dp), intent(in) :: pR2, nR2, chR2, R_CMS(4), kR2
@@ -290,22 +310,23 @@ contains
                 write(u,'(/,/,a)') 'Resulting nuclear radii ...'
                 A13 = 1.0_dp
             else
+                ! dev (rho.jl:276-282) normalizes the radius, sqrt(R2) / A^1/3 (sqrt(R2 / A^1/3) before) ...
                 write(u,'(/,/,a)') 'Resulting nuclear radii normalized by the scale factor 1/A^1/3 ...'
                 A13 = A_mass**(1.0_dp/3.0_dp)
             end if
-            write(u,'(/,a)') 'r_p   = ' // cfmt_f(sqrt(abs(pR2 + R_CMS(1) + R_CMS(2) + rpDF) / A13),12,6) // ' fm ' // TAB // TAB // &
+            write(u,'(/,a)') 'r_p   = ' // cfmt_f(sqrt(abs(pR2 + R_CMS(1) + R_CMS(2) + rpDF)) / A13,12,6) // ' fm ' // TAB // TAB // &
                              ' ... ' // TAB // ' Point-proton radius'
-            write(u,'(a)') 'r_n   = ' // cfmt_f(sqrt(abs(nR2 + R_CMS(3) + R_CMS(4) + rnDF) / A13),12,6) // ' fm ' // TAB // TAB // &
+            write(u,'(a)') 'r_n   = ' // cfmt_f(sqrt(abs(nR2 + R_CMS(3) + R_CMS(4) + rnDF)) / A13,12,6) // ' fm ' // TAB // TAB // &
                            ' ... ' // TAB // ' Point-neutron radius'
-            write(u,'(a)') 'r_ch  = ' // cfmt_f(sqrt(abs(pR2 + R_CMS(1) + R_CMS(2) - 0.106_dp * N / Z + 0.8414_dp - 0.143_dp) / A13),12,6) // &
+            write(u,'(a)') 'r_ch  = ' // cfmt_f(sqrt(abs(pR2 + R_CMS(1) + R_CMS(2) - 0.106_dp * N / Z + 0.8414_dp - 0.143_dp)) / A13,12,6) // &
                            ' fm ' // TAB // TAB // ' ... ' // TAB // ' Standard charge radius'
-            write(u,'(a)') 'r_ch  = ' // cfmt_f(sqrt(abs(chR2 + R_CMS(1) + R_CMS(2) + rpDF) / A13),12,6) // ' fm ' // TAB // TAB // &
+            write(u,'(a)') 'r_ch  = ' // cfmt_f(sqrt(abs(chR2 + R_CMS(1) + R_CMS(2) + rpDF)) / A13,12,6) // ' fm ' // TAB // TAB // &
                            ' ... ' // TAB // ' Folded charge radius'
-            write(u,'(/,a)') 'r_p  = ' // cfmt_f(sqrt(abs(pR2) / A13),12,6) // ' fm ' // TAB // TAB // ' ... ' // TAB // &
+            write(u,'(/,a)') 'r_p  = ' // cfmt_f(sqrt(abs(pR2)) / A13,12,6) // ' fm ' // TAB // TAB // ' ... ' // TAB // &
                              ' Uncorrected point-proton radius'
-            write(u,'(a)') 'r_ch = ' // cfmt_f(sqrt(abs(chR2) / A13),12,6) // ' fm ' // TAB // TAB // ' ... ' // TAB // &
+            write(u,'(a)') 'r_ch = ' // cfmt_f(sqrt(abs(chR2)) / A13,12,6) // ' fm ' // TAB // TAB // ' ... ' // TAB // &
                            ' Uncorrected folded charge radius'
-            write(u,'(a)') 'r_n  = ' // cfmt_f(sqrt(abs(nR2) / A13),12,6) // ' fm ' // TAB // TAB // ' ... ' // TAB // &
+            write(u,'(a)') 'r_n  = ' // cfmt_f(sqrt(abs(nR2)) / A13,12,6) // ' fm ' // TAB // TAB // ' ... ' // TAB // &
                            ' Uncorrected point-neutron radius'
             write(u,'(/,a,/)') 'Details on radii corrections ...'
             write(u,'(a)') 'r_p2_cm1^2 = ' // cfmt_f(R_CMS(1),12,6) // ' fm^2'
@@ -317,7 +338,7 @@ contains
             write(u,'(a)') 'r_nDF2^2   = ' // cfmt_f(rnDF,12,6) // ' fm^2'
         end do
         close(u)
-    end subroutine OBDM_radial_summary
+    end subroutine rho_radial_summary
 
     ! Folding with the finite proton & neutron charge distributions ...
     real(dp) function fold_pRho(r,r_grid,pRho_grid,pR_CMS)
@@ -361,7 +382,7 @@ contains
                                               (exp(-((r-x)/r_m)**2) - exp(-((r+x)/r_m)**2)) / r_m)
     end function convolution_n
 
-    real(dp) function OBDM_rN(Params,N,Rho,C,Orb)
+    real(dp) function rho_rN(Params,N,Rho,C,Orb)
         type(params_t), intent(in) :: Params
         integer, intent(in) :: N
         type(o1b_t), intent(in) :: Rho, C
@@ -394,10 +415,10 @@ contains
         end do
         !$omp end parallel do
 
-        OBDM_rN = integrate_trap(r_grid, r_grid**(N+2) * pRho_grid) / integrate_trap(r_grid, r_grid**2 * pRho_grid)
-    end function OBDM_rN
+        rho_rN = integrate_trap(r_grid, r_grid**(N+2) * pRho_grid) / integrate_trap(r_grid, r_grid**2 * pRho_grid)
+    end function rho_rN
 
-    real(dp) function OBDM_chR2(Params,Orb,C,Rho)
+    real(dp) function rho_chR2(Params,Orb,C,Rho)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         type(o1b_t), intent(in) :: C, Rho
@@ -407,15 +428,15 @@ contains
         Z = real(Params%Calc%Z,dp)
         N = real(Params%Calc%A - Params%Calc%Z,dp)
         if (Params%Calc%CMS == 'CMS1+2B' .or. Params%Calc%CMS == 'CMS2B') then
-            R_CMS = OBDM_radial_cms(Params,Rho,C,Orb)
+            R_CMS = rho_radial_cms(Params,Rho,C,Orb)
         else
             R_CMS = 0.0_dp
         end if
         write(*,'(/,a)') 'Calculating the charge-radius squared chR2 ...'
-        call OBDM_radial_density_grid(Params,Rho,C,Orb,r_grid,pRho_grid,nRho_grid)
-        call OBDM_radial_radii(r_grid,pRho_grid,nRho_grid,pRho_grid,pR2,nR2,chR2)
-        OBDM_chR2 = pR2 + R_CMS(1) + R_CMS(2) - 0.106_dp * N / Z + 0.8414_dp - 0.143_dp
+        call rho_radial_density_grid(Params,Rho,C,Orb,r_grid,pRho_grid,nRho_grid)
+        call rho_radial_radii(r_grid,pRho_grid,nRho_grid,pRho_grid,pR2,nR2,chR2)
+        rho_chR2 = pR2 + R_CMS(1) + R_CMS(2) - 0.106_dp * N / Z + 0.8414_dp - 0.143_dp
         write(*,'(a)') TAB // 'The charge-radius squared chR2 computed ...'
-    end function OBDM_chR2
+    end function rho_chR2
 
 end module nj_obdm

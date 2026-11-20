@@ -1,4 +1,4 @@
-! 2-body NN interaction ... counterpart of MatrixElements/V2B.jl ...
+! 2-body NN interaction ... counterpart of src/common/V2b.jl (NuJuliet dev; MatrixElements/V2B.jl before) ...
 module nj_v2b
     use nj_kinds
     use nj_types
@@ -7,17 +7,24 @@ module nj_v2b
     use nj_o1b, only : T1b, T2b
     use nj_o2b
     use nj_v3b, only : V3b_no2b
+    use nj_orbitals, only : orbitals_make
     implicit none
     private
 
-    public :: V2b_read, V2b_count, V2b_residual_no2b
+    public :: V2b_read, V2b_count, V2b_residual_no2b, V2b_parse, V2b_correlation_energy
+
+    ! Buffer size (# of Float64 matrix elements read/written at once) ... a multiple of 4 ...
+    integer, parameter :: Buffer_size = 1000000
 
 contains
 
     ! Reads the NuHamil NN file (Float64 stream of T=0, nn, T=1 pn, pp per J) & adds the 2-body CM correction ...
-    subroutine V2b_read(Params,Orb,V_NN,Orb_NN)
+        ! The interaction-space orbitals (Int.Nmax) are made here, as in dev ... the file is read sequentially in blocks of
+        ! at most Buffer_size elements, & the reading stops after the last chunk a with N_a <= Calc.Nmax (nothing later is
+        ! stored; dev reads the whole file) ...
+    subroutine V2b_read(Params,V_NN,Orb_NN)
         type(params_t), intent(in) :: Params
-        type(orb1b_t), intent(in) :: Orb(:)
+        type(orb1b_t), allocatable :: Orb(:)
         type(o2b_t), intent(out) :: V_NN
         type(orb2b_t), intent(out) :: Orb_NN
         type(o1b_t) :: T
@@ -26,6 +33,8 @@ contains
         integer :: n_a, l_a, j_a, n_b, l_b, j_b, n_c, l_c, j_c, n_d, l_d, j_d
         integer :: NN_a, NN_b, NN_c, NN_d, NN_ab, NN_cd, NN_min, NN_max
         integer(i8), allocatable :: N_Chunk(:)
+        integer(i8) :: N_left
+        integer :: Buf_N
         real(dp), allocatable :: Buf(:)
         real(dp) :: hw, Amp, ME_00, ME_nn, ME_10, ME_pp, Ph, T_sym, T_antisym, ME, Amp_2, pG, nG
         character(len=32) :: CMS
@@ -40,6 +49,9 @@ contains
         a_max = (N_max_Int + 1)*(N_max_Int + 2)/2
         J_max = N_2max_Calc + 1
 
+        ! Orbitals of the interaction space ...
+        Orb = orbitals_make(Params,Use_Int=.true.)
+
         ! Initialize 1-body kinetic operator ...
         T = T1b(Params,Orb)
 
@@ -52,13 +64,17 @@ contains
 
         write(*,'(/,a)') 'Reading 2-body NN interaction file...'
         open(newunit=u, file=trim(Params%Int%NN_File), access='stream', form='unformatted', status='old', action='read')
+        allocate(Buf(Buffer_size))
         do a = 1, a_max
             n_a = Orb(a)%n
             l_a = Orb(a)%l
             j_a = Orb(a)%j
             NN_a = 2*n_a + l_a
-            allocate(Buf(N_Chunk(a)))
-            if (N_Chunk(a) > 0) read(u) Buf
+            ! Orbitals are ordered by N ... no later chunk holds calculation-space elements ...
+            if (NN_a > N_max_Calc) exit
+            ! The chunk of the orbital a is read by blocks of at most Buffer_size matrix elements ...
+            N_left = N_Chunk(a)
+            Buf_N = 0
             k = 0
             do b = 1, a
                 n_b = Orb(b)%n
@@ -83,6 +99,13 @@ contains
                         NN_cd = NN_c + NN_d
                         if (.not. ((NN_cd <= N_2max_Int) .and. (mod(l_a + l_b,2) == mod(l_c + l_d,2)))) cycle
                         do J = max(abs(j_a - j_b), abs(j_c - j_d))/2, min(j_a + j_b, j_c + j_d)/2
+                            ! Read the next block of the chunk, if the buffer was used up ...
+                            if (k == Buf_N) then
+                                Buf_N = int(min(N_left, int(Buffer_size,i8)))
+                                read(u) Buf(1:Buf_N)
+                                N_left = N_left - Buf_N
+                                k = 0
+                            end if
                             ME_00 = Buf(k+1)
                             ME_nn = Buf(k+2)
                             ME_10 = Buf(k+3)
@@ -139,8 +162,8 @@ contains
                     end do
                 end do
             end do
-            deallocate(Buf)
         end do
+        deallocate(Buf)
         close(u)
         write(*,'(/,a)') 'NN 2-body interaction loaded...'
 
@@ -335,15 +358,17 @@ contains
         end do
     end function V2b_count
 
-    ! Density-dependent residual NN interaction ... NO2B contraction of the NNN interaction with Rho ...
-    subroutine V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN)
+    ! Density-dependent residual NN interaction ... NO2B contraction of the NNN interaction with Rho ... V_res = (V_NN + Sum)*cRes ...
+        ! Non-mutating as in dev (V_NN_res = deepcopy(V_NN)) ... the bare V_NN is kept ...
+    subroutine V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN,V_NN_res)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         type(orb2b_t), intent(in) :: Orb_NN
         type(orb3b_t), intent(in) :: Orb_NNN
         type(o1b_t), intent(in) :: Rho
-        type(o2b_t), intent(inout) :: V_NN
+        type(o2b_t), intent(in) :: V_NN
         type(v3b_t), intent(in) :: V_NNN
+        type(o2b_t), intent(out) :: V_NN_res
         integer :: N_max, N_3max, a_max, J_max, J, P, N_T0, N_T1, Bra_ind, Bra, Ket, Ind, a, b, c, d, e, f, P3B
         integer :: n_a, l_a, n_b, l_b, n_c, l_c, j_c, n_d, l_d, n_e, l_e, n_f, l_f, j_f
         real(dp) :: cRes, isr12, i6, i3, Hat, pnSum, ppSum, nnSum
@@ -357,6 +382,8 @@ contains
         isr12 = 1.0_dp / sqrt(12.0_dp)
         i6 = 1.0_dp / 6.0_dp
         i3 = 1.0_dp / 3.0_dp
+
+        V_NN_res = V_NN
 
         if (Verbose) write(*,'(/,a,/)') 'Starting calculation of residual NN interaction ...'
         if (Verbose) write(*,'(/,a)') 'Making density dependent residual 2-body interaction...'
@@ -416,8 +443,8 @@ contains
                                     end do
                                 end if
                             end do
-                            V_NN%pn(P,J)%v(Ind) = V_NN%pn(P,J)%v(Ind) + pnSum
-                            V_NN%pn(P,J)%v(Ind) = V_NN%pn(P,J)%v(Ind) * cRes
+                            V_NN_res%pn(P,J)%v(Ind) = V_NN_res%pn(P,J)%v(Ind) + pnSum
+                            V_NN_res%pn(P,J)%v(Ind) = V_NN_res%pn(P,J)%v(Ind) * cRes
                         end do
                     end if
 
@@ -459,10 +486,10 @@ contains
                                     end do
                                 end if
                             end do
-                            V_NN%pp(P,J)%v(Ind) = V_NN%pp(P,J)%v(Ind) + ppSum
-                            V_NN%nn(P,J)%v(Ind) = V_NN%nn(P,J)%v(Ind) + nnSum
-                            V_NN%pp(P,J)%v(Ind) = V_NN%pp(P,J)%v(Ind) * cRes
-                            V_NN%nn(P,J)%v(Ind) = V_NN%nn(P,J)%v(Ind) * cRes
+                            V_NN_res%pp(P,J)%v(Ind) = V_NN_res%pp(P,J)%v(Ind) + ppSum
+                            V_NN_res%nn(P,J)%v(Ind) = V_NN_res%nn(P,J)%v(Ind) + nnSum
+                            V_NN_res%pp(P,J)%v(Ind) = V_NN_res%pp(P,J)%v(Ind) * cRes
+                            V_NN_res%nn(P,J)%v(Ind) = V_NN_res%nn(P,J)%v(Ind) * cRes
                         end do
                     end if
                 end do
@@ -470,5 +497,184 @@ contains
             end do
         end do
     end subroutine V2b_residual_no2b
+
+    ! Cuts Int.NN_File (space Int.Nmax/N2max) down to (N_max_Out,N_2max_Out) & writes it in the same NuHamil Float64 layout to
+        ! Out_File ... counterpart of V2b_parse ... chunks a are processed in parallel (largest first), each thread with its own
+        ! units, writing disjoint byte ranges of the pre-sized output file ...
+    subroutine V2b_parse(Params,N_max_Out,N_2max_Out,Out_File)
+        type(params_t), intent(in) :: Params
+        integer, intent(in) :: N_max_Out, N_2max_Out
+        character(len=*), intent(in) :: Out_File
+        type(orb1b_t), allocatable :: Orb(:)
+        real(dp), allocatable :: Buffer_In(:), Buffer_Out(:), Sizes(:)
+        integer(i8), allocatable :: N_Chunk_In(:), N_Chunk_Out(:), N_Skip_In(:), N_Skip_Out(:)
+        integer, allocatable :: Perm(:)
+        integer(i8) :: Size_In, Size_Out, File_size, Chunk_i, Buffer_0, Out_N, N_In, N_Out, Pos_Out
+        integer :: N_max_In, N_2max_In, a_max_Out, a, b, c, d, d_max, q, u_in, u_out, Buffer_N, Out_i, i_J, N_J, Err
+        integer :: J_min, J_max, NN_a, NN_b, NN_c, NN_d, NN_ab, NN_cd
+        logical :: Failed
+        character(len=:), allocatable :: In_File
+
+        In_File = trim(Params%Int%NN_File)
+        N_max_In = Params%Int%Nmax
+        N_2max_In = Params%Int%N2max
+        a_max_Out = (N_max_Out + 1)*(N_max_Out + 2)/2
+
+        ! The output space has to be contained in the interaction space ...
+        if ((N_max_Out > N_max_In) .or. (N_2max_Out > N_2max_In)) &
+            call fatal('Output space (' // istr(N_max_Out) // ',' // istr(N_2max_Out) // &
+                       ') is not contained in the interaction space (' // istr(N_max_In) // ',' // istr(N_2max_In) // ') ...')
+        if (min(N_max_Out,N_2max_Out) < 0) call fatal('V2b_parse: negative output truncation ...')
+        if (abspath_of(In_File) == abspath_of(Out_File)) call fatal('Output file has to differ from the interaction file ...')
+
+        Orb = orbitals_make(Params,Use_Int=.true.)
+
+        write(*,'(/,a)') 'Precounting # of 2-body NN interaction matrix elements ...'
+        N_Chunk_In = V2b_count(N_max_In,N_2max_In,Orb)
+        N_Chunk_Out = V2b_count(N_max_Out,N_2max_Out,Orb)
+        allocate(N_Skip_In(size(N_Chunk_In)), N_Skip_Out(size(N_Chunk_Out)))
+        Size_In = 0
+        do a = 1, size(N_Chunk_In)
+            N_Skip_In(a) = Size_In
+            Size_In = Size_In + 8*N_Chunk_In(a)
+        end do
+        Size_Out = 0
+        do a = 1, size(N_Chunk_Out)
+            N_Skip_Out(a) = Size_Out
+            Size_Out = Size_Out + 8*N_Chunk_Out(a)
+        end do
+
+        ! Size of the interaction file ...
+        open(newunit=u_in, file=In_File, access='stream', form='unformatted', status='old', action='read', iostat=Err)
+        if (Err /= 0) call fatal('Cannot open the NN interaction file ' // In_File)
+        inquire(unit=u_in, size=File_size)
+        close(u_in)
+        if (File_size /= Size_In) call fatal('Size of ' // In_File // ' (' // istr(File_size) // &
+                                             ' B) does not match the interaction space (' // istr(Size_In) // ' B) ...')
+
+        call presize_file(Out_File,Size_Out)
+
+        allocate(Sizes(a_max_Out), Perm(a_max_Out))
+        Sizes = real(N_Chunk_Out,dp)
+        call sortperm_rev(Sizes,Perm)
+
+        write(*,'(/,a)') 'Exporting 2-body NN interaction file into N_max = ' // istr(N_max_Out) // ' , N_2max = ' // &
+                         istr(N_2max_Out) // ' ...'
+        Failed = .false.
+        !$omp parallel default(shared) private(u_in,u_out,Buffer_In,Buffer_Out,q,a,b,c,d,d_max,i_J,N_J,J_min,J_max, &
+        !$omp NN_a,NN_b,NN_c,NN_d,NN_ab,NN_cd,Chunk_i,Buffer_0,Buffer_N,Out_i,Out_N,N_In,N_Out,Pos_Out)
+        open(newunit=u_in, file=In_File, access='stream', form='unformatted', status='old', action='read')
+        open(newunit=u_out, file=trim(Out_File), access='stream', form='unformatted', status='old', action='readwrite')
+        allocate(Buffer_In(Buffer_size), Buffer_Out(Buffer_size))
+        !$omp do schedule(dynamic,1)
+        do q = 1, a_max_Out
+            a = Perm(q)
+            N_In = N_Chunk_In(a)
+            N_Out = N_Chunk_Out(a)
+            NN_a = 2*Orb(a)%n + Orb(a)%l
+            Chunk_i = 0
+            Buffer_0 = 0
+            Buffer_N = 0
+            Out_i = 0
+            Out_N = 0
+            Pos_Out = N_Skip_Out(a) + 1
+            do b = 1, a
+                NN_b = 2*Orb(b)%n + Orb(b)%l
+                NN_ab = NN_a + NN_b
+                if (NN_ab > N_2max_In) cycle
+                do c = 1, a
+                    NN_c = 2*Orb(c)%n + Orb(c)%l
+                    d_max = c
+                    if (a == c) d_max = b
+                    do d = 1, d_max
+                        NN_d = 2*Orb(d)%n + Orb(d)%l
+                        NN_cd = NN_c + NN_d
+                        if (.not. ((NN_cd <= N_2max_In) .and. (mod(Orb(a)%l + Orb(b)%l,2) == mod(Orb(c)%l + Orb(d)%l,2)))) cycle
+                        J_min = max(abs(Orb(a)%j - Orb(b)%j), abs(Orb(c)%j - Orb(d)%j))/2
+                        J_max = min(Orb(a)%j + Orb(b)%j, Orb(c)%j + Orb(d)%j)/2
+                        N_J = 4*max(J_max - J_min + 1,0)
+                        if ((NN_a <= N_max_Out) .and. (NN_b <= N_max_Out) .and. (NN_c <= N_max_Out) .and. (NN_d <= N_max_Out) .and. &
+                            (NN_ab <= N_2max_Out) .and. (NN_cd <= N_2max_Out)) then
+                            ! Copy the 4 matrix elements (00,nn,10,pp) per J ...
+                            do i_J = 1, N_J
+                                Chunk_i = Chunk_i + 1
+                                if (Chunk_i > Buffer_0 + Buffer_N) then
+                                    Buffer_0 = Chunk_i - 1
+                                    Buffer_N = int(min(int(Buffer_size,i8), N_In - Buffer_0))
+                                    read(u_in, pos=N_Skip_In(a) + 8_i8*Buffer_0 + 1_i8) Buffer_In(1:Buffer_N)
+                                end if
+                                if (Out_i == Buffer_size) then
+                                    write(u_out, pos=Pos_Out) Buffer_Out(1:Out_i)
+                                    Pos_Out = Pos_Out + 8_i8*Out_i
+                                    Out_i = 0
+                                end if
+                                Out_i = Out_i + 1
+                                Out_N = Out_N + 1
+                                Buffer_Out(Out_i) = Buffer_In(Chunk_i - Buffer_0)
+                            end do
+                        else
+                            ! Skip the elements outside the output space ...
+                            Chunk_i = Chunk_i + N_J
+                        end if
+                    end do
+                end do
+            end do
+            if (Out_i > 0) write(u_out, pos=Pos_Out) Buffer_Out(1:Out_i)
+            if ((Chunk_i /= N_In) .or. (Out_N /= N_Out)) then
+                write(*,'(a)') 'ERROR: Wrong # of matrix elements in the chunk a = ' // istr(a) // ' ...'
+                Failed = .true.
+            end if
+        end do
+        !$omp end do
+        close(u_in)
+        close(u_out)
+        deallocate(Buffer_In, Buffer_Out)
+        !$omp end parallel
+        if (Failed) call fatal('V2b_parse: wrong # of matrix elements ...')
+
+        write(*,'(/,a)') 'Finished export of 2-body NN interaction into ' // trim(Out_File) // ' ...'
+    end subroutine V2b_parse
+
+    ! Correlation energy by contraction with the 2-body correlation function Sigma ... counterpart of V2b_correlation_energy ...
+        ! E = sum_{abcd,J} (2J+1) [1/4 V_pp Sigma_pp + 1/4 V_nn Sigma_nn + V_pn Sigma_pn] over all ordered pairs ab & cd ...
+    real(dp) function V2b_correlation_energy(Params,Orb,Orb_NN,Sigma,V_NN) result(E_corr)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), intent(in) :: Orb(:)
+        type(orb2b_t), intent(in) :: Orb_NN
+        type(o2b_t), intent(in) :: Sigma, V_NN
+        integer :: N_2max, a_max, a, b, c, d, P, J, J_min, J_max
+        real(dp) :: Sum, J_hat
+
+        N_2max = Params%Calc%N2max
+        a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
+
+        write(*,'(/,a)') 'Computing the correlation ground-state energy by contraction with the provided 2-body correlation function ...'
+        E_corr = 0.0_dp
+        !$omp parallel do schedule(dynamic) reduction(+:E_corr) private(b,c,d,P,J,J_min,J_max,Sum,J_hat)
+        do a = 1, a_max
+            Sum = 0.0_dp
+            do b = 1, a_max
+                P = mod(Orb(a)%l + Orb(b)%l,2) + 1
+                if ((2*(Orb(a)%n + Orb(b)%n) + Orb(a)%l + Orb(b)%l) > N_2max) cycle
+                do c = 1, a_max
+                    do d = 1, a_max
+                        if (((2*(Orb(c)%n + Orb(d)%n) + Orb(c)%l + Orb(d)%l) > N_2max) .or. &
+                            (mod(Orb(a)%l + Orb(b)%l,2) /= mod(Orb(c)%l + Orb(d)%l,2))) cycle
+                        J_min = max(abs(Orb(a)%j - Orb(b)%j)/2, abs(Orb(c)%j - Orb(d)%j)/2)
+                        J_max = min((Orb(a)%j + Orb(b)%j)/2, (Orb(c)%j + Orb(d)%j)/2)
+                        do J = J_min, J_max
+                            J_hat = real(2*J + 1,dp)
+                            Sum = Sum + 0.25_dp * J_hat * O2b_pp(a,b,c,d,J,P,V_NN,Orb,Orb_NN) * O2b_pp(a,b,c,d,J,P,Sigma,Orb,Orb_NN)
+                            Sum = Sum + 0.25_dp * J_hat * O2b_nn(a,b,c,d,J,P,V_NN,Orb,Orb_NN) * O2b_nn(a,b,c,d,J,P,Sigma,Orb,Orb_NN)
+                            Sum = Sum + J_hat * O2b_pn(a,b,c,d,J,P,V_NN,Orb_NN) * O2b_pn(a,b,c,d,J,P,Sigma,Orb_NN)
+                        end do
+                    end do
+                end do
+            end do
+            E_corr = E_corr + Sum
+        end do
+        !$omp end parallel do
+        write(*,'(a,/)') TAB // 'Performed calculation of correlation energy by contraction with 2-body correlation function ...'
+    end function V2b_correlation_energy
 
 end module nj_v2b

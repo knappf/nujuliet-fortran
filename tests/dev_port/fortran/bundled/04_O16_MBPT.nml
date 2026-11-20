@@ -1,0 +1,30 @@
+! dev-port test case 'bundled' (tests/dev_port/julia/bundled.jl): 16O HF + MBPT(Export, TBCF, ScH) -> TDA/RPA on the HF-MBPT reference with its TBCF + densities/currents
+! Run the files of this directory in order from one work directory: nujuliet 01_*.nml 02_*.nml ... (see ../../run_fortran.sh)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 16, Z = 8, hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+  CMS = 'CMS1+2B'
+  Path = 'O16_MBPT'
+/
+&hf_mbpt
+  Export = .true., TBCF = .true., ScH = .true.
+/
+&tda
+  Name = 'TDA-MBPT', Reference = 'HF-MBPT', Reference_TBCF = .true.
+/
+&rpa
+  Name = 'RPA-MBPT', Reference = 'HF-MBPT', Reference_TBCF = .true.
+/
+&run
+  Solvers = 'HF', 'TDA', 'RPA', 'TDA_transition_densities', 'RPA_transition_densities', 'TDA_transition_currents', 'RPA_transition_currents'
+/
+&transition_densities
+  JP = '1-', nu_list = 5, 6, 7, File_Name = 'Phonon_Densities'
+/
+&transition_currents
+  JP = '1-', M = 0, nu_list = 5, 6, 7, File_Name = 'Phonon_Currents', xN_grid = 40, zN_grid = 40
+/

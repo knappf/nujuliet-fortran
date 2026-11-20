@@ -48,7 +48,7 @@ contains
         type(params_t), intent(in) :: Params
         type(orb1b_t), allocatable :: Orb(:)
         type(o1b_t) :: T, U, V, C, Rho, Kappa, H, Delta, Rho_c, Kappa_c
-        type(o2b_t) :: V_NN
+        type(o2b_t) :: V_NN, V_NN_res
         type(orb2b_t) :: Orb_NN
         type(v3b_t) :: V_NNN
         type(orb3b_t) :: Orb_NNN
@@ -61,13 +61,13 @@ contains
         integer :: Iteration
         integer(i8) :: t0
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         T = T1b(Params,Orb)
         call timer_start(t0)
-        call V2b_read(Params,Orb,V_NN,Orb_NN)
+        call V2b_read(Params,V_NN,Orb_NN)
         call timer_report(t0)
         call timer_start(t0)
-        call V3b_no2b_read(Params,Orb,V_NNN,Orb_NNN)
+        call V3b_no2b_read(Params,V_NNN,Orb_NNN)
         call timer_report(t0)
 
         call timer_start(t0)
@@ -90,7 +90,8 @@ contains
             H_N%qp11%n = diagm(SQE%n)
             call o1b_alloc(H_N%qp20,size(SQE%p))
             call timer_start(t0)
-            call V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN)
+            call V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN,V_NN_res)
+            call O2b_move(V_NN_res,V_NN)
             call timer_report(t0)
             if (Params%Calc%HFB%LNT .and. Params%Calc%HFB%LNRes) call HFB_Lipkin_Nogami_V2b_residual_no2b(Params,Orb,Orb_NN,V_NN)
 

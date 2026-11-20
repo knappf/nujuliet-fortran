@@ -87,7 +87,7 @@ contains
         integer(i8) :: t0
 
         J_max = 2*Params%Calc%Nmax + 1
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         C = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
         write(*,'(/,a)') 'Importing Residual 2-body interaction ...'
         call timer_start(t0)

@@ -5,12 +5,13 @@ module nj_o1b
     use nj_params
     use nj_utils
     use nj_wigner, only : f6j
-    use nj_linalg, only : mtm
+    use nj_linalg, only : mtm, mtmm
     implicit none
     private
 
     public :: O1b_export, O1b_import, qpO1B_export, qpO1B_import, qpN1B_make
     public :: T1b, T1b_energy, T2b, rGrad, o1b_alloc
+    public :: O1b_transformation, O1b_transpose, O1b_diagonal, O1b_deepcopy, O1b_zeroes, O1b_ones, O1b_unit_matrix
 
 contains
 
@@ -23,6 +24,66 @@ contains
         O%p = 0.0_dp
         O%n = 0.0_dp
     end subroutine o1b_alloc
+
+    ! Helpers of src/common/O1b.jl (NuJuliet dev) ... O1b_transformation(O,C) = C^T O C per isospin (as C' * O * C) ...
+    function O1b_transformation(O,C) result(R)
+        type(o1b_t), intent(in) :: O, C
+        type(o1b_t) :: R
+        R%p = mtmm(C%p,O%p)
+        R%n = mtmm(C%n,O%n)
+    end function O1b_transformation
+
+    function O1b_transpose(O) result(R)
+        type(o1b_t), intent(in) :: O
+        type(o1b_t) :: R
+        R%p = transpose(O%p)
+        R%n = transpose(O%n)
+    end function O1b_transpose
+
+    ! diagm(diag(O)) per isospin ...
+    function O1b_diagonal(O) result(R)
+        type(o1b_t), intent(in) :: O
+        type(o1b_t) :: R
+        integer :: a
+        call o1b_alloc(R,size(O%p,1))
+        do a = 1, size(O%p,1)
+            R%p(a,a) = O%p(a,a)
+            R%n(a,a) = O%n(a,a)
+        end do
+    end function O1b_diagonal
+
+    ! Julia deepcopy ... a plain assignment copies the allocatable components ...
+    function O1b_deepcopy(O) result(R)
+        type(o1b_t), intent(in) :: O
+        type(o1b_t) :: R
+        R = O
+    end function O1b_deepcopy
+
+    ! a_max(Calc.Nmax) square operators filled with 0, 1 & the unit matrix ...
+    function O1b_zeroes(Params) result(R)
+        type(params_t), intent(in) :: Params
+        type(o1b_t) :: R
+        call o1b_alloc(R,(Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2)
+    end function O1b_zeroes
+
+    function O1b_ones(Params) result(R)
+        type(params_t), intent(in) :: Params
+        type(o1b_t) :: R
+        call o1b_alloc(R,(Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2)
+        R%p = 1.0_dp
+        R%n = 1.0_dp
+    end function O1b_ones
+
+    function O1b_unit_matrix(Params) result(R)
+        type(params_t), intent(in) :: Params
+        type(o1b_t) :: R
+        integer :: a
+        call o1b_alloc(R,(Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2)
+        do a = 1, size(R%p,1)
+            R%p(a,a) = 1.0_dp
+            R%n(a,a) = 1.0_dp
+        end do
+    end function O1b_unit_matrix
 
     ! Binary export of the (l,j)-block-diagonal entries of a 1-body operator ... raw Float64 stream ...
     subroutine O1b_export(Params,Orb,A,A_Export_Path)
@@ -121,17 +182,18 @@ contains
     end function qpN1B_make
 
     ! 1-body kinetic operator in the LHO basis ...
+        ! Fix F4: the size is that of the Orb passed in (dev T1b.jl:3 uses a_max(Int.Nmax), out of bounds for a
+        ! Calc.Nmax-sized Orb when Int.Nmax > Calc.Nmax) ...
     function T1b(Params,Orb) result(T)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         type(o1b_t) :: T
-        integer :: N_max, a_max, k, l, n_k, l_k, j_k, n_l, l_l, j_l
+        integer :: a_max, k, l, n_k, l_k, j_k, n_l, l_l, j_l
         real(dp) :: hw, NN_k
         real(dp), allocatable :: TM(:,:)
 
-        N_max = Params%Int%Nmax
         hw = Params%Calc%hw
-        a_max = (N_max + 1)*(N_max + 2)/2
+        a_max = size(Orb)
         allocate(TM(a_max,a_max))
         TM = 0.0_dp
         do k = 1, a_max

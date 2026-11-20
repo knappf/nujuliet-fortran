@@ -216,6 +216,9 @@ contains
         real(dp) :: Delta, Cur
 
         n = size(Cost,1)
+        ! dev's in-house hungarian (functions.jl:711) also handles rectangular & non-finite costs, all callers pass square
+            ! finite matrices ... the port supports the square case only ...
+        if (size(Cost,2) /= n .or. size(Assign) < n) call fatal('hungarian: square cost matrix expected ...')
         allocate(u(0:n), v(0:n), Minv(0:n), Way(0:n), Pmatch(0:n), Used(0:n))
         u = 0.0_dp
         v = 0.0_dp

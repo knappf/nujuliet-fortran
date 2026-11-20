@@ -22,7 +22,7 @@ contains
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         type(orb2b_t), intent(in) :: Orb_NN
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(qpo1b_t), intent(in) :: H_N
         type(qpo2b_t), intent(in) :: H_NN
         type(rmat_t), allocatable, intent(out) :: Amat(:,:)
@@ -48,13 +48,13 @@ contains
             P = mod(JP - 1,2) + 1
             N_qp = Orb_2qp%N(P,J)
             do i_qp = 1, N_qp
-                a = Orb_2qp%i(P,J)%v(i_qp)%a
-                b = Orb_2qp%i(P,J)%v(i_qp)%b
-                T_ab = Orb_2qp%i(P,J)%v(i_qp)%T
+                a = Orb_2qp%Ind(P,J)%v(i_qp)%a
+                b = Orb_2qp%Ind(P,J)%v(i_qp)%b
+                T_ab = Orb_2qp%Ind(P,J)%v(i_qp)%T
                 do j_qp = 1, i_qp
-                    c = Orb_2qp%i(P,J)%v(j_qp)%a
-                    d = Orb_2qp%i(P,J)%v(j_qp)%b
-                    T_cd = Orb_2qp%i(P,J)%v(j_qp)%T
+                    c = Orb_2qp%Ind(P,J)%v(j_qp)%a
+                    d = Orb_2qp%Ind(P,J)%v(j_qp)%b
+                    T_cd = Orb_2qp%Ind(P,J)%v(j_qp)%T
                     ASum = 0.0_dp
                     BSum = 0.0_dp
                     Norm = 1.0_dp / sqrt(real((1 + kronecker_delta(a,b)) * (1 + kronecker_delta(c,d)),dp))
@@ -96,15 +96,15 @@ contains
     ! 0+ spurious (particle-number) vector ...
     function spurious_PN_initialize(Orb,Orb_2qp,qpN) result(Spur)
         type(orb1b_t), intent(in) :: Orb(:)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(qpo1b_t), intent(in) :: qpN
         real(dp), allocatable :: Spur(:)
         integer :: qp, a, b
         allocate(Spur(Orb_2qp%N(1,0)))
         do qp = 1, size(Spur)
-            a = Orb_2qp%i(1,0)%v(qp)%a
-            b = Orb_2qp%i(1,0)%v(qp)%b
-            if (Orb_2qp%i(1,0)%v(qp)%T == -1) then
+            a = Orb_2qp%Ind(1,0)%v(qp)%a
+            b = Orb_2qp%Ind(1,0)%v(qp)%b
+            if (Orb_2qp%Ind(1,0)%v(qp)%T == -1) then
                 Spur(qp) = sqrt(real(Orb(a)%j + 1,dp)) * qpN%qp20%p(a,b)
             else
                 Spur(qp) = sqrt(real(Orb(a)%j + 1,dp)) * qpN%qp20%n(a,b)
@@ -115,15 +115,15 @@ contains
 
     ! 1- spurious (centre-of-mass) vector ...
     function spurious_CM_initialize(Orb_2qp,qpTrOp) result(Spur)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(qptr1b_t), intent(in) :: qpTrOp
         real(dp), allocatable :: Spur(:)
         integer :: qp, a, b
         allocate(Spur(Orb_2qp%N(2,1)))
         do qp = 1, size(Spur)
-            a = Orb_2qp%i(2,1)%v(qp)%a
-            b = Orb_2qp%i(2,1)%v(qp)%b
-            if (Orb_2qp%i(2,1)%v(qp)%T == -1) then
+            a = Orb_2qp%Ind(2,1)%v(qp)%a
+            b = Orb_2qp%Ind(2,1)%v(qp)%b
+            if (Orb_2qp%Ind(2,1)%v(qp)%T == -1) then
                 Spur(qp) = qpTrOp%E1%qp20%p(a,b)
             else
                 Spur(qp) = qpTrOp%E1%qp20%n(a,b)
@@ -170,7 +170,7 @@ contains
 
     ! Reduced transition matrix elements ... Amp = (X - Y)/sqrt(1 + delta_ab) (Y = 0 for QTDA) ...
     function qex_rM(Orb_2qp,X,Y,qpTrOp) result(rM)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(cmat_t), intent(in) :: X(:,0:), Y(:,0:)
         type(qptr1b_t), intent(in) :: qpTrOp
         type(reduced_multipole_t) :: rM
@@ -201,10 +201,10 @@ contains
                 pS = (0.0_dp,0.0_dp)
                 nS = (0.0_dp,0.0_dp)
                 do i_qp = 1, N_qp
-                    a = Orb_2qp%i(P,J)%v(i_qp)%a
-                    b = Orb_2qp%i(P,J)%v(i_qp)%b
+                    a = Orb_2qp%Ind(P,J)%v(i_qp)%a
+                    b = Orb_2qp%Ind(P,J)%v(i_qp)%b
                     Amp = (X(P,J)%v(i_qp,nu) - Y(P,J)%v(i_qp,nu)) * (1.0_dp / sqrt(1.0_dp + kronecker_delta(a,b)))
-                    if (Orb_2qp%i(P,J)%v(i_qp)%T == -1) then
+                    if (Orb_2qp%Ind(P,J)%v(i_qp)%T == -1) then
                         pS = pS + Amp * Op%qp20%p(a,b)
                     else
                         nS = nS + Amp * Op%qp20%n(a,b)
@@ -220,7 +220,7 @@ contains
     ! Reduced transition intensities B ... E is the (real part of the) phonon energy per channel ...
     function qex_rB(Params,Orb_2qp,rM,E) result(rB)
         type(params_t), intent(in) :: Params
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(reduced_multipole_t), intent(in) :: rM
         type(rvec_t), intent(in) :: E(:,0:)
         type(reduced_transition_t) :: rB
@@ -337,7 +337,7 @@ contains
     ! Dimension tables of the summary file ...
     subroutine qex_dimensions_summary(u,Orb_2qp,J_max,Label)
         integer, intent(in) :: u, J_max
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         character(len=*), intent(in) :: Label
         integer :: J, N_qp
         N_qp = 0
@@ -364,7 +364,7 @@ contains
     ! Plot-ready spectrum ... the original writes N_qp of the N_qp + 1 sorted rows (including the 0+ ground state) ...
     subroutine qex_spectrum_plot_export(Params,Orb_2qp,E,Label)
         type(params_t), intent(in) :: Params
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(rvec_t), intent(in) :: E(:,0:)
         character(len=*), intent(in) :: Label
         real(dp), allocatable :: Ex(:,:)
@@ -411,7 +411,7 @@ contains
     subroutine qex_transitions_export(Params,Orb,Orb_2qp,Rho,E,rB,Label)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(o1b_t), intent(in) :: Rho
         type(rvec_t), intent(in) :: E(:,0:)
         type(reduced_transition_t), intent(in) :: rB

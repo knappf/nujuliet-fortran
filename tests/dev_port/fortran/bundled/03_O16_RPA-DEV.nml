@@ -1,0 +1,18 @@
+! dev-port test case 'bundled' (tests/dev_port/julia/bundled.jl): 16O experimental RPA DEV path (RPA_allocate_SE, Name RPA-DEV) on the HF of 01
+! Run the files of this directory in order from one work directory: nujuliet 01_*.nml 02_*.nml ... (see ../../run_fortran.sh)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 16, Z = 8, hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+  CMS = 'CMS1+2B'
+  Path = 'O16'
+/
+&rpa
+  Name = 'RPA-DEV', DEV = .true.
+/
+&run
+  Solvers = 'RPA'
+/

@@ -68,7 +68,7 @@ contains
     subroutine QRPA_solver(Params)
         type(params_t), intent(in) :: Params
         type(orb1b_t), allocatable :: Orb(:)
-        type(qporb2b_t) :: Orb_2qp
+        type(orb2b_2qp_t) :: Orb_2qp
         type(o1b_t) :: C, U, V, Rho
         type(qpo1b_t) :: H_N, qpN
         type(qpo2b_t) :: H_NN
@@ -85,7 +85,7 @@ contains
         logical :: Stability
         integer :: J, P
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         Orb_2qp = orbitals_2qp_make(Params,Orb)
         C = O1b_import(Params,Orb,io_path(Params,'/Bin/C.bin'))
         U = O1b_import(Params,Orb,io_path(Params,'/Bin/U.bin'))
@@ -156,7 +156,7 @@ contains
     subroutine QRPA_diagonalize(Params,Orb,Orb_2qp,Amat,Bmat,qpN,qpTrOp,E,X,Y,Stability)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(rmat_t), intent(in) :: Amat(:,0:), Bmat(:,0:)
         type(qpo1b_t), intent(in) :: qpN
         type(qptr1b_t), intent(in) :: qpTrOp
@@ -242,7 +242,7 @@ contains
     function QRPA_A_phonon_particle_number(Params,Orb,Orb_2qp,U,V,X,Y) result(A_phonon)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(o1b_t), intent(in) :: U, V
         type(cmat_t), intent(in) :: X(:,0:), Y(:,0:)
         type(ivec_t), allocatable :: A_phonon(:,:)
@@ -280,9 +280,9 @@ contains
                 do nu = 1, Orb_2qp%N(P,J)
                     Sum = (0.0_dp,0.0_dp)
                     do qp = 1, Orb_2qp%N(P,J)
-                        a = Orb_2qp%i(P,J)%v(qp)%a
-                        b = Orb_2qp%i(P,J)%v(qp)%b
-                        T_ab = Orb_2qp%i(P,J)%v(qp)%T
+                        a = Orb_2qp%Ind(P,J)%v(qp)%a
+                        b = Orb_2qp%Ind(P,J)%v(qp)%b
+                        T_ab = Orb_2qp%Ind(P,J)%v(qp)%T
                         Amp = cmplx(1.0_dp / sqrt(real(1 + kronecker_delta(a,b),dp)), 0.0_dp, kind=dp) * &
                               (X(P,J)%v(qp,nu) - Y(P,J)%v(qp,nu))
                         if (T_ab == -1) then
@@ -307,7 +307,7 @@ contains
 
     function QRPA_energy(Params,Orb_2qp,E,Y,A_phonon) result(E_corr)
         type(params_t), intent(in) :: Params
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(cvec_t), intent(in) :: E(:,0:)
         type(cmat_t), intent(in) :: Y(:,0:)
         type(ivec_t), intent(in) :: A_phonon(:,0:)
@@ -320,8 +320,8 @@ contains
             do P = 1, 2
                 Sum = 0.0_dp
                 do qp = 1, Orb_2qp%N(P,J)
-                    a = Orb_2qp%i(P,J)%v(qp)%a
-                    b = Orb_2qp%i(P,J)%v(qp)%b
+                    a = Orb_2qp%Ind(P,J)%v(qp)%a
+                    b = Orb_2qp%Ind(P,J)%v(qp)%b
                     Nf = -1.0_dp / real(1 + kronecker_delta(a,b),dp)
                     do nu = 1, Orb_2qp%N(P,J)
                         if (A_phonon(P,J)%v(nu) == 0) cycle
@@ -339,7 +339,7 @@ contains
     function QRPA_OBDM(Params,Orb,Orb_2qp,U,V,Y,A_phonon) result(Rho)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(o1b_t), intent(in) :: U, V
         type(cmat_t), intent(in) :: Y(:,0:)
         type(ivec_t), intent(in) :: A_phonon(:,0:)
@@ -356,8 +356,8 @@ contains
             do P = 1, 2
                 J_hat = real(2*J + 1,dp)
                 do qp = 1, Orb_2qp%N(P,J)
-                    a = Orb_2qp%i(P,J)%v(qp)%a
-                    b = Orb_2qp%i(P,J)%v(qp)%b
+                    a = Orb_2qp%Ind(P,J)%v(qp)%a
+                    b = Orb_2qp%Ind(P,J)%v(qp)%b
                     Amp_a = J_hat / real(Orb(a)%j + 1,dp) / sqrt(real(1 + kronecker_delta(a,b),dp))
                     Amp_b = J_hat / real(Orb(b)%j + 1,dp) / sqrt(real(1 + kronecker_delta(a,b),dp))
                     aSum = 0.0_dp
@@ -367,7 +367,7 @@ contains
                         if (b <= a) aSum = aSum + Amp_a * abs(Y(P,J)%v(qp,nu))**2
                         if (a <= b) bSum = bSum + Amp_b * abs(Y(P,J)%v(qp,nu))**2
                     end do
-                    if (Orb_2qp%i(P,J)%v(qp)%T == -1) then
+                    if (Orb_2qp%Ind(P,J)%v(qp)%T == -1) then
                         pN(a) = pN(a) + aSum
                         pN(b) = pN(b) + bSum
                     else
@@ -394,7 +394,7 @@ contains
     subroutine QRPA_export(Params,Orb,Orb_2qp,Stability,E_corr,Rho,C,E,E_re,X,Y,A_phonon,rB)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         logical, intent(in) :: Stability
         real(dp), intent(in) :: E_corr
         type(o1b_t), intent(in) :: Rho, C

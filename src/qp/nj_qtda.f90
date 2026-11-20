@@ -66,7 +66,7 @@ contains
     subroutine QTDA_solver(Params)
         type(params_t), intent(in) :: Params
         type(orb1b_t), allocatable :: Orb(:)
-        type(qporb2b_t) :: Orb_2qp
+        type(orb2b_2qp_t) :: Orb_2qp
         type(o1b_t) :: C, U, V, Rho, Kappa
         type(qpo1b_t) :: H_N, qpN
         type(qpo2b_t) :: H_NN
@@ -80,7 +80,7 @@ contains
         real(dp) :: chR2
         integer :: J, P
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         Orb_2qp = orbitals_2qp_make(Params,Orb)
         C = O1b_import(Params,Orb,io_path(Params,'/Bin/C.bin'))
         U = O1b_import(Params,Orb,io_path(Params,'/Bin/U.bin'))
@@ -120,7 +120,7 @@ contains
     subroutine QTDA_diagonalize(Params,Orb,Orb_2qp,Amat,qpN,qpTrOp,E,X)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(rmat_t), intent(in) :: Amat(:,0:)
         type(qpo1b_t), intent(in) :: qpN
         type(qptr1b_t), intent(in) :: qpTrOp
@@ -178,7 +178,7 @@ contains
     subroutine QTDA_export(Params,Orb,Orb_2qp,Rho,E,X,rB)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
-        type(qporb2b_t), intent(in) :: Orb_2qp
+        type(orb2b_2qp_t), intent(in) :: Orb_2qp
         type(o1b_t), intent(in) :: Rho
         type(rvec_t), intent(in) :: E(:,0:)
         type(cmat_t), intent(in) :: X(:,0:)

@@ -21,24 +21,66 @@ module nj_params
         real(dp) :: nG2N = 0.0_dp
     end type interaction_params_t
 
+    ! LEGACY (removed in cleanup stage) ... HF-EFA is gone in NuJuliet dev (HF_orbitals_make & HF.ESH replace it) ...
     type, public :: hf_efa_params_t
         integer :: A = 0
         integer :: Z = 0
         logical :: BMF = .true.
     end type hf_efa_params_t
 
+    ! Julia HF_MBPT_Parameters ... Export (correlated reference io/<Path>/HF-MBPT/bin/*), TBCF (2-body correlation
+        ! function), ScH (polarised Hamiltonian) ...
+    type, public :: hf_mbpt_params_t
+        logical :: Export = .false.
+        logical :: TBCF = .false.
+        logical :: ScH = .false.
+    end type hf_mbpt_params_t
+
+    ! Julia HF_Parameters ... V_HF (export of the non-local HF radial potential) & ESH (enforced shell closure) are new,
+        ! HRF has no reader left in dev (accepted, no effect) ...
     type, public :: hf_params_t
         real(dp) :: Tol = 1.0e-7_dp
         integer :: Imax = 100
-        type(hf_efa_params_t) :: EFA
+        logical :: V_HF = .false.
         logical :: BMF = .true.
         logical :: HRF = .false.
+        logical :: ESH = .false.
+        type(hf_mbpt_params_t) :: MBPT
+        type(hf_efa_params_t) :: EFA            ! LEGACY (removed in cleanup stage)
     end type hf_params_t
 
-    type, public :: rpa_params_t
+    ! Julia TDA_Parameters ... output folder io/<Path>/<Name>, reference io/<Path>/<Reference> ...
+    type, public :: tda_params_t
+        character(len=64) :: Name = 'TDA'
+        character(len=64) :: Reference = 'HF'
+        logical :: Reference_TBCF = .false.
         logical :: Ortho = .true.
+        real(dp) :: Tol_hol = 0.7_dp
+        real(dp) :: Tol_par = 0.1_dp
+    end type tda_params_t
+
+    ! Julia RPA_Parameters ... Transitions = 'Exact' or 'Linear', Tol & Imax of the ScRPA iteration, DEV developer switch ...
+    type, public :: rpa_params_t
+        character(len=64) :: Name = 'RPA'
+        character(len=64) :: Reference = 'HF'
+        logical :: Reference_TBCF = .false.
+        logical :: RPA_Orb = .false.
+        logical :: Ortho = .true.
+        character(len=16) :: Transitions = 'Linear'
+        real(dp) :: Tol = 1.0e-5_dp
+        real(dp) :: Tol_hol = 0.7_dp
+        real(dp) :: Tol_par = 0.1_dp
+        integer :: Imax = 150
+        logical :: OBDM_diagonal = .false.
+        real(dp) :: OBDM_alpha = 0.6_dp
+        logical :: ScH = .true.
+        logical :: TBCF = .false.
+        real(dp) :: TBCF_alpha = 0.8_dp
+        real(dp) :: TBCF_beta = 5.0_dp
+        logical :: DEV = .false.
     end type rpa_params_t
 
+    ! LEGACY (removed in cleanup stage) ... HF-RRPA is gone in NuJuliet dev (HF_ScRPA replaces it) ...
     type, public :: rrpa_params_t
         logical :: Ortho = .true.
         real(dp) :: Tol = 1.0e-7_dp
@@ -71,9 +113,7 @@ module nj_params
         real(dp) :: pa0 = 0.25_dp
         real(dp) :: na0 = 0.25_dp
         integer :: Broy_m = 8
-        integer :: Broy_Qmax = 3
-        real(dp) :: Broy_Amax = 0.9_dp
-        real(dp) :: Broy_Bmax = 0.3_dp
+        real(dp) :: Broy_Amax = 0.8_dp           ! dev default (0.9 before), Broy_Qmax & Broy_Bmax removed in dev
         real(dp) :: Broy_Tmax = 0.9_dp
         logical :: LNT = .false.
         logical :: LNRes = .true.
@@ -83,11 +123,18 @@ module nj_params
 
     type, public :: qtda_params_t
         logical :: Ortho = .true.
+        character(len=64) :: Reference = 'HFB'
     end type qtda_params_t
 
     type, public :: qrpa_params_t
         logical :: Ortho = .true.
+        character(len=64) :: Reference = 'HFB'
     end type qrpa_params_t
+
+    ! Julia pnQTDA_Parameters ... input folder io/<Path>/<Reference> of qpH1b.bin & qpH2b.bin ...
+    type, public :: pnqtda_params_t
+        character(len=64) :: Reference = 'HFB'
+    end type pnqtda_params_t
 
     ! EMPM restricted particle-hole space ... windows (first, last) of the HF levels of each isospin ordered by
         ! energy (1 = deepest level), as in the input_tda_coup.dat of the original EMPM codes ...
@@ -199,7 +246,7 @@ module nj_params
     ! No-core shell model in the m-scheme HO basis (action NCSM) ... Nmax_List the many-body truncations (HO quanta above
         ! the lowest configuration, -1 terminates the list; the parity is that of N0 + Nmax), Hamiltonian 'NN' (T_int + V_NN in
         ! the HO basis, no HF needed) or 'EMPM' (the normal-ordered EMPM Hamiltonian E_HF + e :a+a: + 1/4 V2B_HF :a+a+aa: of
-        ! the HF run in IO/<Path>, transformed back to the HO basis), M2 = 2M (-1 = A mod 2), N_Eig lowest states by Lanczos
+        ! the HF run in io/<Path>, transformed back to the HO basis), M2 = 2M (-1 = A mod 2), N_Eig lowest states by Lanczos
         ! with full reorthogonalization (at most Lanczos_Max steps, residual < Lanczos_Tol MeV), Beta_CM the Lawson term
         ! H + Beta_CM N_cm (MeV per CM quantum, 0 = none) ...
     type, public :: ncsm_params_t
@@ -260,12 +307,14 @@ module nj_params
         real(dp) :: CM_Lawson = 0.0_dp
         character(len=Str_Len) :: Path = ''
         type(hf_params_t) :: HF
+        type(tda_params_t) :: TDA
         type(rpa_params_t) :: RPA
-        type(rrpa_params_t) :: RRPA
+        type(rrpa_params_t) :: RRPA              ! LEGACY (removed in cleanup stage)
         type(bcs_params_t) :: BCS
         type(hfb_params_t) :: HFB
         type(qtda_params_t) :: QTDA
         type(qrpa_params_t) :: QRPA
+        type(pnqtda_params_t) :: pnQTDA
         type(empm_params_t) :: EMPM
         type(ncsm_params_t) :: NCSM
     end type calculation_params_t
@@ -275,7 +324,7 @@ module nj_params
         type(calculation_params_t) :: Calc
     end type params_t
 
-    public :: default_path, io_path
+    public :: default_path, io_path, io_dir
 
 contains
 
@@ -288,12 +337,20 @@ contains
                '_' // trim(Calc%CMS)
     end function default_path
 
-    ! "IO/" * Params.Calc.Path * Suffix ...
+    ! "io/" * Params.Calc.Path * Suffix ... the output root is lower-case io/ since NuJuliet dev (IO/ before) ...
     function io_path(Params,Suffix) result(Path)
         type(params_t), intent(in) :: Params
         character(len=*), intent(in) :: Suffix
         character(len=:), allocatable :: Path
-        Path = 'IO/' // trim(Params%Calc%Path) // Suffix
+        Path = 'io/' // trim(Params%Calc%Path) // Suffix
     end function io_path
+
+    ! "io/" * Params.Calc.Path * "/" * Sub ... per-solver folder, e.g. io_dir(Params,Params%Calc%RPA%Name) ...
+    function io_dir(Params,Sub) result(Path)
+        type(params_t), intent(in) :: Params
+        character(len=*), intent(in) :: Sub
+        character(len=:), allocatable :: Path
+        Path = 'io/' // trim(Params%Calc%Path) // '/' // trim(Sub)
+    end function io_dir
 
 end module nj_params

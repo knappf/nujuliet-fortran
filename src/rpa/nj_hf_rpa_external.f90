@@ -126,7 +126,7 @@ contains
         r_max = 2.5_dp * 1.2_dp * A_mass**(1.0_dp/3.0_dp)
         call parse_JP(JP,J,P)
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call orbitals_ph_make(Params,Orb,N_Particle,Particle,N_Hole,Hole)
         call orbitals_one_phonon_make(N_Particle,Particle,N_Hole,Hole,N_Ph_tot,Phonon)
         call HF_RPA_phonon_count(Params,N_Ph_tot,Phonon,N_nu,Orb_Phonon)
@@ -446,7 +446,7 @@ contains
         M = M_in
         if (M == -1) M = 0
 
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call orbitals_ph_make(Params,Orb,N_Particle,Particle,N_Hole,Hole)
         call orbitals_one_phonon_make(N_Particle,Particle,N_Hole,Hole,N_Ph_tot,Phonon)
         call HF_RPA_phonon_count(Params,N_Ph_tot,Phonon,N_nu,Orb_Phonon)

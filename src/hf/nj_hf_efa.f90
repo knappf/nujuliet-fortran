@@ -6,7 +6,7 @@ module nj_hf_efa
     use nj_utils
     use nj_linalg
     use nj_o1b, only : T1b, T1b_energy
-    use nj_o2b, only : O2b_pp, O2b_pn, O2b_nn, O2b_transformation
+    use nj_o2b, only : O2b_pp, O2b_pn, O2b_nn, O2b_transformation, O2b_move
     use nj_v2b, only : V2b_read, V2b_residual_no2b
     use nj_obdm, only : OBDM_export
     use nj_hf, only : HF_energy
@@ -26,7 +26,7 @@ contains
         type(v3b_t), intent(in) :: V_NNN
         type(params_t) :: Params_EFA
         type(o1b_t) :: T, Rho, Rho_HF
-        type(o2b_t) :: V_NN
+        type(o2b_t) :: V_NN, V_NN_res
         type(orb2b_t) :: Orb_NN
         real(dp) :: E_HF, T_HF
         integer(i8) :: t0
@@ -50,7 +50,7 @@ contains
         Params_EFA%Calc%HF = Params%Calc%HF
 
         T = T1b(Params_EFA,Orb)
-        call V2b_read(Params_EFA,Orb,V_NN,Orb_NN)
+        call V2b_read(Params_EFA,V_NN,Orb_NN)
         Rho = HF_EFA_density_operator(Params_EFA,SPE,C,Orb)
         E_HF = HF_energy(Params_EFA,Rho,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN)
         T_HF = T1b_energy(Params_EFA,Rho,Orb,T)
@@ -65,7 +65,8 @@ contains
 
         if (Params%Calc%HF%EFA%BMF) then
             call timer_start(t0)
-            call V2b_residual_no2b(Params_EFA,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN)
+            call V2b_residual_no2b(Params_EFA,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN,V_NN_res)
+            call O2b_move(V_NN_res,V_NN)
             call timer_report(t0)
             ! Transformation to the HF basis ... in place, as the Julia O2b_transformation mutates V_NN too ...
             call timer_start(t0)

@@ -291,7 +291,7 @@ contains
         if (.not. is_dir(io_path(Params,'/NCSM'))) call make_dir(io_path(Params,'/NCSM'))
 
         ! Hamiltonian in the J-coupled HO storage, u(a,b,t) on the orbitals & C0 ...
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         UseWin = Params%Calc%NCSM%Window
         if (allocated(RefO)) deallocate(RefO)
         if (allocated(ActO)) deallocate(ActO)
@@ -1683,7 +1683,7 @@ contains
         type(o1b_t) :: T
         integer :: a_max
         real(dp) :: f
-        call V2b_read(Params,Orb,V,Orb_NN)
+        call V2b_read(Params,V,Orb_NN)
         T = T1b(Params,Orb)
         a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
         select case (trim(Params%Calc%CMS))

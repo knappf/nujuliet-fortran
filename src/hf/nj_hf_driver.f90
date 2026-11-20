@@ -8,7 +8,7 @@ module nj_hf_driver
     use nj_wigner, only : wigner_init_float
     use nj_orbitals, only : orbitals_make, orbitals_export
     use nj_o1b, only : T1b, T1b_energy
-    use nj_o2b, only : O2b_transformation, O2b_export, O2b_export_HRF
+    use nj_o2b, only : O2b_transformation, O2b_export, O2b_export_HRF, O2b_move
     use nj_v2b, only : V2b_read, V2b_residual_no2b
     use nj_v3b, only : V3b_no2b_read
     use nj_obdm, only : OBDM_export
@@ -90,7 +90,7 @@ contains
         type(params_t), intent(in) :: Params
         type(orb1b_t), allocatable :: Orb(:)
         type(o1b_t) :: T, h, C, Rho, Rho_HF
-        type(o2b_t) :: V_NN
+        type(o2b_t) :: V_NN, V_NN_res
         type(orb2b_t) :: Orb_NN
         type(v3b_t) :: V_NNN
         type(orb3b_t) :: Orb_NNN
@@ -100,18 +100,18 @@ contains
         integer(i8) :: t0
 
         ! Single-particle orbitals ... NuHamil ordering ...
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
 
         call timer_start(t0)
         T = T1b(Params,Orb)
         call timer_report(t0)
 
         call timer_start(t0)
-        call V2b_read(Params,Orb,V_NN,Orb_NN)
+        call V2b_read(Params,V_NN,Orb_NN)
         call timer_report(t0)
 
         call timer_start(t0)
-        call V3b_no2b_read(Params,Orb,V_NNN,Orb_NNN)
+        call V3b_no2b_read(Params,V_NNN,Orb_NNN)
         call timer_report(t0)
 
         call timer_start(t0)
@@ -153,7 +153,9 @@ contains
         ! Beyond-mean-field HF-MBPT & export of the residual NN interaction ...
         if (Params%Calc%HF%BMF) then
             call timer_start(t0)
-            call V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN)
+            ! LEGACY: the residual replaces V_NN here (the dev HF keeps the bare V_NN for HF_MBPT_export, HF group) ...
+            call V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN,V_NN_res)
+            call O2b_move(V_NN_res,V_NN)
             call timer_report(t0)
 
             call timer_start(t0)

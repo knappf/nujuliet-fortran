@@ -44,7 +44,7 @@ contains
             write(*,'(a)') 'Parallelization report:    Number of active threads = ' // istr(N_threads)
             write(*,'(a)') '_________________________________________________________'
         end if
-        write(*,'(/,a)') "Input/Output path to the calculation reads ... ''IO/" // trim(Params%Calc%Path) // "''"
+        write(*,'(/,a)') "Input/Output path to the calculation reads ... ''io/" // trim(Params%Calc%Path) // "''"
         if (.not. is_dir(io_path(Params,''))) then
             write(*,'(/,a)') 'Error! ... No precomputed HF solution is available in given Input_File path ... run HF solver first ...'
             return
@@ -89,15 +89,15 @@ contains
         integer(i8) :: t0
 
         J_max = 2*Params%Calc%Nmax + 1
-        Orb = orbitals_make(Params)
+        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
         call timer_start(t0)
         T = T1b(Params,Orb)
         call timer_report(t0)
         call timer_start(t0)
-        call V2b_read(Params,Orb,V_NN_Bare,Orb_NN_Bare)
+        call V2b_read(Params,V_NN_Bare,Orb_NN_Bare)
         call timer_report(t0)
         call timer_start(t0)
-        call V3b_no2b_read(Params,Orb,V_NNN_Bare,Orb_NNN_Bare)
+        call V3b_no2b_read(Params,V_NNN_Bare,Orb_NNN_Bare)
         call timer_report(t0)
         call orbitals_ph_make(Params,Orb,N_Particle,Particle,N_Hole,Hole)
         call orbitals_one_phonon_make(N_Particle,Particle,N_Hole,Hole,N_Phonon,Phonon)
