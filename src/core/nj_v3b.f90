@@ -104,8 +104,13 @@ contains
         n_c = Orb(c)%n
         l_c = Orb(c)%l
         j_c = Orb(c)%j
-        Bra = Orb_NNN%Dic%get(V3b_no2b_key(a,b,n_c,l_c,j_c,J,P,T_ab,T))
-        Ket = Orb_NNN%Dic%get(V3b_no2b_key(d,e,Orb(f)%n,l_c,j_c,J,P,T_de,T))
+        ! Non-polymorphic hashmap_lookup, not the type-bound Dic%get: in the hot threaded loops ifx built the class
+        ! descriptor in static memory on every call (all threads writing the same cache lines) ... 40Ca, 9 shells,
+        ! 16 threads: V2b_residual_no2b 51.8 s -> 2.3 s, HF_RRPA 2796 s -> 166 s, outputs identical to 1e-12 ...
+        ! a missing key (index -1) is caught below, as Julia's KeyError ...
+        Bra = hashmap_lookup(Orb_NNN%Dic, V3b_no2b_key(a,b,n_c,l_c,j_c,J,P,T_ab,T))
+        Ket = hashmap_lookup(Orb_NNN%Dic, V3b_no2b_key(d,e,Orb(f)%n,l_c,j_c,J,P,T_de,T))
+        if (min(Bra,Ket) < 0) call V3b_no2b_missing_key(a,b,c,T_ab,d,e,f,T_de,J,T,P)
         if (Bra < Ket) then
             Tmp = Bra
             Bra = Ket
@@ -114,6 +119,14 @@ contains
         N = Orb_NNN%N(P,l_c,J,(T+1)/2,jindex(l_c,j_c))
         V3b_no2b_index = Bra + (Ket - 1)*N - (Ket * (Ket - 1))/2
     end function V3b_no2b_index
+
+    ! Cold error path of V3b_no2b_index ... kept out of line so the lookup stays small ...
+    subroutine V3b_no2b_missing_key(a,b,c,T_ab,d,e,f,T_de,J,T,P)
+        integer, intent(in) :: a, b, c, T_ab, d, e, f, T_de, J, T, P
+        write(*,'(a,11(1x,I0))') 'ERROR: missing key in NNN hash map lookup ... a,b,c,T_ab,d,e,f,T_de,J,T,P =', &
+                                 a, b, c, T_ab, d, e, f, T_de, J, T, P
+        error stop 1
+    end subroutine V3b_no2b_missing_key
 
     ! NO2B matrix element <ab(J_de T_ab) c | V | de(J_de T_de) f> with total isospin T (doubled) ...
     real(dp) function V3b_no2b(a,b,c,T_ab,d,e,f,T_de,J_de,T,P,V_NNN,Orb,Orb_NNN)
