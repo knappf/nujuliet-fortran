@@ -8,12 +8,12 @@ run setup.
 - The repo lives in the job's local scratch (`/scratch/local.ssd/knapp/job_<id>/nujuliet-fortran`), so it is lost
   when the job ends. A previous copy of the port (with older binaries & `benchmark14/`) is in
   `/storage/brno12-cerit/home/knapp/NuJuliet_Fortran_port/`.
-- In a non-interactive shell `module` is undefined: first `source /etc/profile.d/modules.sh`.
+- In a non-interactive shell `module` is undefined: first `source /etc/profile.d/30_meta_modules.sh`.
 
 ## Building
 
 ```sh
-source /etc/profile.d/modules.sh
+source /etc/profile.d/30_meta_modules.sh
 module load intel-oneapi-hpc-compilers     # ifx 2025.1.1 + MKL
 make                                       # -> ./nujuliet (~75 s, serial make)
 ```
