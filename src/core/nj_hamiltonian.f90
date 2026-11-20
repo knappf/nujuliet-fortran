@@ -353,7 +353,9 @@ contains
         logical, intent(in), optional :: Report
         type(imat_t), allocatable :: Triples(:,:,:,:)
         integer, allocatable :: N_trip(:,:,:,:), cf(:,:), ad(:,:)
-        real(dp), allocatable :: ph(:,:), nh(:,:)
+        real(dp), allocatable :: ph(:,:), nh(:,:), phk(:,:,:), nhk(:,:,:)
+        integer, parameter :: N_chunk = 64
+        integer :: k
         integer :: N_max, a_max, l_max, J_max, cf_count, ad_count, Pass, a, b, c, d, e, f, ab, de, J, J_i, J_min, P, P2B, P3B
         integer :: l_c, j_ind, N_ab, N_ab_pn, abc, def, abc_0, abc_1, abc_3, def_0, def_1, def_3, ab_pn, ba_pn, de_pn, ed_pn, cf_i
         real(dp) :: Phase_ab, Phase_de, ME001, ME101, ME011, ME111, ME113, ppS, nnS, s_abde, s_bade, s_abed, s_baed
@@ -413,9 +415,15 @@ contains
             end if
         end do
 
-        allocate(ph(a_max,a_max), nh(a_max,a_max))
+        ! Deterministic sum (independent of the thread count & schedule): the triples abc of a block are dealt to N_chunk fixed
+            ! interleaved chunks (abc = k, k + N_chunk, ...), each chunk sums serially into its own accumulator phk(:,:,k),
+            ! nhk(:,:,k) over all blocks, & the chunks are added in the fixed order k = 1..N_chunk at the end (dev sums serially;
+            ! the former OpenMP reduction(+) with dynamic scheduling differed from run to run at ~1e-14) ...
+        allocate(ph(a_max,a_max), nh(a_max,a_max), phk(a_max,a_max,N_chunk), nhk(a_max,a_max,N_chunk))
         ph = 0.0_dp
         nh = 0.0_dp
+        phk = 0.0_dp
+        nhk = 0.0_dp
         do J = 0, J_max
             do P2B = 1, 2
                 N_ab = Orb_NN%N(2,P2B,J)
@@ -427,10 +435,11 @@ contains
                         if (N_trip(P3B,l_c,J,j_ind) == 0) cycle
                         associate (Tr => Triples(P3B,l_c,J,j_ind)%v, V_T1 => V_NNN%V(P3B,l_c,J,1,j_ind)%v, &
                                    V_T3 => V_NNN%V(P3B,l_c,J,2,j_ind)%v)
-                        !$omp parallel do schedule(dynamic,4) reduction(+:ph,nh) private(a,b,c,ab,abc_0,abc_1,abc_3,ab_pn,ba_pn, &
+                        !$omp parallel do schedule(dynamic,1) private(k,abc,a,b,c,ab,abc_0,abc_1,abc_3,ab_pn,ba_pn, &
                         !$omp Phase_ab,def,d,e,f,de,def_0,def_1,def_3,de_pn,ed_pn,Phase_de,ME001,ME101,ME011,ME111,ME113, &
                         !$omp ppS,nnS,s_abde,s_bade,s_abed,s_baed,S00,S10,S01,S11,pSum,nSum)
-                        do abc = 1, N_trip(P3B,l_c,J,j_ind)
+                        do k = 1, min(N_chunk, N_trip(P3B,l_c,J,j_ind))
+                        do abc = k, N_trip(P3B,l_c,J,j_ind), N_chunk
                             a = Tr(1,abc)
                             b = Tr(2,abc)
                             c = Tr(3,abc)
@@ -495,19 +504,25 @@ contains
                                        2.0_dp * (ME001 * S00 + (ME101 * S10 + ME011 * S01) / sr3 + (ME111 + 2.0_dp * ME113) / 3.0_dp * S11)
 
                                 ! (abc|V|def) adds to h_cf ... (def|V|abc), not stored, adds the same to h_fc ...
-                                ph(c,f) = ph(c,f) + pSum
-                                nh(c,f) = nh(c,f) + nSum
+                                phk(c,f,k) = phk(c,f,k) + pSum
+                                nhk(c,f,k) = nhk(c,f,k) + nSum
                                 if (def /= abc) then
-                                    ph(f,c) = ph(f,c) + pSum
-                                    nh(f,c) = nh(f,c) + nSum
+                                    phk(f,c,k) = phk(f,c,k) + pSum
+                                    nhk(f,c,k) = nhk(f,c,k) + nSum
                                 end if
                             end do
+                        end do
                         end do
                         !$omp end parallel do
                         end associate
                     end do
                 end do
             end do
+        end do
+
+        do k = 1, N_chunk
+            ph = ph + phk(:,:,k)
+            nh = nh + nhk(:,:,k)
         end do
 
         do cf_i = 1, cf_count

@@ -20,6 +20,8 @@ LAPACK  ?= -Wl,--disable-new-dtags -Wl,-rpath,$(FCLIB) -L$(MKLLIB) -Wl,-rpath,$(
 FFLAGS  ?= -O2 -march=core-avx2 -qopenmp   # portable: Intel & AMD nodes (-xHost binaries refuse to run on AMD)
 DBGFLAGS = -O0 -g -qopenmp -check all -traceback -warn all -warn nounused
 COMMON   = -module $(BUILD) -I $(BUILD)
+# thread-local BLAS thread count inside OpenMP regions (mkl_set_num_threads_local) ...
+BLASTHR_SRC = src/core/nj_blas_threads_mkl.f90
 else
 ifeq ($(origin FC),default)
 FC = gfortran
@@ -28,6 +30,8 @@ LAPACK  ?= -llapack -lblas
 FFLAGS  ?= -O2 -fopenmp
 DBGFLAGS = -O0 -g -fopenmp -fcheck=all -fbacktrace -Wall -Wno-unused-dummy-argument -Wno-maybe-uninitialized
 COMMON   = -ffree-line-length-none -J $(BUILD) -I $(BUILD)
+# reference BLAS is single-threaded ... no-op thread control ...
+BLASTHR_SRC = src/core/nj_blas_threads_ref.f90
 endif
 
 # Sources in dependency order ... chain fragments define SRC_RPA (chain A), SRC_QP (chain B) & SRC_EMPM (chain C) ...
@@ -42,6 +46,7 @@ SRC_CORE = src/core/nj_kinds.f90 \
            src/core/nj_wigner.f90 \
            src/core/nj_hashmap.f90 \
            src/core/nj_linalg.f90 \
+           $(BLASTHR_SRC) \
            src/core/nj_types.f90 \
            src/core/nj_params.f90 \
            src/core/nj_functions.f90 \

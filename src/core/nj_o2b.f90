@@ -324,12 +324,15 @@ contains
         type(o2b_t), intent(out) :: O_NN
         type(orb2b_t), intent(out), optional :: Orb_NN
         type(orb2b_t) :: Orb_loc
-        integer :: u, J, P, Bra, Ket, N
+        integer :: u, J, P, Bra, Ket, N, Ios
+        character(len=256) :: Msg
         real(dp), allocatable :: Buf(:)
 
         write(*,'(/,a)') 'Reading given 2-body NN operator ...'
         call O2b_initialize(Params,Orb,O_NN,Orb_loc)
-        open(newunit=u, file=Import_Path, access='stream', form='unformatted', status='old', action='read')
+        open(newunit=u, file=Import_Path, access='stream', form='unformatted', status='old', action='read', &
+             iostat=Ios, iomsg=Msg)
+        if (Ios /= 0) call fatal('O2b_import: cannot open ' // trim(Import_Path) // ' ... ' // trim(Msg))
         do J = 0, export_J_max(Params,Orb_loc)
             do P = 1, 2
                 N = Orb_loc%N(2,P,J)

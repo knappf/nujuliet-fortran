@@ -25,6 +25,8 @@ module nj_tda_rpa_driver
     private
 
     public :: TDA, TDA_solver, RPA, RPA_solver
+    ! Shared with HF_ScRPA (nj_scrpa, stage 4): identical header, thread report & output tree as RPA() ...
+    public :: print_header, print_threads, make_output_dirs
 
 contains
 
@@ -269,15 +271,8 @@ contains
         TrOp = Tr1b_initialize(Params,Orb,1.0_dp)
         TrOp = Tr1b_transformation(Params,Orb,C,TrOp)
 
-        write(*,'(/,a)') 'Allocating RPA matrices A, B & N ...'
         call timer_start(t0)
-        call ph_allocate(Orb,Orb_1p1h,Orb_NN,h_N,V_NN,.true.,A,B,N)
-        if (TBCF_allocate) then
-            call ph_allocate_tbcf(Params,Orb,Orb_1p1h,Orb_NN,V_NN,Sigma_ref,.true.,Params%Calc%RPA%DEV,A,B,'RPA')
-            ! DEV: 1p-1h to 2p-2h self-energy coupling of A (RPA_allocate_SE, Mode = "OnShell") ...
-            if (Params%Calc%RPA%DEV) call RPA_allocate_SE(Params,Orb,Orb_1p1h,Orb_NN,h_N,V_NN,A)
-        end if
-        write(*,'(/,a)') TAB // 'RPA matrices A, B & N allocated ...'
+        call RPA_allocate(Params,Orb,Orb_1p1h,Orb_NN,h_N,V_NN,Rho,Sigma_ref,TBCF_allocate,A,B,N)
         call timer_report(t0)
 
         call timer_start(t0)

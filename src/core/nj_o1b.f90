@@ -103,10 +103,13 @@ contains
         type(orb1b_t), intent(in) :: Orb(:)
         character(len=*), intent(in) :: Import_Path
         type(o1b_t) :: A
-        integer :: u, a_max
+        integer :: u, a_max, Ios
+        character(len=256) :: Msg
         a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
         call o1b_alloc(A,a_max)
-        open(newunit=u, file=Import_Path, access='stream', form='unformatted', status='old', action='read')
+        open(newunit=u, file=Import_Path, access='stream', form='unformatted', status='old', action='read', &
+             iostat=Ios, iomsg=Msg)
+        if (Ios /= 0) call fatal('O1b_import: cannot open ' // trim(Import_Path) // ' ... ' // trim(Msg))
         call read_block(u,Params,Orb,A%p)
         call read_block(u,Params,Orb,A%n)
         close(u)

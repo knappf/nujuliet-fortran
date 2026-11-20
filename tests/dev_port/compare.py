@@ -315,7 +315,16 @@ def dat_tokens(path):
     with open(path, errors='replace') as f:
         for li, line in enumerate(f):
             for t in line.split():
-                out.append((li, t))
+                # a number wrapped in parentheses, e.g. '(relative 0.0294)', is compared as a number (the
+                # parentheses are text and must match) ...
+                if t.startswith('(') and t != '(':
+                    out.append((li, '('))
+                    t = t[1:]
+                if t.endswith(')') and t != ')':
+                    out.append((li, t[:-1]))
+                    out.append((li, ')'))
+                else:
+                    out.append((li, t))
     return out
 
 

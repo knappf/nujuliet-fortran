@@ -12,3 +12,4 @@ build*/
 # dev-port test run outputs
 /tests/dev_port/work/
 /nujuliet.old_*
+__pycache__/

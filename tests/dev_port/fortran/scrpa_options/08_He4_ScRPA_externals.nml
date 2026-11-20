@@ -1,0 +1,31 @@
+! dev-port test case 'scrpa_options' (tests/dev_port/julia/scrpa_options.jl): RPA externals on the HF-ScRPA output
+! Run the files of this directory in order from one work directory (see ../../run_fortran.sh)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 4, Z = 2, hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+  CMS = 'CMS1+2B'
+  Path = 'He4'
+/
+&rpa
+  Name = 'HF-ScRPA', Reference = 'HF', Reference_TBCF = .false., Ortho = .true., Transitions = 'Linear',
+  TBCF = .false., Tol_hol = 0.3, Tol_par = 0.85, Tol = 1e-5, Imax = 100, OBDM_diagonal = .false., ScH = .true.
+/
+&run
+  Solvers = 'RPA_transition_densities', 'RPA_transition_operator_densities', 'RPA_transition_analysis', 'RPA_transition_currents', 'RPA_transitions_recalculate'
+/
+&transition_densities
+  JP = '1-', nu_list = 1, 2
+/
+&transition_operator_densities
+  JP = '2+', nu_list = 1, 2
+/
+&transition_analysis
+  JP = '1-', nu_list = 1, 2, Cut = 0.05
+/
+&transition_currents
+  JP = '1-', M = 0, nu_list = 1, 2
+/

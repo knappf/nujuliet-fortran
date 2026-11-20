@@ -484,3 +484,76 @@ Deviations:
    `"\nReview of {TDA,RPA} electromagnetic transition moments"` as in dev.
 7. The external routines are race-free: kernel columns, grid points, map points and pair maps are each written by one
    thread; results with 1 and 8 threads agree to 1e-12 (`--strict-sign`).
+
+## NuJuliet dev port (f3f7a33) ... stage 4 part 1, HF-ScRPA building blocks (spec `docs/dev_port/scrpa.md` sections 1.3-1.7, 2)
+
+New `src/rpa/nj_rpa_rho.f90` (`RPA_OBDM_orbitals_make`, `RPA_OBDM_oY4`, `RPA_OBDM_transform_amplitudes`,
+`HF_ScRPA_OBDM_solve`), `src/rpa/nj_rpa_hamiltonian.f90` (`RPA_Hamiltonian`, `RPA_Hamiltonian_HF_reference`),
+`nj_rpa::RPA_allocate` / `RPA_sigma_mix`, `nj_types::orb1b_rpa_obdm_t`, `src/core/nj_blas_threads_{mkl,ref}.f90`.
+The core helpers of spec section 2 (`OBDM_natural_orbitals`, `orbitals_import/export/update`, O1b wrappers, `H1b`,
+`H2b`, `H1b_H2b`, `V2b_correlation_energy`) and `RPA_energy*` / `RPA_sigma` already came with stages 1 and 3 and are
+reused unchanged (no `nj_rpa_energy` / `nj_rpa_sigma` modules: those routines live in `nj_rpa`).
+
+1. `RPA_OBDM_oY4`: dev's caller-owned `pM`/`nM` work arrays are block-local in the port (no caller reads them). Per (J,P)
+   block and isospin T, `M = -1/2 X_W^T diag(W) X_W^*` uses only the rows with `W > 0` (the other rows of dev's full
+   product are exact zeros), and `G = Y_T (1 + M) Y_T^+` only the rows of isospin T (the element sums never read the
+   pn cross block); only `Re G` is kept. Blocks whose X and Y have exactly zero imaginary parts (no complex RPA
+   solution in the block) use real `dgemm`, every other block complex `zgemm` as dev (owner decision 7; unit check:
+   the complex path reproduces dev's result for complex amplitudes to 5e-18). Effect: round-off only.
+2. `RPA_OBDM_transform_amplitudes`: U is block-diagonal in the isospin; `U X` is done per isospin block with `dgemm` on
+   Re X and (if non-zero) Im X. Round-off only. Returns new arrays (subroutine with `X_new`, `Y_new` out).
+3. B7: inside the OpenMP block loops of (1) and (2) each thread sets its own MKL thread count to 1 with
+   `MKL_Set_Num_Threads_Local` (module `nj_blas_threads`, selected by the Makefile; the reference-BLAS variant of
+   `COMPILER=gnu` is a no-op) and restores it afterwards. Results do not depend on the thread count (no reductions:
+   each OBDM element and each block is written by one task, sums in dev's order).
+4. `HF_ScRPA_OBDM_solve` interface: dev returns `(Rho, C_LHO_NAT, Orb_NAT)` and updates `C_HF_NAT` in place; the port
+   has `Orb` and `Rho` `intent(inout)` (in: current orbitals / `Rho_ini`; out: same n,l,j with the new occupations /
+   the new diagonal OBDM), `C_HF_NAT` `inout`, `C_LHO_NAT` `out`. Constants 1e-8, 150, 100, 1e-3 hard-coded as dev
+   (decision 3). `rho.bin` and `C.bin` of the reference are re-read on every call as dev.
+5. `RPA_Hamiltonian` (B6): for `ScH && TBCF` dev transforms the caller's Sigma in place NAT -> LHO -> NAT; the port
+   transforms a copy (the caller's Sigma is unchanged instead of round-tripped, ~1e-15).
+6. `RPA_allocate` (dev `RPA_allocate.jl:1`) is now one routine shared by `RPA_solver` and HF-ScRPA (`ph_allocate`,
+   `ph_allocate_tbcf`, `RPA_allocate_SE` for DEV, exactly where dev calls them); `RPA_solver` output is byte-identical
+   (rpa_options, `diff -r`).
+7. Not ported (dead in dev, decision 8): `RPA_OBDM_sigma`, the 9-argument `H1b(...,Sigma)` V_NN-Sigma variant.
+8. Kept on purpose: B3 (inclusive particle/hole tests of `RPA_sigma` on the current NAT occupations vs the strict
+   ones of `orbitals_1p1h_make` / `RPA_OBDM_orbitals_make` on the reference), and dev's transpose (not adjoint) in
+   `M = -1/2 X^T W X^*` (see UPSTREAM_BUGS, stage 4).
+
+## NuJuliet dev port (f3f7a33) ... stage 4 part 2, HF-ScRPA solver (spec `docs/dev_port/scrpa.md` sections 1.1, 1.2, 2.3)
+
+New `src/rpa/nj_scrpa.f90` (`HF_ScRPA`, `HF_ScRPA_solver`, `scrpa_beta`, `ScRPA_terminate_summary`), `&run` action
+`HF_ScRPA` (`nj_dispatch_rpa`), `files.mk` entry after `nj_tda_rpa_driver` (whose `print_header`, `print_threads`,
+`make_output_dirs` are now public and shared). The ScRPA fields of `&rpa` (`Tol`, `Imax`, `OBDM_diagonal`, `OBDM_alpha`,
+`ScH`, `TBCF`, `TBCF_alpha`, `TBCF_beta`, `DEV`, `RPA_Orb`, ...) existed since stage 3 (dev `RPA_Parameters`). The
+legacy `HF_RRPA` action, `&rrpa` and `nj_hf_rrpa*` are untouched (decision 2; removed in the cleanup stage).
+
+1. B2 (decision 5): `Name == Reference` is refused by the `&rpa` reader (since stage 3) and again in `HF_ScRPA` with
+   `fatal` (dev deletes the reference folder before reading it).
+2. Decision 6 / B5: for `ScH = false` the bare `V2b_read` / `V3b_no2b_read` are skipped (dev reads both and never uses
+   them); `Orb_NN` then comes from the import of the reference `H2b.bin` (`O2b_import` builds it with the same
+   `O2b_initialize` over the first a_max(Calc.Nmax) orbitals as `V2b_read`, so the table is identical). Results are
+   unchanged (scrpa_options `ScRPA-noScH`, `ScRPA-noScH-TBCF` agree with Julia, which reads the files).
+3. Dev's unused `Delta_E` / `Delta_E_old` are not ported. The redundant final `RPA_Hamiltonian` for TBCF (B5) is kept
+   (one call, same printed log). `Sigma_old` is freed before the final step as dev sets it to `nothing`.
+4. Dev `Sigma_AB = Sigma` (the mixed Sigma of A and B) and the re-binding `Sigma = RPA_sigma(...)` of the final step are
+   two variables in the port (`Sigma` passed as `Sigma_AB`, `Sigma_fin` for `E_sigma`, `RPA_rM` and `sigma.bin`).
+5. The external `RPA_*` actions (`RPA_transition_densities`, `_operator_densities`, `_analysis`, `_currents`,
+   `RPA_transitions_recalculate`) work on a ScRPA output folder unchanged (`&rpa Name` = the ScRPA folder), as dev.
+6. Observation, not a deviation: when the inner OBDM loop diverges and its unmixed explicit fallback produces non-finite
+   values, the following RPA diagonalization stops the Fortran run (`ERROR: dgeevx failed`; seen for 4He with
+   `Ortho = false`, `OBDM_alpha = 1`, `TBCF`, `TBCF_beta = 2`). Dev has no guard either (its `eigen` would throw on
+   NaN input); this case was not run in Julia.
+7. Stage-4 verification (2026-11-20): `O1b_import` and `O2b_import` (core) check the `open` with `iostat` and stop with
+   `ERROR: O1b_import / O2b_import: cannot open <path> ...` (exit status 1) like `orbitals_import`, instead of the
+   ifx runtime abort (`forrtl: severe (29)` + traceback). Seen for an HF_ScRPA `Reference` that exists but is not an
+   HF / HF-MBPT folder (e.g. an RPA folder without `H1b.bin`); dev throws a Julia `SystemError` there. Error path only,
+   all outputs unchanged. A missing `Reference` folder keeps dev's message + return (exit status 0, no output folder).
+8. Stage-4 review fix (2026-11-21): the V3N.Sigma term of the core `H1b_H2b` (`nj_hamiltonian`, used by HF-MBPT with
+   `TBCF`/`ScH` and by the TBCF HF-ScRPA `RPA_Hamiltonian`) no longer sums into `ph, nh` with an OpenMP
+   `reduction(+)` + `schedule(dynamic,4)` (run-to-run differences up to 7e-14). The triples of each V_NNN block are
+   dealt to 64 fixed interleaved chunks (`abc = k, k+64, ...`), each chunk sums serially into its own accumulator
+   (`phk(:,:,k)`, `nhk(:,:,k)`, kept over all blocks; 2 x 64 x a_max^2 doubles, 8.5 MB at 13 shells) and the chunks
+   are added in the order k = 1..64 at the end. The result is independent of the thread count and schedule (bitwise
+   equal for 1 and 8 threads and between runs); it differs from dev's serial order only by rounding (<= 1e-13 in the
+   outputs). Dev sums serially; this is a summation-order change only.

@@ -10,7 +10,9 @@ output files of the original:
 | `HF_RPA`                           | `HF_RPA(Params)` (HF-TDA & HF-RPA)  |
 | `HF_RPA_transition_densities`      | `HF_RPA_transition_densities(...)`  |
 | `HF_RPA_transition_currents`       | `HF_RPA_transition_currents(...)`   |
-| `HF_RRPA`                          | `HF_RRPA(Params)`                   |
+| `TDA`, `RPA`                       | `TDA(Params)`, `RPA(Params)` (dev; reference `io/<Path>/<Reference>`) |
+| `HF_ScRPA`                         | `HF_ScRPA(Params)` (dev HF-based self-consistent RPA, `&rpa`; replaces `HF_RRPA`) |
+| `HF_RRPA`                          | `HF_RRPA(Params)` (legacy, removed in the cleanup stage) |
 | `HF_RRPA_transition_densities`     | `HF_RRPA_transition_densities(...)` |
 | `HF_RRPA_transition_currents`      | `HF_RRPA_transition_currents(...)`  |
 | `BCS`, `HFB`, `QTDA`, `QRPA`       | `BCS`, `HFB`, `QTDA`, `QRPA`        |

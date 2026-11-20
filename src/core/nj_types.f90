@@ -223,6 +223,12 @@ module nj_types
     end type orb1b_hf_mbpt_t
 
     ! HF-RRPA auxiliary structure ... LEGACY (removed in cleanup stage, RRPA is gone in NuJuliet dev) ...
+    ! Particle & hole orbitals of the RPA O(Y^4) OBDM ... dev Orb1B_RPA_OBDM (RPA_orbitals.jl), stage 4 ...
+    type, public :: orb1b_rpa_obdm_t
+        type(pnorbvector_t) :: p, h
+        type(pninteger_t) :: N_p, N_h
+    end type orb1b_rpa_obdm_t
+
     type, public :: obdm_iteration_pairs_t
         integer :: N = 0
         integer, allocatable :: T(:), a(:), b(:)

@@ -376,3 +376,204 @@ Not ported (unreachable in dev): `RPA_allocate_SE` modes `"QP"` (`SE_QP`) and `"
   replaced, identical results); a TDA into a non-TDA folder is refused; RPA Reference_TBCF without sigma.bin fatal.
   TDA Reference_TBCF without sigma.bin prints dev's error and skips the step (exit status 0, as dev); the RPA fatal
   comes after the output folder tree has been created (empty `<Name>/` tree remains).
+
+## 2026-11-20 — stage 4 part 1, HF-ScRPA building blocks (spec `scrpa.md` sections 1.3-1.7, 2; no solver yet)
+
+Done (details & deviations in `docs/PORTING_NOTES.md`, section "stage 4 part 1"):
+- Core (spec section 2): nothing new needed: `OBDM_natural_orbitals` (exact recipe + F5), `orbitals_import/export(path)`,
+  `orbitals_update`, O1b wrappers, `H1b`, `H2b`, `H1b_H2b` (V3N.Sigma), `V2b_correlation_energy` exist since stage 1;
+  `RPA_energy`, `_QBA`, `_dress`, `_rho` (Density) and `RPA_sigma` (F2) since stage 3 (`nj_rpa`). Reused, not duplicated.
+- New `src/rpa/nj_rpa_rho.f90`, `src/rpa/nj_rpa_hamiltonian.f90` (files.mk after `nj_rpa_export`), new
+  `nj_rpa::RPA_allocate` (now also used by `RPA_solver`) and `nj_rpa::RPA_sigma_mix`, type `nj_types::orb1b_rpa_obdm_t`,
+  thread-local MKL control `src/core/nj_blas_threads_mkl.f90` (`COMPILER=gnu`: `_ref.f90`, no-op; Makefile `BLASTHR_SRC`).
+- Unit check `tests/dev_port/unit_s4/` (Julia dump script + Fortran test program + runner, README section).
+
+API for part 2 (all `public`; X/Y/E in the `RPA_diagonalize` layout `(2,0:J_max)`):
+- `type(orb1b_rpa_obdm_t)` (`nj_types`): `p, h` (`pnorbvector_t`, particle / hole orbitals per isospin), `N_p, N_h`.
+- `nj_rpa_rho`:
+  - `function RPA_OBDM_orbitals_make(Params,Orb) result(Orb_ph)` (strict `|O| < Tol_par` / `> Tol_hol`, RPA tolerances).
+  - `function RPA_OBDM_oY4(Params,Orb,Orb_ph,Orb_1p1h,Rho,X,Y) result(Rho_new)` (= Rho + dRho; dev's pM/nM dropped).
+  - `subroutine RPA_OBDM_transform_amplitudes(Orb_1p1h,X,Y,C,X_new,Y_new)` (`cmat_t, allocatable, intent(out)`).
+  - `subroutine HF_ScRPA_OBDM_solve(Params,Orb,Orb_ph,Orb_1p1h,X,Y,Rho,C_HF_NAT,C_LHO_NAT)`: `Orb` inout (occupations
+    replaced: dev's returned `Orb_NAT`), `Rho` inout (in `Rho_ini`, out new diagonal OBDM, new NAT basis), `C_HF_NAT`
+    inout (dev in place), `C_LHO_NAT` out; X, Y intent(in). Reads `io/<Path>/<RPA.Reference>/bin/{rho,C}.bin`.
+    Dev call `Rho, C_LHO_NAT, Orb = HF_ScRPA_OBDM_solve(Params,Orb,Orb_ph,Orb_1p1h,X,Y,Rho,C_HF_NAT)` becomes
+    `call HF_ScRPA_OBDM_solve(Params,Orb,Orb_ph,Orb_1p1h,X,Y,Rho,C_HF_NAT,C_LHO_NAT)`.
+- `nj_rpa_hamiltonian`:
+  - `subroutine RPA_Hamiltonian(Params,Orb,Orb_NN,Orb_NNN,C,Rho,Sigma,T,V_NN_bare,V_NNN_bare,h_N,V_NN)` (C = C_LHO_NAT;
+    Sigma, T, the bare interactions & Orb_NNN only read for ScH; Sigma only for TBCF; for `ScH = false` they may be
+    unallocated, i.e. decision 6 can skip `V2b_read`/`V3b_no2b_read` there, Orb_NN then from `O2b_import` of H2b.bin).
+  - `subroutine RPA_Hamiltonian_HF_reference(Params,Orb,Orb_NN,C,h_N,V_NN)`.
+- `nj_rpa`:
+  - `subroutine RPA_allocate(Params,Orb,Orb_1p1h,Orb_NN,h_N,V_NN,Rho,Sigma,TBCF,A,B,N)` (prints dev's two lines; TBCF:
+    box diagrams + DEV `RPA_allocate_SE` exactly as dev).
+  - `subroutine RPA_sigma_mix(Sigma,Sigma_old,gamma)` (in place).
+  - existing: `RPA_diagonalize(Params,Orb,Orb_1p1h,A,B,N,TrOp,E,X,Y,Stability)`, `RPA_energy_QBA(Params,Orb,Orb_1p1h,E,X,Y)`,
+    `RPA_energy(Params,Orb,Orb_1p1h,Orb_NN,E,X,Y,Rho,Rho_ref,h_N,Sigma,V_NN,Have_Sigma_AB,Sigma_AB,Density)` (pass
+    `Density=.true.`; `Have_Sigma_AB = TBCF`, Sigma_AB = Sigma, an unallocated o2b_t otherwise),
+    `RPA_sigma(Params,Orb,Orb_1p1h,Orb_NN,X,Y,beta,Report)`, `RPA_rM`; `nj_ph_common::ph_rB`;
+    `nj_rpa_export::RPA_export(Params,Orb,Orb_1p1h,Orb_NN,Stability,E_corr,E,X,Y,rB,C,Rho_LHO,Sigma,h)`.
+- Core: `O2b_transformation(Params,Orb,Orb_NN,O_NN,C,Report)` (in place), `O1b_transformation(O,C)` (= C^T O C),
+  `O1b_transpose`, `O1b_unit_matrix(Params)`, `orbitals_update(Orb,Rho)`, `rho_chR2(Params,Orb,C,Rho)`,
+  `Tr1b_initialize/Tr1b_transformation`, `V2b_read(Params,V_NN,Orb_NN)`, `V3b_no2b_read(Params,V_NNN,Orb_NNN)`,
+  `T1b(Params,Orb)`. The `make_output_dirs`/`print_header` helpers of `nj_tda_rpa_driver` are private (part 2: make them
+  public or copy the 10 lines).
+
+Verification:
+- Build: `make BUILD=build_s4 EXE=nujuliet_s4` clean (no warnings); debug build (`make debug`) clean, the new files also
+  without `-warn all` warnings.
+- Unit check (`unit_s4/run_unit.sh`, 4He bundled, common input = Julia initial X/Y), max abs deviations: oY4 3.5e-18,
+  oY4 complex path vs Julia (generic column phases) 5.2e-18, complex vs real path (phases with D^2 = -1) 1.7e-18,
+  OBDM_natural_orbitals C 1.7e-15, transform_amplitudes 1.2e-15 (complex 2.2e-16), HF_ScRPA_OBDM_solve (19 / 19 / 10
+  converged inner iterations, printed deltas identical to Julia) Rho <= 1.0e-15, C_LHO_NAT / C_HF_NAT <= 2.3e-15 (default, OBDM_diagonal,
+  OBDM_alpha = 1), RPA_sigma 4.9e-17, RPA_Hamiltonian h_N / V_NN <= 3.6e-14 (ScH, ScH+TBCF with V3N.Sigma, HF
+  reference), after one ScRPA step E_QBA 8.1e-16 rel., E_sigma 1.9e-15, E_rho 1.1e-15, E_dens 2.7e-15 rel.
+  Same with 1 thread; debug build (-O0, -check all) worst 1.1e-13.
+- Regression: bundled O16 steps 01-04 (153 files: 141 ok, 12 SIGN, 0 DIFF) and rpa_options (337: 308 ok, 29 SIGN) as in
+  stage 3; rpa_options output byte-identical to the stage-3 binary (`diff -r`), i.e. the `RPA_allocate` refactoring
+  changes nothing. Legacy code untouched (HF_RRPA chain not re-run).
+- Synthetic 208Pb 13-shell size (orbitals_make occupations, random real X/Y, sum N_ph 12770, largest block 689):
+  `RPA_OBDM_oY4` 0.09-0.10 s, `RPA_OBDM_transform_amplitudes` 0.04-0.05 s per call (16/32 threads), one complex block
+  0.16 s, so an inner OBDM iteration costs ~0.15 s (at most 150 per outer iteration).
+
+Open items (part 2): `nj_scrpa` (HF_ScRPA, HF_ScRPA_solver, scrpa_beta, ScRPA_terminate_summary), `&run` action
+`HF_ScRPA`, harness steps (bundled 08-10, ca40_5sh 03 + the options of the task list), decision 6 (skip the bare
+reads for ScH = false). UPSTREAM_BUGS: dev's `M = -1/2 X^T W X^*` is phase dependent for complex amplitudes.
+
+Not ported (dead in dev): `RPA_OBDM_sigma`, 9-argument `H1b(...,Sigma)` (V_NN-Sigma), the `Delta_E` bookkeeping of
+the solver (part 2).
+
+## 2026-11-20 — stage 4 part 2, HF-ScRPA solver & action (spec `scrpa.md` sections 1.1, 1.2, 2.3)
+
+Done (deviations in `docs/PORTING_NOTES.md`, section "stage 4 part 2"):
+- New `src/rpa/nj_scrpa.f90`: `HF_ScRPA` (RPA.jl:72-141: header, reference check, B2 guard, output tree replaced) and
+  `HF_ScRPA_solver` (RPA_solver.jl:94-418): reference import, frozen `Orb_1p1h` / `Orb_ph`, initial RPA, outer loop
+  (TBCF: `RPA_sigma` with ramp `scrpa_beta` + `RPA_sigma_mix`, `HF_ScRPA_OBDM_solve`, Sigma rotated with
+  `C_step = C_HF_NAT_old^T C_HF_NAT`, `RPA_Hamiltonian`, `Tr1b_transformation`, `RPA_allocate` (DEV inside, as dev),
+  `RPA_diagonalize`, E_QBA criterion in 2 consecutive iterations with beta = 1 for TBCF), Stability / E_QBA history,
+  `ScRPA_terminate_summary` (non-convergence: only `RPA_summary.dat`), final step (`RPA_sigma` always, `rho_chR2`,
+  `RPA_energy(Density=.true., Sigma_AB = mixed Sigma)`, `RPA_rM`, `ph_rB`, `RPA_export` with `C_LHO_NAT`, `Rho_LHO`,
+  `h_N`; `RPA_Orb` & `sigma.bin` handled by `RPA_export`).
+- `&run` action `HF_ScRPA` in `nj_dispatch_rpa`; `files.mk` (after `nj_tda_rpa_driver`); `print_header`,
+  `print_threads`, `make_output_dirs` of `nj_tda_rpa_driver` public. `&rpa` already had all dev fields (stage 3).
+- Decision 6: `ScH = false` skips `V2b_read` / `V3b_no2b_read` (Orb_NN from the `H2b.bin` import; identical table).
+- Legacy `HF_RRPA` / `&rrpa` / `nj_hf_rrpa*` unchanged and reachable (`! LEGACY` markers).
+- Harness: new case `scrpa_options` (`julia/scrpa_options.jl`, `fortran/scrpa_options/01..12`, Julia reference in
+  `work/julia_t8/scrpa_options`): ScH = false (non-converging, summary only), ScH = false + TBCF with TBCF_alpha 0.5 /
+  TBCF_beta 3, TBCF_alpha 1 + TBCF_beta 2 + OBDM_alpha 0.8 + RPA_Orb + Exact, TBCF + DEV, Imax = 3 non-convergence
+  summary with TBCF, RPA externals on a ScRPA folder, HF-MBPT reference (16O), fractional open-shell reference (20O
+  ESH = false, Tol_par 0.9 / Tol_hol 0.5). `compare.py` now compares numbers in parentheses (`(relative 0.029)`)
+  numerically; counts of the stage-3 cases unchanged. README sections updated.
+
+Verification (`BUILD=build_s4 EXE=nujuliet_s4`, clean, no warnings; `make debug` clean, `-warn all` no warning in
+`nj_scrpa`; debug binary (`-check all`) runs all of scrpa_options without a runtime error, results equal to 1e-10):
+- bundled 08-10 (He4 HF-ScRPA, -TBCF, -OBDMdiag) vs Julia: iteration histories (outer + inner, 390 lines) identical;
+  28/29/28 files ok except `RPA_X/Y.bin` SIGN (eigenvector columns) and `sigma.bin` SIGN; gauge_check (C.bin column
+  signs of the HF proton orbitals propagate to NAT): sigma <= 4.3e-15, rho <= 1.8e-14. Whole bundled case: 0 DIFF.
+- ca40_5sh 03 (Ca40 HF-ScRPA) vs Julia: histories identical (227 lines), 26 ok + RPA_X/Y SIGN, rho gauge 3.8e-14.
+- scrpa_options vs Julia (12 folders): 0 DIFF; SIGN only `RPA_X/Y.bin`, `sigma.bin`, `H1b.bin` (RPA_Orb), one 1-
+  analysis table (eigenvector sign); gauge_check sigma <= 1.1e-14, rho <= 1.3e-14, H1b 6.7e-15. Histories identical
+  except 4 last-digit lines (1e-9 MeV) late in the chaotic non-converged ScH = false run (100 iterations); its summary
+  agrees to 1e-10.
+- Threads: 1 vs 8 equal at 1e-12 (`--strict-sign`) for bundled He4 ScRPA and all of scrpa_options (1e-11 incl. the
+  chaotic run); ca40_5sh HF-ScRPA: `RPA_X.bin` 3.2e-12 with 19/320 eigenvector columns of opposite sign (MKL `dgeevx`
+  phase with different thread counts, stage-3 `RPA_diagonalize`; oY4/sigma are bilinear in the columns), all other
+  files at 1e-12.
+- Legacy: `runs/test_Ca40_9sh/stage4_legacy` (Ca40.nml: HF -> HF_LEGACY, HF_RPA, HF_RRPA, 16 threads, 2:59) byte-identical
+  to `stage2_mbpt_legacy/io` (`diff -rq`).
+- Timing (8 threads, HF_ScRPA step incl. reads): ca40_5sh Fortran 0.82 s vs Julia 33.8 s (1 thread 2.7 s); He4 bundled
+  0.31-0.53 s vs 1.3-8.3 s; scrpa_options steps 0.09-0.86 s vs 1.5-16.8 s. 40Ca 9 shells (`runs/test_Ca40_9sh/
+  stage4_scrpa`, default RPA parameters on the stage-3 dev HF, 16 threads): converged in 26 outer / 325 inner
+  iterations (no cycled or diverging inner loop), 18.6 s total incl. the bare NN/NNN reads, peak RSS 0.9 GB; per
+  outer iteration RPA_Hamiltonian 0.42 s, RPA_diagonalize 0.09 s, OBDM solve 0.03 s. The legacy HF_RRPA needed 166 s
+  for the same nucleus. 208Pb 13 shells not run (the node is busy with the 64-thread production run): an outer
+  iteration there costs one H1b+H2b build (as one dev-HF iteration) + at most 150 x ~0.15 s inner OBDM iterations
+  (part 1 synthetic timing) + the RPA diagonalization.
+
+Open items:
+- 208Pb 13-shell HF_ScRPA production run (needs the dev HF reference `io/<Path>/HF`; the v2 run uses the legacy
+  HF_LEGACY output layout).
+- Cleanup stage: remove `HF_RRPA`, `&rrpa`, `nj_hf_rrpa*`, `rrpa_params_t`, `obdm_iteration_pairs_t`, the
+  `HF_RRPA_transition_*` actions (spec 2.3, decision 2).
+- Not ported (dead in dev): `RPA_OBDM_sigma`, 9-argument `H1b(...,Sigma)`, `Delta_E` bookkeeping of the solver.
+- Kept on purpose: B3 (particle/hole test inconsistency), dev's `X^T W X^*` in oY4 (UPSTREAM_BUGS).
+
+## 2026-11-20 — stage 4, independent verification (HF-ScRPA)
+
+- Clean build (`build_s4`, `nujuliet_s4`, `build/`, `./nujuliet` removed; plain `make`, 105 s): no errors, no warnings.
+- All cases, 8 threads, vs `work/julia_t8` (compare.py 1e-8), full io trees, **0 MISSING / 0 EXTRA everywhere**
+  (directory listings also equal apart from the harness `parse/` dir and the stage-3 `.TDA_output` markers):
+  bundled 411 ok + 36 SIGN; ca40_5sh 92 ok + 8 SIGN; o16_open 106 ok + 7 SIGN; hf_options 14 ok; mbpt_options 23 ok +
+  6 SIGN; rpa_options 308 ok + 29 SIGN; qp_options 150 ok + 14 SIGN + 3 DIFF (the known ill-conditioned O20_HBCS HFB:
+  summary dZ 4.5e-5 vs 5.5e-5, qpH2b 1.3e-8, pnQTDA_X 5.0e-8, as in stage 3); scrpa_options 197 ok + 22 SIGN.
+- SIGN files of the ScRPA folders: `RPA_X/Y.bin` with a row (NAT orbital pair) + column (eigenvector) sign fit per
+  block <= 2.5e-14 (He4), 1.6e-11 (Ca40 HF-ScRPA), 8.4e-13 (O16 ScRPA-MBPT), 9.5e-13 (O20 ScRPA-frac); `sigma.bin` /
+  `rho.bin` / `H1b.bin` (RPA_Orb) with gauge_check.py (C.bin column signs, proton NAT columns 1,2,4,5,7 flipped in He4)
+  <= 9.9e-15 / 1.8e-14 / 6.7e-15; one `levels/` analysis table (eigenvector sign). Non-ScRPA SIGN files as in stage 3.
+- Iteration histories (outer `HF-ScRPA iteration` + inner `OBDM iteration` lines): ca40_5sh 258 and bundled 435 lines
+  identical to Julia; scrpa_options 3776 lines, 4 differ in the last printed digit (iterations 62-91 of the chaotic
+  non-converging `ScRPA-noScH` run).
+- bundled Fortran -t 1 vs Julia -t 1: 428 ok + 19 SIGN, 0 DIFF. Fortran 1 vs 8 threads (`--strict-sign`, 1e-12): all
+  cases identical except ca40_5sh HF-ScRPA `RPA_X.bin` 3.2e-12 (19/320 eigenvector columns with opposite sign, dgeevx)
+  and the known rpa_options RPA-DEV-frac `RPA_E`/`rho` 1.5e-12. Two 8-thread runs are not bitwise equal: besides the
+  known HF-MBPT `H1b.bin` (stage 2) the TBCF ScRPA folders (He4 HF-ScRPA-TBCF, ScRPA-DEV) differ at <= 7e-14, because
+  the V3N.Sigma part of the core `H1b_H2b` (`nj_hamiltonian`, stage 1) sums into `ph, nh` with `reduction(+)` and
+  `schedule(dynamic,4)` (not new stage-4 code; within the 1e-12 target; open item: fixed-order sum).
+- Legacy: `Ca40.nml` (HF -> HF_LEGACY, HF_RPA, HF_RRPA, 16 threads, 2:43; again with the final binary after the import fix, 2:36) byte-identical to `stage2_mbpt_legacy/io`.
+- Edge cases: `Name == Reference` fatal (`ERROR: &rpa Name must differ from Reference`, exit 1, reference untouched);
+  `Imax = 2` -> only `RPA_summary.dat` (termination summary with history; empty `bin/` etc. subfolders as Julia);
+  missing `Reference` folder -> dev's "No precomputed reference solutions ..." message, return, no output folder,
+  exit 0 (dev behaviour); `Reference` = a folder without `orb.bin` -> `ERROR: orbitals_import: cannot open ...`;
+  `Reference` = an RPA folder (no `H1b.bin`) aborted with an ifx runtime error + traceback -> **fixed**: `O1b_import` /
+  `O2b_import` now stop with `ERROR: ... cannot open <path>` (PORTING_NOTES stage 4 part 2 item 7; outputs unchanged,
+  all cases re-run at 8 threads with the same compare counts).
+- Performance, 40Ca 9 shells (`runs/test_Ca40_9sh/stage4_scrpa/Ca40_scrpa.nml`: HF (BMF) -> HF_ScRPA, default `&rpa`,
+  32 threads, node shared with the 64-thread Pb run): 18.4 s wall in total (HF + export 3.6 s, HF_ScRPA 14.6 s incl.
+  1.5 s for the bare NN/NNN reads), peak RSS 0.92 GB; converged in 26 outer iterations, every inner OBDM loop converged
+  (325 inner iterations, ~12 per outer; no cycling / divergence), E0 -144.8447 MeV. Per outer iteration 0.43-0.71 s:
+  `RPA_Hamiltonian` 0.34 s (H1b + H2b with V3N on the NAT OBDM + O2b_transformation), `RPA_diagonalize` 0.12 s, OBDM
+  solve 0.03-0.06 s, `RPA_allocate` 0.005 s. Legacy HF_RRPA: 154 s (52 iterations, 3 s each, stalled at eta 2e-6 with a
+  cycled degenerate solution) -> ~10x faster in total. Thread scaling of the HF_ScRPA step: 24.7 / 19.0 / 14.9 s with
+  8 / 16 / 32 threads (`RPA_Hamiltonian` 0.70 / 0.47 / 0.34 s; diagonalization flat at ~0.1 s).
+  With `TBCF = .true.`: 22 outer iterations, 46 s, ~2 s per outer: `RPA_allocate` (box diagrams, `ph_allocate_tbcf`)
+  0.7-1.2 s, `RPA_Hamiltonian` (H1b_H2b) 0.6 s, RPA_sigma + Sigma rotation ~0.2 s.
+  Profile (perf, 32 threads, non-TBCF): 41 % OpenMP spin-wait (serial sections / imbalance at this small size),
+  H2b V3N loop 14 % + V3b_no2b lookups 7 %, O2b_transformation loops 9 % + o2b_pp/pn/nn/orb_precomp index helpers 10 %,
+  MKL (diagonalization) ~4 %. Dominant routine: `RPA_Hamiltonian` (H2b V3N contraction, then O2b_transformation).
+- 208Pb 13 shells estimate (32 threads; scaling with the legacy Pb/Ca ratios of the same-kind steps in
+  `runs/Pb208_13sh_hw12_v2` (read only): residual-interaction update 32.5 s @64 vs 2.1 s @16 (~60x CPU), RPA
+  diagonalization 21.5 s vs 0.22 s (~100x)): `RPA_Hamiltonian` ~20-25 s, `RPA_diagonalize` ~10-15 s, OBDM solve
+  ~2-3 s (12-20 inner iterations x 0.15 s, synthetic part-1 timing; at most 150 x 0.15 s = 22 s) -> ~35-50 s per outer
+  iteration (legacy at 64 threads: ~1110 s, of which the legacy OBDM 1055 s), i.e. ~15-25 min for ~25 outer
+  iterations. TBCF adds the box diagrams (~1 s here, ~60 s estimated) and RPA_sigma. Hot spots to watch: the V3N loop of
+  `H2b` / `H1b_H2b`, `O2b_transformation` (index helpers dominate over the BLAS part at this size), the block loop of
+  `RPA_diagonalize` not scaling with threads, `ph_allocate_tbcf` for TBCF.
+
+## 2026-11-21 — stage 4, review follow-up (deterministic V3N.Sigma sum)
+
+Review findings: no blocker / major / minor findings. Actionable open item fixed:
+- `H1b_H2b` V3N.Sigma term (`src/core/nj_hamiltonian.f90`, stage-1 code): the OpenMP `reduction(+:ph,nh)` with dynamic
+  scheduling is replaced by a fixed-order sum over 64 interleaved chunks of triples with per-chunk accumulators
+  (PORTING_NOTES stage 4 part 2 item 8). Not re-read line by line against Hamiltonian.jl:1226-1336 in this pass; the
+  formula is unchanged and the outputs agree with Julia as before (below).
+
+Tests (plain `make`, no warnings; 8 threads unless noted):
+- All cases vs `work/julia_t8` (compare.py 1e-8), same counts as the stage-4 verification: bundled 411 ok + 36 SIGN;
+  ca40_5sh 92 + 8; o16_open 106 + 7; hf_options 14; mbpt_options 23 + 6; rpa_options 308 + 29; qp_options 150 + 14 +
+  3 DIFF (known O20_HBCS HFB); scrpa_options 197 + 22. 0 MISSING / EXTRA.
+- Fortran 1 vs 8 threads (`--strict-sign`, 1e-12): bundled 447/447 ok, scrpa_options 219/219 ok.
+- Two 8-thread runs: bundled, scrpa_options, mbpt_options, rpa_options **bitwise identical** (`diff -rq`: 0 files). This
+  also removes the stage-2 run-to-run variation of HF-MBPT `H1b.bin` (it came from this term) and the 7e-14 variation of
+  the TBCF ScRPA folders.
+- New vs previous binary (1e-13, strict): bundled and mbpt_options all ok; scrpa_options `ScRPA-MBPT` `RPA_X.bin`
+  6.2e-13; rpa_options `RPA-DEV-frac` `RPA_E`/`rho` 1.4e-12 / 1.7e-12 (the known sensitive case).
+- Legacy: `runs/test_Ca40_9sh/stage4_final_legacy` (Ca40.nml, 16 threads, 2:17) byte-identical to
+  `stage2_mbpt_legacy/io` (`diff -rq`).
+
+Still open (owner decisions / not run):
+- Missing `Reference` folder: dev's message + return, exit status 0 (kept; make it fatal?).
+- 208Pb 13-shell HF_ScRPA run (needs a dev HF reference; node busy). Timing estimate unchanged (35-50 s per outer
+  iteration at 32 threads without TBCF).
+- Edge cases checked only by reading: RPA 1- with `Ortho = .true.` and N_ph = 1; transition currents with M = 0 for
+  E1/E3; TDA externals with `Reference_TBCF`. Stage-1 `OBDM_natural_orbitals` and the other routines listed by the
+  review as not compared line by line are covered only by the matching test cases.

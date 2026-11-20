@@ -22,7 +22,7 @@ module nj_rpa
     private
 
     public :: rpa_energy_t, RPA_diagonalize, RPA_OBDM_oY2, RPA_energy, RPA_energy_QBA, RPA_energy_dress, RPA_energy_rho
-    public :: RPA_rM, RPA_sigma
+    public :: RPA_rM, RPA_sigma, RPA_sigma_mix, RPA_allocate
 
     ! Julia NamedTuple (E_QBA, E_sigma, E_rho, E_dress, E_dens) ... NaN where not evaluated ...
     type :: rpa_energy_t
@@ -30,6 +30,57 @@ module nj_rpa
     end type rpa_energy_t
 
 contains
+
+    ! RPA matrices A, B & N ... counterpart of RPA_allocate (RPA_allocate.jl:1-185): ph_allocate, for TBCF the Sigma box
+        ! diagrams (RPA_allocate_TBCF) & with RPA.DEV the 1p-1h to 2p-2h self-energy coupling of A (RPA_allocate_SE,
+        ! Mode = "OnShell") ... Rho is unused (as in dev) ... stage 4 (shared by RPA_solver & HF_ScRPA) ...
+    subroutine RPA_allocate(Params,Orb,Orb_1p1h,Orb_NN,h_N,V_NN,Rho,Sigma,TBCF,A,B,N)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), intent(in) :: Orb(:)
+        type(orb2b_1p1h_t), intent(in) :: Orb_1p1h
+        type(orb2b_t), intent(in) :: Orb_NN
+        type(o1b_t), intent(in) :: h_N, Rho
+        type(o2b_t), intent(in) :: V_NN, Sigma
+        logical, intent(in) :: TBCF
+        type(rmat_t), allocatable, intent(out) :: A(:,:), B(:,:), N(:,:)
+
+        write(*,'(/,a)') 'Allocating RPA matrices A, B & N ...'
+        call ph_allocate(Orb,Orb_1p1h,Orb_NN,h_N,V_NN,.true.,A,B,N)
+        if (TBCF) then
+            call ph_allocate_tbcf(Params,Orb,Orb_1p1h,Orb_NN,V_NN,Sigma,.true.,Params%Calc%RPA%DEV,A,B,'RPA')
+            if (Params%Calc%RPA%DEV) call RPA_allocate_SE(Params,Orb,Orb_1p1h,Orb_NN,h_N,V_NN,A)
+        end if
+        write(*,'(/,a)') TAB // 'RPA matrices A, B & N allocated ...'
+    end subroutine RPA_allocate
+
+    ! Linear mixing Sigma = gamma Sigma + (1 - gamma) Sigma_old of every allocated pp, pn & nn block (no-op for
+        ! |1 - gamma| < 1e-12) ... counterpart of RPA_sigma_mix! (RPA_sigma.jl:420-434) ... stage 4 ...
+    subroutine RPA_sigma_mix(Sigma,Sigma_old,gamma)
+        type(o2b_t), intent(inout) :: Sigma
+        type(o2b_t), intent(in) :: Sigma_old
+        real(dp), intent(in) :: gamma
+        real(dp) :: ca, cb
+        integer :: i, k
+
+        if (abs(1.0_dp - gamma) < 1.0e-12_dp) return
+        ca = gamma
+        cb = 1.0_dp - gamma
+        do k = lbound(Sigma%pp,2), ubound(Sigma%pp,2)
+            do i = lbound(Sigma%pp,1), ubound(Sigma%pp,1)
+                if (allocated(Sigma%pp(i,k)%v)) Sigma%pp(i,k)%v = ca * Sigma%pp(i,k)%v + cb * Sigma_old%pp(i,k)%v
+            end do
+        end do
+        do k = lbound(Sigma%pn,2), ubound(Sigma%pn,2)
+            do i = lbound(Sigma%pn,1), ubound(Sigma%pn,1)
+                if (allocated(Sigma%pn(i,k)%v)) Sigma%pn(i,k)%v = ca * Sigma%pn(i,k)%v + cb * Sigma_old%pn(i,k)%v
+            end do
+        end do
+        do k = lbound(Sigma%nn,2), ubound(Sigma%nn,2)
+            do i = lbound(Sigma%nn,1), ubound(Sigma%nn,1)
+                if (allocated(Sigma%nn(i,k)%v)) Sigma%nn(i,k)%v = ca * Sigma%nn(i,k)%v + cb * Sigma_old%nn(i,k)%v
+            end do
+        end do
+    end subroutine RPA_sigma_mix
 
     ! RPA eigenvalue problem per channel in the product form H = H_p H_m with the metric N ... counterpart of RPA_diagonalize
         ! (RPA_diagonalize.jl) ... the orthogonalized 1- channel solves the physical states in the complement of Spur & the

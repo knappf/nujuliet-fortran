@@ -95,3 +95,13 @@ patched reference `port-ref`) and only reports here. Clear bugs are fixed instea
   is unused. The OnShell evaluation builds a full `Sigma(w_i)` per 1p-1h row (N_ph^3 N_bin work, N_ph^2 N_bin memory
   per channel) where the needed entries follow from one product per block of configurations (see PORTING_NOTES).
   With `TBCF = true` the self-energy is computed twice (A and the dressing energy), with identical results.
+
+## Stage 4 (HF-ScRPA building blocks)
+
+* `RPA_OBDM_oY4` (`RPA_rho.jl:356`): `M = -0.5 * transpose(X) * (W .* conj(X))` is `-1/2 X^T W X^*`, not the
+  Hermitian `X^+ W X`. For real amplitudes both agree; for complex amplitudes (unstable RPA blocks) the result depends
+  on the arbitrary phase of each eigenvector: with `X -> X D`, `Y -> Y D` (D diagonal phases) `G` changes by
+  `Y (D^2 M D^*2 - M) Y^+`. Verified with the port (generic phases change the OBDM at the 1e-3..1e-2 level on 4He;
+  phases with `D^2 = -1` leave it invariant). Ported as is (bit parity with dev); the Fortran and Julia complex
+  eigenvectors come from the same LAPACK `geev` convention, but parity in unstable cases relies on that.
+* Spec B1..B9 of `scrpa.md` section 7 stand; B1 is fixed by F2 (stage 3), B2 is a fatal in the input reader.

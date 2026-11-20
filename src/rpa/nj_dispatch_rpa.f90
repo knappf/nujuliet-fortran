@@ -1,10 +1,11 @@
-! Dispatcher of the &run actions handled by chain A ... dev TDA & RPA, the LEGACY HF-RPA & HF-RRPA actions ...
+! Dispatcher of the &run actions handled by chain A ... dev TDA, RPA & HF_ScRPA, the LEGACY HF-RPA & HF-RRPA actions ...
 module nj_dispatch_rpa
     use nj_input, only : run_input_t
     use nj_tda_rpa_driver, only : TDA, RPA
+    use nj_scrpa, only : HF_ScRPA
     use nj_ph_external
     use nj_hf_rpa_driver, only : HF_RPA                ! LEGACY (removed in cleanup stage)
-    use nj_hf_rrpa_driver, only : HF_RRPA
+    use nj_hf_rrpa_driver, only : HF_RRPA              ! LEGACY (removed in cleanup stage)
     use nj_hf_rpa_external, only : phonon_transition_densities, phonon_transition_currents
     implicit none
     private
@@ -20,6 +21,8 @@ contains
             call TDA(Inp%Params)
         case ('RPA')
             call RPA(Inp%Params)
+        case ('HF_ScRPA')
+            call HF_ScRPA(Inp%Params)
         ! External / post-processing actions of stored TDA & RPA solutions (TDA_external.jl, RPA_external.jl) ...
         case ('TDA_transition_densities')
             call TDA_transition_densities(Inp%Params,Inp%Densities%JP,Inp%Densities%nu_list(1:Inp%Densities%N_nu), &

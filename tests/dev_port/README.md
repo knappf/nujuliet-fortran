@@ -36,6 +36,7 @@ tests/dev_port/
 | `mbpt_options` | bundled | HF-MBPT export branches of no other case, HF + MBPT only: `io/O28_TBCF` 28O (N = 20, N != Z, fix F1) `Export`, `TBCF`, `ScH = false`; `io/O16_ScH` 16O `Export`, `ScH`, `TBCF = false` |
 | `rpa_options` | bundled | TDA/RPA options (stage 3): `io/O16` 16O HF → TDA, RPA `Ortho = false` (`TDA-noOrtho`, `RPA-noOrtho`), RPA `TBCF`, `RPA_Orb`, `Transitions = 'Exact'` (`RPA-TBCF`: RPA_sigma with fix F2, density energy, natural-orbital export); `io/O16_MBPT` HF + MBPT(Export, TBCF, ScH) → RPA `Reference = 'HF-MBPT'`, `Reference_TBCF`, `TBCF`, `'Exact'` (`RPA-dress`: Sigma_AB dressing energy), RPA `Reference_TBCF`, `DEV = true` (`RPA-DEV-TBCF`: RPA_allocate_SE, stage 3 part 2); part 2 additions: externals on `TDA-noOrtho`/`RPA-noOrtho` (2- analysis `Cut = 0.05`, 2+ densities `File_Name = 'D2'`, 0+/3- operator densities, 2+ currents `M = 1` on 20 x 30, both `*_transitions_recalculate`), `RPA-Exact` + 1- densities/analysis/currents/recalculation, `io/O16_MBPT` `RPA-DEV-dress` (`Reference_TBCF`, `TBCF`, `DEV`, `'Exact'`: SE in A and in the dressing energy) + all RPA externals, `TDA-MBPT` + operator densities/analysis/recalculation, `RPA-DEV-frac` (`DEV`, `Tol_par = 0.9`, `Tol_hol = 0.02`: overlapping particle/hole sets) |
 | `qp_options` | bundled | quasiparticle-chain options (stage 3): `io/Ne22_HFB` 22Ne HFB (open p & n shells) → QTDA `Ortho = false` → pnQTDA (QRPA stops in both codes: complex eigenvectors); `io/O20_LN` 20O HFB `LNT`, `LNRes` → QRPA; `io/O20_MCA` HFB `Pairing = 'MCA'` → QTDA; `io/O20_HBCS` HFB `Pairing = 'BCS'` → pnQTDA; `io/O20_ScBCS` BCS `ScBCS`, `A0 = 16`, `Z0 = 8` → QTDA, pnQTDA, QRPA `Ortho = false` (`Reference = 'BCS'`) |
+| `scrpa_options` | bundled | HF-ScRPA options (stage 4): `io/He4` (sample tolerances of `bundled`) `ScH = false` (`ScRPA-noScH`: oscillates, non-convergence summary after Imax = 100), `ScH = false` + `TBCF`, `TBCF_alpha = 0.5`, `TBCF_beta = 3` (`ScRPA-noScH-TBCF`), `TBCF`, `TBCF_alpha = 1`, `TBCF_beta = 2`, `OBDM_alpha = 0.8`, `RPA_Orb`, `'Exact'` (`ScRPA-ramp`), `TBCF`, `DEV` (`ScRPA-DEV`), `TBCF`, `Imax = 3` (`ScRPA-noconv`: termination summary), `HF-ScRPA` + RPA externals on the ScRPA folder (1- densities, 2+ operator densities, 1- analysis `Cut = 0.05`, 1- currents `M = 0`, recalculation); `io/O16_MBPT` HF + MBPT(Export, TBCF, ScH) → HF_ScRPA `Reference = 'HF-MBPT'` (default tolerances, `ScRPA-MBPT`); `io/O20` HF `ESH = false` → HF_ScRPA `Tol_par = 0.9`, `Tol_hol = 0.5`, `Imax = 30` (`ScRPA-frac`) |
 
 The parameters of every step are in the driver scripts; the Fortran namelist inputs must reproduce them
 (`Path` and `Name` give the output directories).
@@ -50,6 +51,7 @@ cd tests/dev_port
 ./run_julia.sh o16_open 8
 ./run_julia.sh hf_options 8   # HF V_HF / ESH (stage 2)
 ./run_julia.sh mbpt_options 8 # HF-MBPT export branches (stage 2)
+./run_julia.sh scrpa_options 8 # HF-ScRPA options (stage 4)
 ```
 
 `run_julia.sh <case> [NTHREADS=8]` (max 32) wipes `work/julia_t<N>/<case>/`, creates `io/` there (dev writes
@@ -69,6 +71,7 @@ Reference wall times (elwe10, AMD EPYC 7532), 2026-11-20:
 | bundled | 1 | 4:50 | 168 s | 1.1 GB |
 | ca40_5sh | 8 | 2:55 | 101 s (HF+MBPT 58 s, HF_ScRPA 34 s) | 2.1 GB |
 | o16_open | 8 | 1:25 | 21 s | 1.8 GB |
+| scrpa_options | 8 | 2:48 | 96 s (HF_ScRPA steps 1.5-17 s) | 1.4 GB |
 
 ## Fortran
 
@@ -100,7 +103,8 @@ Status per file: `ok`, `SIGN` (equal only in absolute value), `DIFF`, `SIZE`, `M
 
 * `*.bin`: little-endian Float64 (ComplexF64 = re/im pairs); `orb.bin` = 4 Int64 (exact) + 2 Float64;
   `*_parsed.bin` = Float32. Tolerance: `|a-b| <= tol*max(1,|a|,|b|)`.
-* `*.dat`: token-wise; numeric tokens with tol plus one unit of the last printed digit, text exactly.
+* `*.dat`: token-wise; numeric tokens with tol plus one unit of the last printed digit, text exactly (a number in
+  parentheses, e.g. `(relative 0.029)` of the ScRPA termination summary, is split off and compared as a number).
 * Gauge freedom handled: per-column eigenvector signs of `C.bin`, `U.bin`+`V.bin` (joint), `TDA_X`,
   `RPA_X`+`RPA_Y` (joint), `QTDA_X`, `QRPA_X`+`QRPA_Y` (joint), `pnQTDA_X` (block sizes from
   `<Name>/spectra/<Solver>.dat`, validated against `*_E.bin`); lower triangle only of the pn blocks of `H2b.bin`
@@ -113,3 +117,21 @@ Status per file: `ok`, `SIGN` (equal only in absolute value), `DIFF`, `SIZE`, `M
 Self-check: Julia `-t 1` vs `-t 8` on `bundled` (different OpenBLAS thread counts) gives 409 ok, 38 SIGN,
 0 DIFF: no thread race is visible at 1e-8; all differences are eigenvector/orbital sign gauges (|.| agree to
 ≤ 6e-12).
+
+## Stage-4 unit check (HF-ScRPA building blocks)
+
+`unit_s4/run_unit.sh [BUILD=build_s4] [NT=8]`: `unit_s4/scrpa_blocks.jl` (patched reference, called directly, no Julia
+source changes) dumps intermediates of 4He (HF of bundled step 07, ScRPA parameters of step 08) to
+`work/unit_s4/dump/` (Julia rerun only when missing or `REDO_JULIA=1`); `unit_s4/scrpa_blocks.f90` is linked against the
+objects of BUILD, reads the Julia initial RPA amplitudes and checks `RPA_OBDM_oY4` (real & complex path),
+`OBDM_natural_orbitals`, `RPA_OBDM_transform_amplitudes`, `HF_ScRPA_OBDM_solve` (default, OBDM_diagonal, alpha = 1),
+`RPA_sigma`, `RPA_sigma_mix`, `RPA_Hamiltonian` (ScH, ScH+TBCF, HF reference) and the energies after one ScRPA step.
+Prints `CHECK <item> <max abs deviation>` and `UNIT_S4 worst deviation`.
+
+## Stage-4 HF-ScRPA checks
+
+Iteration histories (outer `HF-ScRPA iteration` lines, inner `OBDM iteration` lines, exits) are compared by
+`diff` of the `grep -E 'OBDM iteration:|HF-ScRPA iteration|iteration stopped|has not converged - using|NOT converged|finished after|unstable'`
+lines of `run.log` of both codes. SIGN files of the ScRPA folders: `RPA_X/Y.bin` (eigenvector columns) and
+`sigma.bin` / `H1b.bin` (NAT basis = HF basis x C_HF_NAT, so the HF proton-column signs propagate):
+`python3 -I gauge_check.py <julia>/<Name>/bin <fortran>/<Name>/bin NMAX N2MAX sigma.bin rho.bin`.
