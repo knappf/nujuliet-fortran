@@ -54,10 +54,16 @@ SRC_CORE = src/core/nj_kinds.f90 \
            src/core/nj_obdm.f90 \
            src/core/nj_tr1b.f90
 
+# dev HF (nj_hf, nj_hf_mbpt, nj_hf_driver) & the LEGACY base-version HF chain (action HF_LEGACY; removed in cleanup stage) ...
 SRC_HF = src/hf/nj_hf.f90 \
+         src/hf/nj_hf_mbpt_common.f90 \
+         src/hf/nj_hf_mbpt_tbcf.f90 \
          src/hf/nj_hf_mbpt.f90 \
+         src/hf/nj_hf_driver.f90 \
+         src/hf/nj_hf_legacy.f90 \
+         src/hf/nj_hf_mbpt_legacy.f90 \
          src/hf/nj_hf_efa.f90 \
-         src/hf/nj_hf_driver.f90
+         src/hf/nj_hf_legacy_driver.f90
 
 SRC_NCSM = src/ncsm/nj_ncsm.f90
 

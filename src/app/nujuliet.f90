@@ -5,6 +5,7 @@ program nujuliet
     use nj_utils
     use nj_input
     use nj_hf_driver, only : HF
+    use nj_hf_legacy_driver, only : HF_LEGACY      ! LEGACY (removed in cleanup stage)
     use nj_dispatch_rpa, only : dispatch_rpa
     use nj_dispatch_qp, only : dispatch_qp
     use nj_dispatch_empm, only : dispatch_empm
@@ -15,7 +16,7 @@ program nujuliet
     type(run_input_t) :: Run
     character(len=1024) :: Arg
     integer :: i_arg, k
-    logical :: Handled
+    logical :: Handled, Legacy_HF
 
     if (command_argument_count() < 1) then
         write(*,'(a)') 'Usage: nujuliet input1.nml [input2.nml ...]'
@@ -26,10 +27,23 @@ program nujuliet
         call get_command_argument(i_arg, Arg)
         call read_input(trim(Arg), Run)
         write(*,'(/,a)') '=== NuJuliet input file: ' // trim(Arg) // ' ... output folder io/' // trim(Run%Params%Calc%Path)
+        ! LEGACY (removed in cleanup stage) ... the not-yet-ported solvers read the base-version HF output io/<Path>/Bin/*,
+        ! so 'HF' runs the legacy HF when one of them follows in the same &run ...
+        Legacy_HF = .false.
+        do k = 1, Run%N_Actions
+            if (legacy_hf_consumer(trim(Run%Actions(k)))) Legacy_HF = .true.
+        end do
         do k = 1, Run%N_Actions
             select case (trim(Run%Actions(k)))
             case ('HF')
-                call HF(Run%Params)
+                if (Legacy_HF) then
+                    write(*,'(/,a)') "NOTICE: &run contains a legacy solver that reads io/<Path>/Bin/* ... 'HF' runs HF_LEGACY ..."
+                    call HF_LEGACY(Run%Params)
+                else
+                    call HF(Run%Params)
+                end if
+            case ('HF_LEGACY')       ! LEGACY (removed in cleanup stage)
+                call HF_LEGACY(Run%Params)
             case ('NCSM')
                 call NCSM(Run%Params)
             ! Interaction parse utilities (&parse) ... 'PARSE' = V2b_parse & V3b_no2b_parse (the latter only with an NNN_File) ...
@@ -50,6 +64,13 @@ program nujuliet
     end do
 
 contains
+
+    ! LEGACY (removed in cleanup stage) ... solvers that read the base-version HF output (io/<Path>/Bin/*) ...
+    logical function legacy_hf_consumer(Action)
+        character(len=*), intent(in) :: Action
+        legacy_hf_consumer = (index(Action,'HF_RPA') == 1 .or. index(Action,'HF_RRPA') == 1 .or. &
+                              index(Action,'EMPM') == 1 .or. Action == 'NCSM')
+    end function legacy_hf_consumer
 
     subroutine parse_nn()
         if (min(Run%Parse%N_max_Out,Run%Parse%N_2max_Out) < 0) &

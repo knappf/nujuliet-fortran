@@ -1,0 +1,18 @@
+! dev-port test case 'hf_options' (tests/dev_port/julia/hf_options.jl): 18O HF with ESH = .true., V_HF = .true., CMS 'None' (BMF = .false.)
+! Run the files of this directory in order from one work directory (see ../../run_fortran.sh)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 18, Z = 8, hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+  CMS = 'None'
+  Path = 'O18_ESH'
+/
+&hf
+  ESH = .true., V_HF = .true., BMF = .false.
+/
+&run
+  Solvers = 'HF'
+/

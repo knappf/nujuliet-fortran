@@ -1,4 +1,4 @@
-! dev-port test case 'bundled' (tests/dev_port/julia/bundled.jl): 4He HF_ScRPA with TBCF = .true. (Name HF-ScRPA-TBCF) on the HF of 05
+! dev-port test case 'bundled' (tests/dev_port/julia/bundled.jl): 4He HF_ScRPA (sample-script parameters, Name HF-ScRPA) on the HF of 07
 ! Run the files of this directory in order from one work directory: nujuliet 01_*.nml 02_*.nml ... (see ../../run_fortran.sh)
 &interaction
   NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
@@ -11,8 +11,8 @@
   Path = 'He4'
 /
 &rpa
-  Name = 'HF-ScRPA-TBCF', Reference = 'HF', Reference_TBCF = .false., Ortho = .true., Transitions = 'Linear',
-  TBCF = .true., Tol_hol = 0.3, Tol_par = 0.85, Tol = 1e-5, Imax = 100, OBDM_diagonal = .false., ScH = .true.
+  Name = 'HF-ScRPA', Reference = 'HF', Reference_TBCF = .false., Ortho = .true., Transitions = 'Linear',
+  TBCF = .false., Tol_hol = 0.3, Tol_par = 0.85, Tol = 1e-5, Imax = 100, OBDM_diagonal = .false., ScH = .true.
 /
 &run
   Solvers = 'HF_ScRPA'

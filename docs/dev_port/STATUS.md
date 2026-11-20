@@ -116,3 +116,96 @@ Open items:
   **open-shell** nuclei (e.g. 18O) the legacy HF density misses the fractional shell (wrong particle number), and
   legacy TDA/RPA/RRPA drop that orbital from the particle space. Closed-shell runs are unchanged (40Ca regression).
   Use closed-shell nuclei with the legacy solvers; the dev solvers (stages 2-4) replace them.
+
+## 2026-11-20 — stage 2, HF (spec `hf.md` sections 1-7, 9-12; section 8 HF-MBPT is the next step)
+
+Done:
+- `src/hf/nj_hf.f90` rewritten to dev: `HF_solve` (`Orb` intent(inout), dev messages), `HF_orbitals_make` (= public
+  `HF_orbital_ordering` + dev occupation rule with `ESH`, in-place update of `Orb`), `HF_density_operator(C,Orb)` with
+  real weights, `HF_allocate`/`HF_energy` with the l_max/j_max pruning and the dev J range, `HF_summary` (new name,
+  trailing newline), `HF_SPS_summary` (real O_a), `HF_export` (`HF/bin/{orb,C,rho,H1b}.bin`), new
+  `HF_radial_potential` (`HF.V_HF`, `HF/densities/HF_radial_potential.dat`).
+- `src/hf/nj_hf_driver.f90`: dev `HF`/`HF_solver` (dirs `io/<Path>/HF/{bin,densities}`, Calc-sized `orbitals_make`,
+  `rho_export`, V_HF, BMF: non-mutating residual, `HF/bin/H2b.bin`, MBPT gated by `HF_MBPT_occupation_check`,
+  `HF_MBPT(…,h_N,V_NN_res)`, `HF_MBPT_export(…,V_NN,V_NN_res,…)` with the bare V_NN kept only if `MBPT.Export`).
+- `src/hf/nj_hf_mbpt.f90`: new dev interface; `HF_MBPT_occupation_check` ported; `HF_MBPT` and `HF_MBPT_export` are
+  STUBS (print a NOTICE) for the HF-MBPT engineer (spec section 8). The base MBPT(2) moved unchanged to
+  `nj_hf_mbpt_legacy.f90`.
+- LEGACY chain kept (marked "LEGACY (removed in cleanup stage)"): `nj_hf_legacy.f90` (copy of the base nj_hf),
+  `nj_hf_mbpt_legacy.f90`, `nj_hf_efa.f90`, `nj_hf_legacy_driver.f90` (action `HF_LEGACY`); BCS/HFB/HF_RPA export use
+  `nj_hf_legacy`. In `nujuliet.f90`, `HF` runs `HF_LEGACY` (NOTICE) when the same `&run` has `HF_RPA*`, `HF_RRPA*`,
+  `EMPM*` or `NCSM`. `nj_obdm::radial_grid` made public (HF_radial_potential grid). Makefile SRC_HF updated.
+- Spec section 10 items: 1-5, 7-9, 13 were already done in stage 1 (types, io/, params/namelists, orbitals_export/import,
+  rho_export, readers, non-mutating residual); 13 done here (HF_solve/HF_density_operator signatures; the legacy
+  callers keep the legacy versions). 6, 10, 11, 12, 14 belong to HF-MBPT / already exist (OBDM_natural_orbitals,
+  O1b helpers, nj_hamiltonian); 15 (EMPM/NCSM/RRPA reading Bin/*) stays with the legacy HF until stage 5/cleanup.
+- Harness: namelists split into one file per Julia step group (`fortran/<case>/NN_<step>.nml`, HF steps
+  `*_HF.nml`), `run_fortran.sh <case> [NT] [GLOB]`; new case `hf_options` (Julia driver `julia/hf_options.jl` +
+  `fortran/hf_options/`, reference in `work/julia_t8/hf_options`): 16O `V_HF`, 18O `ESH` + `V_HF` + `CMS='None'`.
+
+Verification (tol 1e-8, compare.py on `io/<Path>/HF`):
+- bundled O16, O16_MBPT, He4; o16_open O20 (fractional 4/6 neutron 0d5/2); ca40_5sh Ca40 (16 threads):
+  `orb.bin` exact, `C.bin` <= 8.3e-16 (column signs), `rho.bin` <= 2.2e-15, `H1b.bin` <= 1.5e-14,
+  `HF_radial_densities.dat` exact, `HF_summary.dat` identical (O20 whole file; the others identical up to the
+  missing HF-MBPT block), `H2b.bin` SIGN only: with the sign gauge of `C.bin` applied element-wise
+  (scratch script) <= 2e-14 for all four nuclei. Missing: `HF_MBPT_occupation.dat`, `HF_MBPT_radial_densities.dat`
+  (MBPT stub). Iteration counts identical.
+- hf_options (new Julia reference): all 14 files ok, `HF_radial_potential.dat` max err 0 (8 of 263169 rows differ
+  in the last printed digit at rounding ties). 20O with `ESH = true` stops with the same "closed-subshell" error in
+  both codes (UPSTREAM_BUGS).
+- Debug build (`-check all`): HF steps of all four cases run without runtime errors.
+- Legacy regression `runs/test_Ca40_9sh/stage2_hf` (`HF_LEGACY`, `HF_RPA`, `HF_RRPA`, 16 threads, 2:19 wall) and
+  `stage2_hf_auto` (original input with `HF`, auto-routed): both trees byte-identical to `common_b/io` (`diff -rq`).
+- Legacy BCS -> QTDA -> QRPA and HFB -> QTDA (bundled 18O) still run (pnQTDA is stage 3).
+
+Open items:
+- HF-MBPT (spec section 8) replaces the stubs in `nj_hf_mbpt.f90`: `HF_MBPT`, `HF_MBPT_export` (signatures fixed by the
+  driver), plus TBCF with F1. With `BMF = true` the dev HF currently writes `H2b.bin` and skips MBPT with a NOTICE.
+- Cleanup stage: delete `nj_hf_legacy*`, `nj_hf_mbpt_legacy`, `nj_hf_efa`, the `HF_LEGACY` action/auto-routing.
+- README.md / CLAUDE.md still describe the old HF layout (`IO/<Path>/Bin`), to be updated in the cleanup stage.
+
+Not ported (dead in dev): the commented-out old loop in `HF_energy.jl`; `HF.HRF` is read but unused (as in dev).
+
+## 2026-11-20 — stage 2, HF-MBPT (spec `hf.md` section 8; dev `src/HF/HF_MBPT.jl`)
+
+Done:
+- `src/hf/nj_hf_mbpt.f90` rewritten (stubs replaced): `HF_MBPT`, `HF_MBPT_energy` (MBPT(2) + MBPT(3) pp/ph/hh sectors,
+  stdout lines and the dev summary block in `HF/HF_summary.dat`), `HF_MBPT_OBDM` (base dRho loops, dev tail:
+  `HF/bin/{C,rho}.bin` read back, `OBDM_natural_orbitals`, `rho_export` to `HF/densities/HF_MBPT_radial_densities.dat`,
+  `HF_MBPT_occupation` to `HF/densities/HF_MBPT_occupation.dat`, Export: `HF/bin/{orb,C,rho}_temp.bin`),
+  `HF_MBPT_occupation_check`, `HF_MBPT_export` (all four `TBCF`/`ScH` branches, `io/<Path>/HF-MBPT/bin/{orb,C,H1b,rho,
+  H2b[,sigma]}.bin`, temp files removed).
+- New `src/hf/nj_hf_mbpt_common.f90` (`HF_MBPT_orbitals_make`, `HF_MBPT_h1b`, `HF_MBPT3_V2b_Pandya`, particle/hole lists)
+  and `src/hf/nj_hf_mbpt_tbcf.f90` (`HF_MBPT_TBCF` with **F1**: nn channel classified with `nO`). Makefile SRC_HF.
+- `nj_utils::remove_file` (spec 10.14). The HF driver needed no change (signatures fixed by the HF step).
+- OpenMP: MBPT energy sectors parallel over the flattened (p,q) pair list with `reduction(+)`; OBDM loops reduce into
+  private dRho copies; TBCF parallel over Bra per (J,P,T), each element written by one task (no race).
+- Harness: new case `mbpt_options` (`julia/mbpt_options.jl`, `fortran/mbpt_options/0{1,2}_*_HF.nml`, reference
+  `work/julia_t8/mbpt_options`): 28O (N != Z, fix F1) `Export, TBCF, ScH = false`; 16O `Export, ScH, TBCF = false`.
+  New tool `tests/dev_port/gauge_check.py` (element-wise comparison of rotated-basis O1b/O2b files with the column-sign
+  gauge of `C.bin`). The existing `*_HF.nml` of bundled/ca40_5sh/o16_open already carried the `&hf_mbpt` settings.
+
+Verification (compare.py tol 1e-8 on `io/<Path>/HF` and `io/<Path>/HF-MBPT`; SIGN files re-checked with gauge_check.py):
+- bundled O16, He4 (MBPT, no export): all 9 HF files ok (`HF_summary.dat` incl. the MBPT block & MBPT radii exact,
+  `HF_MBPT_occupation.dat`, `HF_MBPT_radial_densities.dat` exact); `H2b.bin` SIGN (HF-basis, as before).
+- bundled O16_MBPT (Export, TBCF, ScH): HF 9/9; HF-MBPT `orb.bin` 4.4e-16, `C.bin` 3.3e-16 (3 columns flipped),
+  `rho.bin` 8.9e-16, gauge: `H1b.bin` 1.1e-14, `H2b.bin` 2.8e-15, `sigma.bin` 6.7e-16.
+- ca40_5sh Ca40 (Export, ScH = false): HF 9/9 (MBPT E^(2) = -55.4908088, E^(tot) = -60.7876419 as Julia); HF-MBPT
+  `orb.bin` 2.4e-15, `C.bin` 6.2e-15, `rho.bin` 5.2e-15, gauge: `H1b.bin` 2.3e-13, `H2b.bin` 3.4e-14.
+- mbpt_options O28_TBCF: HF 9/9; HF-MBPT gauge `H1b.bin` 1.3e-13, `H2b.bin` 4.3e-14, `sigma.bin` 8.8e-16 (F1 active:
+  protons 0s0p, neutrons up to 0d3/2). O16_ScH: HF 9/9; gauge `H1b.bin` 1.1e-14, `H2b.bin` 2.8e-15.
+- o16_open O20 (fractional 0d5/2): MBPT skipped by the occupation check in both codes; HF 7/7 as before.
+- Races: bundled HF steps with 1 vs 8 threads: every file identical to 1e-13 with `--strict-sign`.
+- Debug build (`-check all -warn all`): bundled O16_MBPT and mbpt_options run without runtime errors or new warnings.
+- Scaling: 40Ca 9 shells (DN2LOGO394, `runs/test_Ca40_9sh/stage2_mbpt`, Export+TBCF+ScH, 16 threads): whole HF run 7.0 s,
+  MBPT energy 0.49 s (ph sector 0.30 s), OBDM 0.70 s, export 2.3 s; E^(2) = -146.50856125 = legacy MBPT(2) value.
+- Timing ca40_5sh (8 threads, HF+MBPT export step): Fortran 0.93 s wall (MBPT energy 0.017 s, OBDM + radii 0.31 s, export
+  0.019 s) vs Julia 58.5 s (incl. JIT and the NN/NNN reads; MBPT energy 2.2 s, OBDM 5.3 s, export 2.2 s).
+- Legacy chain: `runs/test_Ca40_9sh/stage2_mbpt_legacy` (original input `HF`+`HF_RPA`+`HF_RRPA`, auto-routed to
+  `HF_LEGACY`, 16 threads, 2:20 wall): `diff -rq` against `stage2_hf/io` byte-identical.
+
+Open items:
+- Later stages: TDA/RPA with `Reference = 'HF-MBPT'` (+ `Reference_TBCF`) consume `HF-MBPT/bin/*`.
+- The temp-file hand-over (`HF/bin/*_temp.bin`) is kept as in dev; an in-memory hand-over is possible (no output change).
+
+Not ported (dead in dev): `Orb1B_HF_MBPT3` (unused struct), the unreachable `return 0.0` of `HF_MBPT_h1b`.

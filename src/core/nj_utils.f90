@@ -7,7 +7,7 @@ module nj_utils
     public :: kronecker_delta, phase, iphase, parity_of, triangle, hat_of
     public :: jstr, istr, round_sig, round_digits, round_even, cfmt_f, cfmt_e, cfmt_d, cfmt_s
     public :: sortperm, sortperm_rev
-    public :: make_dir, remove_dir, is_dir
+    public :: make_dir, remove_dir, remove_file, is_dir
     public :: timer_start, timer_report
     public :: fatal
     public :: abspath_of, presize_file
@@ -411,6 +411,17 @@ contains
         call execute_command_line('mkdir -p "' // trim(Path) // '"', exitstat=Stat)
         if (Stat /= 0) call fatal('Cannot create directory ' // trim(Path))
     end subroutine make_dir
+
+    ! Deletes a file if it exists (Julia rm(path)) ...
+    subroutine remove_file(Path)
+        character(len=*), intent(in) :: Path
+        integer :: u, Ios
+        logical :: Exists
+        inquire(file=trim(Path), exist=Exists)
+        if (.not. Exists) return
+        open(newunit=u, file=trim(Path), status='old', iostat=Ios)
+        if (Ios == 0) close(u, status='delete')
+    end subroutine remove_file
 
     subroutine remove_dir(Path)
         character(len=*), intent(in) :: Path

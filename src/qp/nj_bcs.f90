@@ -12,7 +12,7 @@ module nj_bcs
     use nj_v2b, only : V2b_read, V2b_residual_no2b
     use nj_v3b, only : V3b_no2b_read, V3b_no2b
     use nj_obdm, only : OBDM_export
-    use nj_hf, only : HF_solve, HF_energy, HF_orbital_ordering
+    use nj_hf_legacy, only : HF_solve, HF_energy, HF_orbital_ordering   ! LEGACY (removed in cleanup stage)
     use nj_hf_driver, only : print_run_header
     use nj_qpo2b
     use nj_qp_common, only : pairing_energy

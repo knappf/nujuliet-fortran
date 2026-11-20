@@ -32,6 +32,8 @@ tests/dev_port/
 | `bundled` | dev `io/NN.bin`, `io/NNN.bin` (hw 16, Nmax 3, N2max 6, N3max 9) | mirrors dev `scripts/sample_script_run.jl` + option variants: `io/O16` HF → TDA → RPA (+ transition densities, currents, operator densities, analysis for 1- ν = 5,6,7), RPA `Transitions='Exact'` (`RPA-Exact`), RPA `DEV=true` (`RPA-DEV`); `io/O16_MBPT` HF with MBPT(Export, TBCF, ScH) → TDA/RPA with `Reference='HF-MBPT'`, `Reference_TBCF=true` (`TDA-MBPT`, `RPA-MBPT`); `io/He4` HF → HF_ScRPA (`HF-ScRPA`), + `TBCF=true` (`HF-ScRPA-TBCF`), + `OBDM_diagonal=true` (`HF-ScRPA-OBDMdiag`); `io/O18_BCS` BCS → QTDA → QRPA; `io/O18_HFB` HFB → QTDA → pnQTDA → QRPA; `io/parse` V2b_parse / V3b_no2b_parse to 2/4/6 |
 | `ca40_5sh` | DN2LOGO394 hw 12 (files 16/32/28) | `io/Ca40` 40Ca, Nmax 4, N2max 8, N3max 8: HF + MBPT(Export) → TDA → RPA (+ 1- transition densities ν = 1..3) → HF_ScRPA (`HF-ScRPA`) |
 | `o16_open` | bundled | `io/O20` 20O (0d5/2 neutrons 4/6 filled), HF `ESH=false` → TDA → RPA with default tolerances (0d5/2 dropped from the 1p1h space), `TDA-frac`/`RPA-frac` with `Tol_par=0.9`, `Tol_hol=0.5` (0d5/2 both particle and hole) + 2+ transition densities |
+| `hf_options` | bundled | HF options of no other case, HF only (`BMF = false`): `io/O16_VHF` 16O `V_HF = true` (radial HF potential, CMS1+2B); `io/O18_ESH` 18O `ESH = true` (valence neutrons in 1s1/2), `V_HF = true`, `CMS = "None"` |
+| `mbpt_options` | bundled | HF-MBPT export branches of no other case, HF + MBPT only: `io/O28_TBCF` 28O (N = 20, N != Z, fix F1) `Export`, `TBCF`, `ScH = false`; `io/O16_ScH` 16O `Export`, `ScH`, `TBCF = false` |
 
 The parameters of every step are in the driver scripts; the Fortran namelist inputs must reproduce them
 (`Path` and `Name` give the output directories).
@@ -44,6 +46,8 @@ cd tests/dev_port
 ./run_julia.sh bundled 1      # thread-race check (-t 1)
 ./run_julia.sh ca40_5sh 8
 ./run_julia.sh o16_open 8
+./run_julia.sh hf_options 8   # HF V_HF / ESH (stage 2)
+./run_julia.sh mbpt_options 8 # HF-MBPT export branches (stage 2)
 ```
 
 `run_julia.sh <case> [NTHREADS=8]` (max 32) wipes `work/julia_t<N>/<case>/`, creates `io/` there (dev writes
@@ -64,7 +68,16 @@ Reference wall times (elwe10, AMD EPYC 7532), 2026-11-20:
 | ca40_5sh | 8 | 2:55 | 101 s (HF+MBPT 58 s, HF_ScRPA 34 s) | 2.1 GB |
 | o16_open | 8 | 1:25 | 21 s | 1.8 GB |
 
-## Fortran (namelist inputs written by the solver-porting stages)
+## Fortran
+
+Namelists `fortran/<case>/NN_<step>.nml`, one file per Julia `step` group in run order (`*_HF.nml` = the HF steps;
+the TDA/RPA/... files are run by the later stages). `run_fortran.sh <case> [NTHREADS=8] [GLOB='*.nml']` runs the files
+matching GLOB in order, e.g. `./run_fortran.sh bundled 8 '*_HF.nml'` for the HF steps only (HF + HF-MBPT).
+`H2b.bin` in the HF basis and `H1b.bin`, `H2b.bin`, `sigma.bin` in the HF-MBPT natural-orbital basis are SIGN when an
+HF / natural orbital has the opposite sign (stage-2 check with the column-sign gauge of `C.bin` applied element-wise:
+agreement to <= 2.3e-13; `python3 -I gauge_check.py REF_BIN NEW_BIN NMAX N2MAX` does this check).
+
+### Original plan text (stage 1)
 
 Expected pattern, namelist files with the same `Path`/`Name` values as the Julia driver, run from a work
 directory that contains `io/`: `cd <workdir> && <nujuliet> <case>.nml`. `run_fortran.sh <case> [NTHREADS=8]`

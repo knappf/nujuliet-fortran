@@ -1,4 +1,5 @@
-! Spherical Equal-Filling Approximation HF ... counterpart of HF/HF_EFA.jl ...
+! LEGACY (removed in cleanup stage, HF-EFA is gone in NuJuliet dev) ... Spherical Equal-Filling Approximation HF of the
+    ! legacy HF (HF_LEGACY) ... counterpart of base Source/HF/HF_EFA.jl ...
 module nj_hf_efa
     use nj_kinds
     use nj_types
@@ -9,7 +10,7 @@ module nj_hf_efa
     use nj_o2b, only : O2b_pp, O2b_pn, O2b_nn, O2b_transformation, O2b_move
     use nj_v2b, only : V2b_read, V2b_residual_no2b
     use nj_obdm, only : OBDM_export
-    use nj_hf, only : HF_energy
+    use nj_hf_legacy, only : HF_energy
     implicit none
     private
 

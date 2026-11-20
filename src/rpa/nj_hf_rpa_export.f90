@@ -6,7 +6,7 @@ module nj_hf_rpa_export
     use nj_utils
     use nj_linalg, only : mtmm
     use nj_obdm, only : OBDM_export, OBDM_rN
-    use nj_hf, only : HF_density_operator
+    use nj_hf_legacy, only : HF_density_operator   ! LEGACY (removed in cleanup stage)
     implicit none
     private
 

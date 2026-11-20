@@ -37,8 +37,11 @@ When the Julia code uses both spellings in one scope the renames are:
 ### In-place mutation
 
 Julia functions that write into their arguments (e.g. `O2b_transformation`,
-`HF_orbital_ordering`) are ported with `intent(inout)` so that callers relying on the mutation
-keep working. (`V2b_residual_no2b` is non-mutating in dev and in the port since group common B:
+`HF_orbital_ordering`, dev `HF_orbitals_make`) are ported with `intent(inout)` so that callers relying on the mutation
+keep working. Dev `HF_orbitals_make` ends with `Orb .= Orb_new`: `HF_solve` updates the occupations of the caller's
+`Orb` in place, and everything after it in `HF_solver` (HF energy, kinetic energy, radii, SPS table, `orb.bin`,
+`O1b_export` blocks, HF-MBPT particle/hole split) uses the final HF occupations; the port's `HF_solve` has `Orb`
+`intent(inout)` for this. (`V2b_residual_no2b` is non-mutating in dev and in the port since group common B:
 it returns `V_NN_res`; the legacy solvers move it back into their `V_NN` with `O2b_move`.)
 
 ## Intentional deviations from the original
@@ -87,8 +90,8 @@ it returns `V_NN_res`; the legacy solvers move it back into their `V_NN` with `O
 
 ## Not ported (unreachable from the public entry points)
 
-`HF_MBPT_OBDM_NOB`, `HF_MBPT_TBDM`, `HFB_diagonalize_old`, `HF_Radial_Potential`
-(commented out in the original), `radial_phase_test` (removed in dev), `integrate_quadrature`,
+`HF_MBPT_OBDM_NOB`, `HF_MBPT_TBDM` (base only, removed in dev), `HFB_diagonalize_old`, base `HF_Radial_Potential`
+(commented out in base; replaced by the dev `HF_radial_potential`, which is ported), `radial_phase_test` (removed in dev), `integrate_quadrature`,
 `legendre_polynomial`, `logm`, `lorentzian`, `pretty_summarysize` (dev), `w3j` (dev, no caller),
 `MatrixElements/rME.jl` (dev `src/common/rO.jl`, still not included by the module),
 `Source/Temp/*` (not included by the module, gone in dev).
@@ -279,3 +282,73 @@ files are); Julia and the port keep the value of the last writer.
 Not ported (unreachable in dev): the 9-argument `H1b(...,Rho,Sigma)` with the V_NN-Sigma term
 (`H1b_dense`, also commented out in `H1b_H2b`), `E1b`, `E2b`.
 
+
+## NuJuliet dev port (f3f7a33) ... stage 2, HF (spec `docs/dev_port/hf.md` sections 1-7, 9-12)
+
+Layout: `src/hf/nj_hf.f90` (dev `HF_solve`, `HF_allocate`, `HF_density_operator`, `HF_orbitals_make`, `HF_energy`,
+`HF_summary`, `HF_SPS_summary`, `HF_export`, `HF_radial_potential`), `src/hf/nj_hf_driver.f90` (dev `HF`, `HF_solver`;
+`&run` action `HF`), `src/hf/nj_hf_mbpt*.f90` (dev HF-MBPT, next section). Outputs as in dev:
+`io/<Path>/HF/HF_summary.dat`, `HF/densities/{HF_radial_densities,HF_radial_potential}.dat`,
+`HF/bin/{orb,C,rho,H1b,H2b}.bin`.
+
+LEGACY (removed in the cleanup stage): the base-version HF is kept unchanged as `nj_hf_legacy`,
+`nj_hf_mbpt_legacy`, `nj_hf_efa` and `nj_hf_legacy_driver` (`&run` action `HF_LEGACY`, output `io/<Path>/Bin/*`,
+`HF/HF_Summary.dat`, HF-EFA, HRF export, base MBPT(2)); BCS, HFB and the legacy HF_RPA export use `nj_hf_legacy`.
+Action `HF` runs `HF_LEGACY` (with a NOTICE) when the same `&run` list contains a legacy consumer of
+`io/<Path>/Bin/*` (`HF_RPA*`, `HF_RRPA*`, `EMPM*`, `NCSM`), so existing inputs keep working until those solvers are
+replaced. The legacy chain still sees the stage-1 interim limitation (closed-shell nuclei only).
+
+Deviations:
+1. Kept from base: deviations 3 (O2b_export J range), 4 (SPS counters sized by `max(N2max+1, 2Nmax+1)`), 5
+   (`HF_allocate` parallel over (a,d); dev threads over (b,e) with `:static` accumulators: summation order only).
+2. `HF_orbitals_make`: an HF orbital that cannot be assigned to an LHO (l,j) slot is a `fatal` (Julia leaves
+   `Vector{Int}(undef)` indices). The occupation loop stops with `fatal` when no unfilled slot is eligible
+   (robustness guard; dev falls back to slot 1, which is already filled, and overwrites its occupation, possible only
+   with an invalid A/Z or with ESH when every remaining slot is skipped). The ESH "closed-subshell" `throw` is a
+   `fatal` with the same text (and the same trigger, including the spurious case listed in `UPSTREAM_BUGS.md`).
+3. Driver: the bare `V_NN` is kept for `HF_MBPT_export` only when `HF.MBPT.Export`; otherwise it is freed right
+   after the residual interaction is built (memory; no output change). The dev in-memory hand-over is unchanged
+   otherwise.
+4. `HF_radial_potential`: the data rows are formatted with one internal write per row and C-like left
+   justification (fallback to `cfmt_e` for 3-digit exponents); the text equals Julia's `@printf` except that a
+   value within an ulp of a rounding tie may print a different last digit (8 of 263169 rows for 16O; compare.py
+   accepts one unit of the last digit).
+5. Removed from the dev HF only: HF-EFA (`&hf_efa`, `hf_efa_params_t`, `nj_hf_efa`) and the HRF export stay
+   with the LEGACY HF until the cleanup stage (`HF.HRF` is accepted and ignored by the dev HF, as in dev).
+
+Not ported (dead in dev): the commented-out old `HF_energy` loop of `HF_energy.jl`.
+
+
+## NuJuliet dev port (f3f7a33) ... stage 2, HF-MBPT (spec `docs/dev_port/hf.md` section 8, dev `src/HF/HF_MBPT.jl`)
+
+Layout: `src/hf/nj_hf_mbpt_common.f90` (`HF_MBPT_orbitals_make`, `HF_MBPT_h1b`, `HF_MBPT3_V2b_Pandya`, flat particle/hole
+lists with the `h_N` energies, isospin-labelled lists `ispstate_t` = dev `(Orb1B, t)` tuples), `src/hf/nj_hf_mbpt_tbcf.f90`
+(`HF_MBPT_TBCF`), `src/hf/nj_hf_mbpt.f90` (`HF_MBPT`, `HF_MBPT_energy` MBPT(2)+(3), `HF_MBPT_OBDM`,
+`HF_MBPT_occupation`, `HF_MBPT_occupation_check`, `HF_MBPT_export`). Namelist `&hf_mbpt (Export, TBCF, ScH)`. Files as
+dev (spec section 9): MBPT block of `HF/HF_summary.dat` + MBPT radii, `HF/densities/HF_MBPT_{radial_densities,occupation}.dat`,
+`HF/bin/{orb,C,rho}_temp.bin` (Export; deleted again by the export), `HF-MBPT/bin/{orb,C,H1b,rho,H2b[,sigma]}.bin`.
+The temporary-file hand-over between `HF_MBPT_OBDM` and `HF_MBPT_export` is kept as in dev (the export reads C/Rho back
+with the (l,j) blocks of `Orb`, so the in-memory values equal dev's exactly).
+
+Deviations:
+1. **F1** (clear bug, fixed, mirrored in the patched reference): dev `HF_MBPT_TBCF` classifies the particles/holes of the
+   nn channel (T = +1) in the 2nd-order, 3rd-order pp and 3rd-order hh passes with the **proton** occupations `pO`
+   (`HF_MBPT.jl:1905-1906, 1995-1996, 2085-2086`); the port uses `nO` (as dev's own ph pass, line 2149). Matters
+   whenever the proton and neutron occupation patterns differ (N != Z); verified with 28O (`mbpt_options` case).
+2. `HF_MBPT_TBCF`: dev runs four passes over all (J,P,Bra,Ket,T) adding one diagram each to the zero-initialised
+   Sigma; the port evaluates the four diagrams of an element in one sweep and adds them in the same order
+   (((s2 + s3pp) + s3hh) + s3ph), which gives identical values. Each element is written by its own (Bra) task.
+   Robustness guard: `fatal` if the 2-body channels of `Orb_NN` (V_NN) differ from those of the calculation space
+   (dev indexes the `O2b_initialize` Sigma with `Orb_NN` without a check).
+3. Threads: the MBPT energy sectors are one OpenMP loop over the flattened ordered (p,q) pair list (dev: `:static`
+   threads over the same list) with `reduction(+)`; the OBDM loops reduce into private copies of dRho (dev threads over
+   the outer orbital and writes only elements owned by it). Summation order differs from Julia at the 1e-15 level
+   only (1 vs 8 threads agree to 1e-13 in every output file).
+4. The base OBDM loops of `nj_hf_mbpt_legacy` are reused unchanged (dev formulas, filters and index orders are
+   identical to base, spec 8.4); the dev tail (natural orbitals via `OBDM_natural_orbitals` with Hungarian ordering,
+   F5) replaces the base `HF_MBPT_OBDM_correction`/`HF_MBPT_reorder`.
+
+Kept faithfully (listed in `UPSTREAM_BUGS.md`): `HF_MBPT_export` with `ScH = false` builds H1b from the correlated
+density Rho_NAT; the summary text `E_0^(3) / A ... correction to ground-state energy` lacks "per nucleon".
+
+Not ported (dead in dev): `Orb1B_HF_MBPT3` (defined, never used), the unreachable `return 0.0` of `HF_MBPT_h1b`.

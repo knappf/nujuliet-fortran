@@ -1,4 +1,6 @@
-! HF entry point ... counterpart of HF/HF.jl & HF_solver() of HF/HF_Solver.jl ...
+! HF entry point (NuJuliet dev) ... counterpart of src/HF/HF.jl & HF_solver() of src/HF/HF_solver.jl ...
+    ! Outputs in io/<Path>/HF/{HF_summary.dat, bin/{orb,C,rho,H1b,H2b}.bin, densities/*} ... the base-version HF
+    ! (io/<Path>/Bin/*, HF-EFA, HRF) is the LEGACY action HF_LEGACY (nj_hf_legacy_driver) ...
 module nj_hf_driver
     use nj_kinds
     use nj_types
@@ -6,15 +8,14 @@ module nj_hf_driver
     use nj_utils
     use nj_linalg
     use nj_wigner, only : wigner_init_float
-    use nj_orbitals, only : orbitals_make, orbitals_export
+    use nj_orbitals, only : orbitals_make
     use nj_o1b, only : T1b, T1b_energy
-    use nj_o2b, only : O2b_transformation, O2b_export, O2b_export_HRF, O2b_move
+    use nj_o2b, only : O2b_transformation, O2b_export
     use nj_v2b, only : V2b_read, V2b_residual_no2b
     use nj_v3b, only : V3b_no2b_read
-    use nj_obdm, only : OBDM_export
+    use nj_obdm, only : rho_export
     use nj_hf
-    use nj_hf_mbpt, only : HF_MBPT
-    use nj_hf_efa, only : HF_EFA
+    use nj_hf_mbpt, only : HF_MBPT, HF_MBPT_occupation_check, HF_MBPT_export
     !$ use omp_lib
     implicit none
     private
@@ -67,16 +68,12 @@ contains
         write(*,'(a)') 'Starting calculations with NO2B NN+NNN interaction'
         call print_run_header(Params)
 
-        ! Fresh output directories ...
+        ! Fresh output directories ... the whole io/<Path> is wiped (as in dev, including other solvers' output) ...
         if (is_dir(io_path(Params,''))) call remove_dir(io_path(Params,''))
         call make_dir(io_path(Params,''))
-        call make_dir(io_path(Params,'/Bin'))
         call make_dir(io_path(Params,'/HF'))
-        call make_dir(io_path(Params,'/HF/Densities'))
-        if (Params%Calc%HF%EFA%A /= 0 .and. Params%Calc%HF%EFA%Z /= 0) then
-            call make_dir(io_path(Params,'/HF-EFA'))
-            call make_dir(io_path(Params,'/HF-EFA/Densities'))
-        end if
+        call make_dir(io_path(Params,'/HF/bin'))
+        call make_dir(io_path(Params,'/HF/densities'))
 
         write(*,'(/,a)') 'Starting spherical Hartree-Fock calculation ...'
         call timer_start(t0)
@@ -94,13 +91,14 @@ contains
         type(orb2b_t) :: Orb_NN
         type(v3b_t) :: V_NNN
         type(orb3b_t) :: Orb_NNN
-        type(pnvector_t) :: SPE
         real(dp) :: E_HF, T_HF
         integer :: Iteration
         integer(i8) :: t0
 
-        ! Single-particle orbitals ... NuHamil ordering ...
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        ! Single-particle LHO orbitals (Calc.Nmax) ... NuHamil ordering, naive (possibly fractional) filling ...
+        call timer_start(t0)
+        Orb = orbitals_make(Params)
+        call timer_report(t0)
 
         call timer_start(t0)
         T = T1b(Params,Orb)
@@ -114,6 +112,7 @@ contains
         call V3b_no2b_read(Params,V_NNN,Orb_NNN)
         call timer_report(t0)
 
+        ! Self-consistent HF ... Orb carries the final HF occupations afterwards (dev in-place update) ...
         call timer_start(t0)
         call HF_solve(Params,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN,h,C,Rho,Iteration)
         call timer_report(t0)
@@ -130,51 +129,51 @@ contains
 
         ! Radial HF densities & radii ...
         call timer_start(t0)
-        call OBDM_export(Params,Orb,io_path(Params,'/HF/HF_Summary.dat'), &
-                         io_path(Params,'/HF/Densities/HF_Radial_Densities.dat'),Rho,C)
+        call rho_export(Params,Orb,io_path(Params,'/HF/HF_summary.dat'), &
+                        io_path(Params,'/HF/densities/HF_radial_densities.dat'),Rho,C)
         call timer_report(t0)
 
         call HF_SPS_summary(Params,h,Orb)
 
-        ! Export of HF orbitals C, HF-basis density & HF single-particle Hamiltonian ...
+        ! Export of the HF orbitals (orb.bin), C, HF-basis density C^T Rho C & HF single-particle Hamiltonian ...
         Rho_HF%p = mtmm(C%p,Rho%p)
         Rho_HF%n = mtmm(C%n,Rho%n)
         call HF_export(Params,C,Rho_HF,h,Orb)
 
-        ! HF-EFA calculation for a neighbouring nucleus ...
-        if (Params%Calc%HF%EFA%A /= 0 .and. Params%Calc%HF%EFA%Z /= 0) then
-            SPE%p = diag(h%p)
-            SPE%n = diag(h%n)
+        ! Non-local HF radial potential ...
+        if (Params%Calc%HF%V_HF) then
             call timer_start(t0)
-            call HF_EFA(Params,Orb,Orb_NNN,SPE,C,V_NNN)
+            call HF_radial_potential(Params,Orb,C,T,h)
             call timer_report(t0)
         end if
 
         ! Beyond-mean-field HF-MBPT & export of the residual NN interaction ...
         if (Params%Calc%HF%BMF) then
+            ! Density-dependent residual NN interaction (NO2B) ... V_NN stays the bare interaction (HF_MBPT_export) ...
             call timer_start(t0)
-            ! LEGACY: the residual replaces V_NN here (the dev HF keeps the bare V_NN for HF_MBPT_export, HF group) ...
             call V2b_residual_no2b(Params,Orb,Orb_NN,Orb_NNN,Rho,V_NN,V_NNN,V_NN_res)
-            call O2b_move(V_NN_res,V_NN)
+            call timer_report(t0)
+            ! Port: the bare V_NN is only needed by HF_MBPT_export ... freed early otherwise (memory) ...
+            if (.not. Params%Calc%HF%MBPT%Export) deallocate(V_NN%pp, V_NN%pn, V_NN%nn)
+
+            call timer_start(t0)
+            call O2b_transformation(Params,Orb,Orb_NN,V_NN_res,C)
             call timer_report(t0)
 
             call timer_start(t0)
-            call O2b_transformation(Params,Orb,Orb_NN,V_NN,C)
+            call O2b_export(Params,Orb_NN,V_NN_res,io_path(Params,'/HF/bin/H2b.bin'))
             call timer_report(t0)
 
-            call timer_start(t0)
-            call O2b_export(Params,Orb_NN,V_NN,io_path(Params,'/Bin/V2B_HF.bin'))
-            call timer_report(t0)
+            if (HF_MBPT_occupation_check(Params,Rho_HF)) then
+                call timer_start(t0)
+                call HF_MBPT(Params,Orb,Orb_NN,h,V_NN_res)
+                call timer_report(t0)
 
-            call timer_start(t0)
-            call HF_MBPT(Params,Orb,Orb_NN,V_NN)
-            call timer_report(t0)
-
-            if (Params%Calc%HF%HRF) then
-                write(*,'(a)') 'Exporting the HF single-particle orbitals & residual 2-body NN interaction in the ' // &
-                               'Human-Readable-Format (HRF) ...'
-                call orbitals_export(Params,Orb)
-                call O2b_export_HRF(Params,Orb_NN,V_NN,io_path(Params,'/Bin/V2B_HF.dat'))
+                if (Params%Calc%HF%MBPT%Export) then
+                    call timer_start(t0)
+                    call HF_MBPT_export(Params,Orb,Orb_NN,Orb_NNN,C,T,h,V_NN,V_NN_res,V_NNN)
+                    call timer_report(t0)
+                end if
             end if
         end if
     end subroutine HF_solver
