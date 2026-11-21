@@ -814,3 +814,27 @@ Done:
 - New error case `fortran/empm_ncsm/errors/e14_ncsm_no_reference`. `run_empm_ncsm.sh dev 16`: all 14 error cases give
   their EXPECT text; `compare` vs `work/empm_baseline`: DIFF 47, GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12
   (unchanged). Builds: intel and `COMPILER=gnu` 0 warnings.
+
+## 2026-11-21 — fix F2 revised (RPA_sigma hpph uses Y in every branch)
+
+- Finding: the first F2 (pn branch `X` in `RPA_sigma_hpph`, as pp/nn) was wrong. Only the Ket <= Bra triangle of Sigma
+  is computed, so the hpph element `<h p|Sigma|p' h'>` must equal its transpose, the phhp element (Y Y*). Full-square
+  check on 12C (bundled, RPA TBCF): pn with Y 1.7e-18, pn with X 0.49; pp with X (dev) 7.3e-2, pp with Y 3.5e-18. The
+  real dev bug is the pp/nn `X` (RPA_sigma.jl:153-160, 273-280). The term enters the computed triangle only when a
+  particle orbital precedes a hole orbital of the same isospin (Z or N = 6, 14, 28, 50, 82, 126, or fractional
+  occupations); 4He/16O/40Ca never reach it, so no existing step saw the difference.
+- Fortran `nj_rpa::RPA_sigma` `s_hpph` uses Y (all branches). `port-ref`: old F2 dropped, F3 fff2142, F4 0faf549,
+  F5 76a58f5, new F2 ddcd86d (pp/nn pass Y).
+- 12C RPA TBCF E_corr (density): dev -30.712444, old F2 -6.742027, new F2 -38.331296 MeV (quasi-boson -30.898290 in all).
+- Regenerated every Julia reference (julia_t8 all cases, julia_t1 bundled) with the new port-ref: identical to the
+  old ones at 1e-12 `--strict-sign` except `scrpa_options` O20/ScRPA-frac `RPA_summary.dat` (fractional occupations:
+  density E_corr 22.108791 -> 8.290909 MeV) and the new 12C files.
+- New `rpa_options` steps 13-15 (`io/C12`: HF, RPA TBCF, HF_ScRPA; with TBCF = true the 12C HF_ScRPA diverges in dev
+  itself, unstable initial RPA, so the plain HF_ScRPA tests the final Sigma via E_corr density).
+- Fortran vs Julia (8 threads, 1e-8): bundled 411/36/0, ca40_5sh 92/8/0, o16_open 106/7/0, hf_options 14/0/0,
+  mbpt_options 23/6/0, rpa_options 368/35/0, qp_options 150/14/3 (known O20_HBCS), scrpa_options 197/22/0. 12C
+  sigma.bin 6.5e-15 up to the HF-orbital sign; E_corr equal to all printed digits. intel and gnu builds 0 warnings.
+- Affected earlier results: E_corr (density) and sigma.bin of HF_ScRPA / RPA TBCF runs of nuclei with such shell
+  closures, e.g. the Pb208 HF-ScRPA run (no TBCF, so its iteration, E_QBA and the TDA/RPA results are unaffected; its
+  density E_corr -690.923000 MeV was computed with the old F2 and must be recomputed).
+- Upstream reports for F2-F5: `docs/dev_port/upstream_reports/` (not filed).

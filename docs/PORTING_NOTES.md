@@ -433,8 +433,13 @@ change: `nj_linalg::eig_sym_gen` (dsygvd itype 1, 'V', 'U'; the TDA orthogonaliz
 1-7, 9-12 were already in place (stages 1-2).
 
 Deviations:
-1. **F2** (clear bug, fixed, mirrored in `port-ref`): `RPA_sigma` pn branch, hole-particle-particle-hole term uses `X`
-   in `RPA_sigma_hpph` (dev passes `Y`, `RPA_sigma.jl:208-210`).
+1. **F2** (clear bug, fixed, mirrored in `port-ref`; revised 2026-11-21): the h-p-p-h term of `RPA_sigma` uses `Y` in
+   `RPA_sigma_hpph` in every branch (dev passes `Y` in the pn branch, `RPA_sigma.jl:209`, but `X` in the pp/nn branches,
+   lines 153-160, 273-280). Only the Ket <= Bra triangle is computed, so `<h p|Sigma|p' h'>` must equal the transposed
+   phhp element `<p' h'|Sigma|h p>` (Y_p'h Y_ph'*); with X the pp/nn Sigma is not symmetric. The first version of F2
+   (pn branch `X`, as pp/nn) was wrong (pn asymmetry 0.49 in 12C). The term falls into the computed triangle only when a
+   particle orbital precedes a hole orbital of the same isospin (Z or N = 6, 14, 28, 50, 82, 126; not 4He/16O/40Ca), so
+   only the 12C steps of `rpa_options` test it.
 2. TDA writes the marker `<Name>/.TDA_output` (dev checks for it before deleting an existing output folder but never
    writes it, so a TDA re-run with the same `Name` was refused). `compare.py` ignores the marker.
 3. RPA with `Reference_TBCF = .true.` and no `<Reference>/bin/sigma.bin` stops (`fatal`); dev silently runs without the

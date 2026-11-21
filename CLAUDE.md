@@ -58,7 +58,7 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   using .NuJuliet` (the dev sample is `scripts/sample_script_run.jl`, interaction files `io/NN.bin`, `io/NNN.bin`).
   Run from the directory that holds `io/` (dev writes `io/<Path>/...` and needs `io/` to exist).
 - Reference for the comparisons: the patched worktree `../NuJuliet_dev_ref` (branch `port-ref` = a69ecf0 + the Julia
-  bug fixes F2-F5, never pushed; F1 is upstream since a69ecf0), driven by `tests/dev_port/run_julia.sh` (see `tests/dev_port/README.md`). The base
+  bug fixes F2-F5, never pushed; F1 is upstream since a69ecf0; F2 revised 2026-11-21: pp/nn hpph use Y), driven by `tests/dev_port/run_julia.sh` (see `tests/dev_port/README.md`). The base
   version `../NuJuliet` (c450842, `include("Source/Import_NuJuliet_Module.jl")`, `IO/`) only matters for old runs of the
   removed base-version chain (its `runs/Pb208_13sh_hw12/` has the base-version 208Pb benchmark setup).
 - Julia via juliaup: `~/.julia/juliaup/julia-1.10.11+0.x64.linux.gnu/bin/julia --project=@v1.10` (the env already
@@ -121,3 +121,7 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   earlier runs, e.g. Pb208 E^(3) = -37.8366519 MeV, stay valid.
 - 2026-11-21: NCSM with a missing reference (`Hamiltonian = 'EMPM'` or `Basis = 'HF'`) now prints the error and skips
   (exit 0), as TDA/RPA/EMPM (user decision); new error case e14.
+- 2026-11-21: fix F2 revised: the first F2 (pn hpph X) was wrong; Sigma symmetry shows Y is right, the dev bug is X in
+  the pp/nn branches. Fortran and port-ref now use Y everywhere; new 12C steps in `rpa_options`; all Julia references
+  regenerated. The Pb208 HF-ScRPA density E_corr (-690.923 MeV) used the old F2 and needs a rerun (E_QBA, iteration,
+  TDA/RPA unaffected). Upstream bug reports (not filed): `docs/dev_port/upstream_reports/`.

@@ -17,6 +17,10 @@
 #                  analysis & recalculation with the reference Sigma
 #                  RPA Reference_TBCF, DEV, Tol_par = 0.9, Tol_hol = 0.02 (Name RPA-DEV-frac: the natural orbitals 0p1/2,
 #                  1s1/2 & 0d are particle & hole orbitals, backward coupling B_12 of RPA_allocate_SE)
+#   io/C12/        12C HF -> RPA TBCF = true (Name RPA-TBCF) and HF_ScRPA (Name HF-ScRPA, final Sigma -> E_corr density; with TBCF = true
+#                  12C diverges in dev, the initial RPA is unstable): the particle
+#                  0p1/2 precedes the hole 0p3/2 in the orbital list, so the h-p-p-h terms of RPA_sigma fall into the computed
+#                  Ket <= Bra triangle in the pp, nn & pn branches (fix F2: Y in every hpph term, Sigma symmetric)
 #
 # Run from the work directory: julia -t N,1 rpa_options.jl  (see ../run_julia.sh)
 
@@ -95,6 +99,18 @@ let P = "O16_MBPT"
         TDA_transition_analysis(ParamsE; JP = "1-", nu_list = [5, 6, 7])
         TDA_transitions_recalculate(ParamsE)
     end
+end
+
+let P = "C12"
+    io = "io/" * P
+    calc12(; kw...) = Calculation_Parameters(; A = 12, Z = 6, hw = 16.0, Nmax = 3, N2max = 6, N3max = 9, Path = P, kw...)
+    Params = Parameters(IntP, calc12(RPA = RPA_Parameters(Name = "RPA-TBCF", TBCF = true)))
+    step(() -> HF(Params), "C12 HF"; expect = [io * "/HF/bin/orb.bin"])
+    step(() -> RPA(Params), "C12 RPA TBCF"; expect = [io * "/RPA-TBCF/bin/sigma.bin"])
+    ParamsS = Parameters(IntP, calc12(RPA = RPA_Parameters(Reference = "HF", Name = "HF-ScRPA", Reference_TBCF = false,
+        Ortho = true, Transitions = "Linear", TBCF = false, Tol_hol = 0.3, Tol_par = 0.85, Tol = 1e-5, Imax = 100,
+        OBDM_diagonal = false, ScH = true)))
+    step(() -> HF_ScRPA(ParamsS), "C12 HF_ScRPA"; expect = [io * "/HF-ScRPA/RPA_summary.dat"])
 end
 
 finish("rpa_options")

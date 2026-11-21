@@ -780,7 +780,7 @@ contains
                                 Sum = Sum + s_pphh(a,t_a,O_a,b,t_b,O_b,c,t_c,O_c,d,t_d,O_d,Q)
                             if (hole(O_a) .and. hole(O_b) .and. part(O_c) .and. part(O_d)) &
                                 Sum = Sum + s_pphh(c,t_c,O_c,d,t_d,O_d,a,t_a,O_a,b,t_b,O_b,Q)
-                            ! 1p-1h terms ... (F2: X in the hpph term)
+                            ! 1p-1h terms ... (hpph with Y in every branch, fix F2)
                             if (part(O_a) .and. hole(O_b) .and. hole(O_c) .and. part(O_d)) &
                                 Sum = Sum + s_phhp(a,t_a,O_a,b,t_b,O_b,c,t_c,O_c,d,t_d,O_d,Q)
                             if (hole(O_a) .and. part(O_b) .and. part(O_c) .and. hole(O_d)) &
@@ -916,7 +916,9 @@ contains
             sg = sg + s_ref(a_a,t_a,O_a,a_b,t_b,O_b,a_c,t_c,a_d,t_d)
         end function s_phhp
 
-        ! RPA_sigma_hpph ... (X_ca X_bd*) ...
+        ! RPA_sigma_hpph ... (Y_ca Y_bd*) ... fix F2: dev passes Y in the pn branch but X in the pp/nn branches; only Y keeps
+            ! Sigma symmetric, <h p|Sigma|p' h'> must equal the transposed phhp element <p' h'|Sigma|h p> (Y_p'h Y_ph'*), and
+            ! only the Ket <= Bra triangle is computed (docs/dev_port/upstream_reports/1_rpa_sigma_pp_nn_hpph.md) ...
         real(dp) function s_hpph(a_a,t_a,O_a,a_b,t_b,O_b,a_c,t_c,O_c,a_d,t_d,O_d,PP) result(sg)
             integer, intent(in) :: a_a, t_a, a_b, t_b, a_c, t_c, a_d, t_d, PP
             real(dp), intent(in) :: O_a, O_b, O_c, O_d
@@ -933,7 +935,7 @@ contains
                 if (i_ca == 0 .or. i_bd == 0) cycle
                 Amp = real(2*I + 1,dp) * phase(J + (ja + jb)/2) * f6j(ja,jb,2*J,jd,jc,2*I) * abs((O_a - O_c) * (O_b - O_d))
                 do nu = 1, Orb_1p1h%N(PP,I)
-                    sg = sg + Amp * real(X(PP,I)%v(i_ca,nu) * conjg(X(PP,I)%v(i_bd,nu)),dp)
+                    sg = sg + Amp * real(Y(PP,I)%v(i_ca,nu) * conjg(Y(PP,I)%v(i_bd,nu)),dp)
                 end do
             end do
             sg = sg + s_ref(a_a,t_a,O_a,a_b,t_b,O_b,a_c,t_c,a_d,t_d)

@@ -105,4 +105,4 @@ patched reference `port-ref`) and only reports here. Clear bugs are fixed instea
   `Y (D^2 M D^*2 - M) Y^+`. Verified with the port (generic phases change the OBDM at the 1e-3..1e-2 level on 4He;
   phases with `D^2 = -1` leave it invariant). Ported as is (bit parity with dev); the Fortran and Julia complex
   eigenvectors come from the same LAPACK `geev` convention, but parity in unstable cases relies on that.
-* Spec B1..B9 of `scrpa.md` section 7 stand; B1 is fixed by F2 (stage 3), B2 is a fatal in the input reader.
+* Spec B1..B9 of `scrpa.md` section 7 stand; B1 is fixed by F2 (stage 3; revised 2026-11-21: Y in the pp/nn branches, not X in pn), B2 is a fatal in the input reader.
