@@ -169,6 +169,10 @@ module nj_params
         ! P_n b+_cm (<= n-1 phonon space), the generalization of the SVD treatment with the full operator) ... spectra &
         ! exact <N_cm> of their states in Bin/EMPM_FULL<n>_<JP>_E_<variant>.bin & _Ncm_<variant>.bin ...
     type, public :: empm_params_t
+        ! Reference (Fortran-only, stage 5) ... the HF-like reference io/<Path>/<Reference>/bin/{orb,C,H1b,H2b}.bin read by the
+            ! EMPM (and the NCSM 'EMPM' Hamiltonian), as TDA_Parameters.Reference ... H1b must be diagonal & the occupations
+            ! integer (closed (sub)shells or &hf ESH = .true.) ...
+        character(len=64) :: Reference = 'HF'
         integer :: pHole(2) = 0
         integer :: pPart(2) = 0
         integer :: nHole(2) = 0
@@ -324,7 +328,7 @@ module nj_params
         type(calculation_params_t) :: Calc
     end type params_t
 
-    public :: default_path, io_path, io_dir
+    public :: default_path, io_path, io_dir, ref_path
 
 contains
 
@@ -344,6 +348,15 @@ contains
         character(len=:), allocatable :: Path
         Path = 'io/' // trim(Params%Calc%Path) // Suffix
     end function io_path
+
+    ! "io/" * Params.Calc.Path * "/" * Ref * Suffix ... file or folder of a reference (HF, HF-MBPT, ...) read by a consumer,
+        ! e.g. ref_path(Params,Params%Calc%EMPM%Reference,'/bin/H1b.bin') (TDA, RPA, EMPM, NCSM) ...
+    function ref_path(Params,Ref,Suffix) result(Path)
+        type(params_t), intent(in) :: Params
+        character(len=*), intent(in) :: Ref, Suffix
+        character(len=:), allocatable :: Path
+        Path = 'io/' // trim(Params%Calc%Path) // '/' // trim(Ref) // Suffix
+    end function ref_path
 
     ! "io/" * Params.Calc.Path * "/" * Sub ... per-solver folder, e.g. io_dir(Params,Params%Calc%RPA%Name) ...
     function io_dir(Params,Sub) result(Path)

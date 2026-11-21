@@ -6,7 +6,6 @@ module nj_empm_driver
     use nj_params
     use nj_utils
     use nj_wigner, only : wigner_init_float
-    use nj_orbitals, only : orbitals_make
     use nj_o1b, only : O1b_import
     use nj_o2b, only : O2b_import
     use nj_tr1b
@@ -38,8 +37,9 @@ module nj_empm_driver
 
 contains
 
-    subroutine EMPM_TDA(Params)
+    subroutine EMPM_TDA(Params,Ok)
         type(params_t), intent(in) :: Params
+        logical, intent(out), optional :: Ok      ! .true. once the TDA has finished (.false. after a skip on a missing reference)
         type(orb1b_t), allocatable :: Orb(:)
         type(o1b_t) :: C
         type(o2b_t) :: V_NN
@@ -55,32 +55,34 @@ contains
         type(rvec_t), allocatable :: E_TDA(:,:)
         integer(i8) :: t0, t1
 
+        if (present(Ok)) Ok = .false.
         call wigner_init_float(75,'Jmax',9)
         write(*,'(a)') 'Starting EMPM TDA calculation in the restricted particle-hole space ...'
         write(*,'(a)') trim(Params%Calc%Path)
-        if (.not. is_dir(io_path(Params,''))) then
-            write(*,'(/,a)') 'Error! ... No precomputed HF solution is available in given Input_File path ... run HF solver first ...'
-            return
-        end if
-        call remove_dir(io_path(Params,'/EMPM'))
-        call make_dir(io_path(Params,'/EMPM/Spectra'))
-        call timer_start(t0)
-
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
-        C = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
+        ! Reference io/<Path>/<&empm Reference>/bin/{orb,C,H1b,H2b}.bin (an HF-like reference: diagonal H1b, integer
+            ! occupations, H2b of HF with BMF) ... checked before the old EMPM folder is removed ...
+        if (.not. EMPM_reference_check(Params,.true.)) return
+        write(*,'(a)') TAB // 'Reference ... ' // empm_ref_path(Params,'/bin')
+        Orb = EMPM_reference_orbitals(Params)
+        C = O1b_import(Params,Orb,empm_ref_path(Params,'/bin/C.bin'))
         call EMPM_space_make(Params,Orb,Space)
+        ! io/<Path>/EMPM is owned by the EMPM: a new TDA invalidates all later EMPM results (binaries & default state files) ...
+        call remove_dir(empm_path(Params,''))
+        call make_dir(empm_path(Params,'/bin'))
+        call make_dir(empm_path(Params,'/spectra'))
+        call timer_start(t0)
         call EMPM_space_export(Params,Space)
 
         write(*,'(/,a)') 'Importing Residual 2-body interaction ...'
         call timer_start(t1)
-        call O2b_import(Params,Orb,io_path(Params,'/Bin/V2B_HF.bin'),V_NN,Orb_NN)
+        call O2b_import(Params,Orb,empm_ref_path(Params,'/bin/H2b.bin'),V_NN,Orb_NN)
         call timer_report(t1)
 
         call timer_start(t1)
         call Fmat_make(Params,Orb,Orb_NN,V_NN,Space,F_ph)
         call timer_report(t1)
         deallocate(V_NN%pp, V_NN%pn, V_NN%nn)
-        call Fmat_export(F_ph,io_path(Params,'/Bin/EMPM_F.bin'))
+        call Fmat_export(F_ph,empm_path(Params,'/bin/EMPM_F.bin'))
 
         TrOp = Tr1b_initialize(Params,Orb,1.0_dp)
         TrOp = Tr1b_transformation(Params,Orb,C,TrOp)
@@ -97,9 +99,10 @@ contains
         call EMPM_TDA_strengths(Params,Space,N_nu,Orb_Phonon,Phonon,TrOp,E_TDA,X_TDA)
         call timer_report(t0)
         write(*,'(/,a,/)') 'EMPM TDA calculation has finished ...'
+        if (present(Ok)) Ok = .true.
     end subroutine EMPM_TDA
 
-    ! 2-phonon EMPM on top of EMPM_TDA ... phonons & F-matrix from Bin/EMPM_TDA_*.bin & Bin/EMPM_F.bin, densities &
+    ! 2-phonon EMPM on top of EMPM_TDA ... phonons & F-matrix from EMPM/bin/EMPM_TDA_*.bin & EMPM/bin/EMPM_F.bin, densities &
         ! redefined interaction on the fly ...
     subroutine EMPM_2PH(Params)
         type(params_t), intent(in) :: Params
@@ -121,17 +124,19 @@ contains
         !$ call omp_set_max_active_levels(1)
         write(*,'(a)') 'Starting EMPM 2-phonon calculation ...'
         write(*,'(a)') trim(Params%Calc%Path)
-        if (.not. is_dir(io_path(Params,'/EMPM'))) then
-            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in given Input_File path ... run EMPM_TDA first ...'
+        ! the reference first: EMPM/bin may be left over from an earlier run on a reference that is gone ...
+        if (.not. EMPM_reference_check(Params,.false.)) return
+        if (.not. is_dir(empm_path(Params,'/bin'))) then
+            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in ' // empm_path(Params,'/bin') // ' ... run EMPM_TDA first ...'
             return
         end if
-        call remove_dir(io_path(Params,'/EMPM/2Phonon'))
-        call make_dir(io_path(Params,'/EMPM/2Phonon'))
+        call remove_dir(empm_path(Params,'/2Phonon'))
+        call make_dir(empm_path(Params,'/2Phonon'))
         call timer_start(t0)
 
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = EMPM_reference_orbitals(Params)
         call EMPM_space_make(Params,Orb,Space)
-        call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
+        call Fmat_import(Space,empm_path(Params,'/bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
         write(*,'(/,a)') 'Preparing the EMPM pair space, 6j table & F blocks ...'
         call timer_start(t1)
@@ -139,9 +144,9 @@ contains
         call timer_report(t1)
         Ch = channels(Params%Calc%EMPM%JP2,2*Ph%J_max)
 
-        open(newunit=uS, file=io_path(Params,'/EMPM/2Phonon/Spectrum.dat'), status='replace', action='write')
+        open(newunit=uS, file=empm_path(Params,'/2Phonon/Spectrum.dat'), status='replace', action='write')
         write(uS,'(a)') cfmt_s('J',5,.true.) // ' ' // cfmt_s('P',5,.true.) // ' ' // cfmt_s('E',20,.true.) // ' ' // 'Spurious'
-        open(newunit=uY, file=io_path(Params,'/EMPM/2Phonon/Summary.dat'), status='replace', action='write')
+        open(newunit=uY, file=empm_path(Params,'/2Phonon/Summary.dat'), status='replace', action='write')
         write(uY,'(a)') 'EMPM 2-phonon calculation ... truncation E_alpha + E_lambda <= ' // cfmt_f(Params%Calc%EMPM%E2max,0,4) // &
                         ' MeV , number of 1-phonon states = ' // istr(Ph%N)
         write(uY,'(/,a)') cfmt_s('J^P',6) // cfmt_s('N_full',12) // cfmt_s('N_tr',10) // cfmt_s('N_spur',8) // &
@@ -150,7 +155,7 @@ contains
 
         N2s = 0
         if (Params%Calc%EMPM%Save_X) then
-            open(newunit=uZ, file=io_path(Params,'/EMPM/2Phonon/States2.dat'), status='replace', action='write')
+            open(newunit=uZ, file=empm_path(Params,'/2Phonon/States2.dat'), status='replace', action='write')
             write(uZ,'(a)') '2-phonon states ... index (channels in the order of the run), J, P, E, spurious (1) ... basis, C, X ' // &
                             '& the couplings of the spurious states in ' // states_dir(Params) // '/EMPM_S2_<JP>.bin'
             call make_dir(states_dir(Params))
@@ -210,7 +215,7 @@ contains
 
         ! 2-phonon states of the channel for the 3-phonon step ... basis, E, C on the independent rows (Kc = their full-basis
             ! indices) &
-            ! X = sqrt(2J+1) D(independent rows)^T C in Bin/EMPM_S2_<JP>.bin, the list in EMPM/2Phonon/States2.dat ... the
+            ! X = sqrt(2J+1) D(independent rows)^T C in EMPM/bin/EMPM_S2_<JP>.bin, the list in EMPM/2Phonon/States2.dat ... the
             ! physical states & (Ortho) the spurious ones with their couplings R, a complete set of the 2-phonon space ...
         subroutine export_states()
             real(dp), allocatable :: Dr(:,:), X2(:,:)
@@ -254,11 +259,11 @@ contains
             call export_basis(Sol%Ind)
 
             ! Energies & amplitudes C(independent row, solution) ... the independent rows are the Ind = 1 lines of Basis_*.dat ...
-            open(newunit=u, file=io_path(Params,'/Bin/EMPM_2PH_' // Tag // '_E.bin'), access='stream', form='unformatted', &
+            open(newunit=u, file=empm_path(Params,'/bin/EMPM_2PH_' // Tag // '_E.bin'), access='stream', form='unformatted', &
                  status='replace', action='write')
             write(u) Sol%E
             close(u)
-            open(newunit=u, file=io_path(Params,'/Bin/EMPM_2PH_' // Tag // '_C.bin'), access='stream', form='unformatted', &
+            open(newunit=u, file=empm_path(Params,'/bin/EMPM_2PH_' // Tag // '_C.bin'), access='stream', form='unformatted', &
                  status='replace', action='write')
             write(u) Sol%C
             close(u)
@@ -269,7 +274,7 @@ contains
             integer :: u, i
             character(len=:), allocatable :: Tag
             Tag = jp_str(Bs%J,Bs%P)
-            open(newunit=u, file=io_path(Params,'/EMPM/2Phonon/Full_' // Tag // '.dat'), status='replace', action='write')
+            open(newunit=u, file=empm_path(Params,'/2Phonon/Full_' // Tag // '.dat'), status='replace', action='write')
             write(u,'(a)') 'EMPM full Hamiltonian J^P = ' // Tag // ' ... basis: ' // istr(Full%N0) // ' ground state, ' // &
                            istr(Full%N1) // ' 1-phonon states (phonon indices in Full_' // Tag // '_1phon.dat), ' // &
                            istr(Full%N2) // ' physical 2-phonon states'
@@ -280,17 +285,17 @@ contains
                                cfmt_f(sum(Full%Z(Full%N0+Full%N1+1:Full%N,i)**2),12,6)
             end do
             close(u)
-            open(newunit=u, file=io_path(Params,'/EMPM/2Phonon/Full_' // Tag // '_1phon.dat'), status='replace', action='write')
+            open(newunit=u, file=empm_path(Params,'/2Phonon/Full_' // Tag // '_1phon.dat'), status='replace', action='write')
             write(u,'(a)') 'Position in the full basis & 1-phonon index (as in Spectrum numbering of the phonons) & energy'
             do i = 1, Full%N1
                 write(u,'(a)') cfmt_d(Full%N0+i,8) // cfmt_d(Full%A1(i),8) // cfmt_f(Ph%E(Full%A1(i)),16,6)
             end do
             close(u)
-            open(newunit=u, file=io_path(Params,'/Bin/EMPM_FULL_' // Tag // '_E.bin'), access='stream', form='unformatted', &
+            open(newunit=u, file=empm_path(Params,'/bin/EMPM_FULL_' // Tag // '_E.bin'), access='stream', form='unformatted', &
                  status='replace', action='write')
             write(u) Full%E
             close(u)
-            open(newunit=u, file=io_path(Params,'/Bin/EMPM_FULL_' // Tag // '_Z.bin'), access='stream', form='unformatted', &
+            open(newunit=u, file=empm_path(Params,'/bin/EMPM_FULL_' // Tag // '_Z.bin'), access='stream', form='unformatted', &
                  status='replace', action='write')
             write(u) Full%Z
             close(u)
@@ -307,7 +312,7 @@ contains
             allocate(Is_Ind(Bs%N_tr))
             Is_Ind = .false.
             if (present(Ind)) Is_Ind(Ind) = .true.
-            open(newunit=u, file=io_path(Params,'/EMPM/2Phonon/Basis_' // Tag // '.dat'), status='replace', action='write')
+            open(newunit=u, file=empm_path(Params,'/2Phonon/Basis_' // Tag // '.dat'), status='replace', action='write')
             write(u,'(a)') 'EMPM 2-phonon truncated basis |alpha lambda; J^P = ' // Tag // '> ... i truncated index, ' // &
                            'k full-basis index, phonon indices ' // merge('of the original Tda (Legacy_Order)  ', &
                                                                          'as in EMPM/TDA_Structure.dat        ', &
@@ -344,29 +349,31 @@ contains
         !$ call omp_set_max_active_levels(1)
         write(*,'(a)') 'Starting EMPM 3-phonon calculation ...'
         write(*,'(a)') trim(Params%Calc%Path)
-        if (.not. is_dir(io_path(Params,'/EMPM'))) then
-            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in given Input_File path ... run EMPM_TDA first ...'
+        ! the reference first: EMPM/bin may be left over from an earlier run on a reference that is gone ...
+        if (.not. EMPM_reference_check(Params,.false.)) return
+        if (.not. is_dir(empm_path(Params,'/bin'))) then
+            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in ' // empm_path(Params,'/bin') // ' ... run EMPM_TDA first ...'
             return
         end if
-        call remove_dir(io_path(Params,'/EMPM/3Phonon'))
-        call make_dir(io_path(Params,'/EMPM/3Phonon'))
+        call remove_dir(empm_path(Params,'/3Phonon'))
+        call make_dir(empm_path(Params,'/3Phonon'))
         call timer_start(t0)
 
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = EMPM_reference_orbitals(Params)
         call EMPM_space_make(Params,Orb,Space)
-        call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
+        call Fmat_import(Space,empm_path(Params,'/bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
         write(*,'(/,a)') 'Preparing the EMPM pair space, 6j table & F blocks ...'
         call timer_start(t1)
         call EMPM_pairs_make(Space,F_ph,Ph,Pairs)
         call timer_report(t1)
 
-        write(*,'(/,a)') 'Importing the 2-phonon states of EMPM_2PH (Bin/EMPM_S2_*.bin) ...'
+        write(*,'(/,a)') 'Importing the 2-phonon states of EMPM_2PH (EMPM/bin/EMPM_S2_*.bin) ...'
         call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2)
-        if (S2%N == 0) call fatal('EMPM_3PH ... no 2-phonon states in Bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X = .true. first')
+        if (S2%N == 0) call fatal('EMPM_3PH ... no 2-phonon states in EMPM/bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X = .true. first')
         write(*,'(a)') TAB // 'Number of 2-phonon states = ' // istr(S2%N) // ' , physical ' // istr(count(.not. S2%Spur)) // &
                        ' , spurious ' // istr(count(S2%Spur))
-        open(newunit=uY, file=io_path(Params,'/EMPM/3Phonon/Summary.dat'), status='replace', action='write')
+        open(newunit=uY, file=empm_path(Params,'/3Phonon/Summary.dat'), status='replace', action='write')
         write(uY,'(a)') 'EMPM 3-phonon calculation ... ' // istr(S2%N) // ' 2-phonon states from EMPM_2PH , 3-phonon rows ' // &
                         'E_a + E_lambda <= ' // cfmt_f(Params%Calc%EMPM%E3max,0,4) // ' MeV , number of 1-phonon states = ' // &
                         istr(Ph%N)
@@ -385,7 +392,7 @@ contains
 
     ! Channels of the n-phonon step (n = 3, 4) ... basis |a lambda> of the (n-1)-phonon states S & the phonons, A & D with
         ! the densities of S computed from the lower level (Rlow, Slow), eigenproblem, spectrum & summary (unit uY), and the
-        ! n-phonon states (basis, E, C & X) in Bin/EMPM_S<n>_<JP>.bin for the (n+1)-phonon step ...
+        ! n-phonon states (basis, E, C & X) in EMPM/bin/EMPM_S<n>_<JP>.bin for the (n+1)-phonon step ...
     subroutine nph_channels(Params,Nph,Pairs,Ph,C1,Rlow,Slow,S,Emax,JP,uY,Space)
         type(params_t), intent(in) :: Params
         type(empm_space_t), intent(in) :: Space
@@ -421,14 +428,14 @@ contains
         Dnp(:,:) = EMPM_npnh_dims(Space,Nph,Nph*Ph%J_max + 1)
         call make_dir(states_dir(Params))
         write(*,'(a)') TAB // 'State files ... ' // states_dir(Params)
-        Dir = '/EMPM/' // Sn // 'Phonon'
+        Dir = '/' // Sn // 'Phonon'
         Ch = channels(JP,S%J_max + Ph%J_max)
-        open(newunit=uS, file=io_path(Params,Dir // '/Spectrum.dat'), status='replace', action='write')
+        open(newunit=uS, file=empm_path(Params,Dir // '/Spectrum.dat'), status='replace', action='write')
         write(uS,'(a)') cfmt_s('J',5,.true.) // ' ' // cfmt_s('P',5,.true.) // ' ' // cfmt_s('E',20,.true.) // ' ' // 'Spurious'
         write(uY,'(/,a)') Sn // '-phonon channels ...'
         write(uY,'(a)') cfmt_s('J^P',6) // cfmt_s('N_full',12) // cfmt_s('N_tr',10) // cfmt_s('N_spur',8) // cfmt_s('N_ind',10) // &
                         cfmt_s('N_sp_sol',10) // cfmt_s('|AD-DA|max',14) // cfmt_s('seconds',12)
-        open(newunit=u, file=io_path(Params,Dir // '/States' // Sn // '.dat'), status='replace', action='write')
+        open(newunit=u, file=empm_path(Params,Dir // '/States' // Sn // '.dat'), status='replace', action='write')
         write(u,'(a)') Sn // '-phonon states ... index (channels in the order of the run), J, P, E, spurious (1) ... C, X & ' // &
                        'the couplings of the spurious states in ' // states_dir(Params) // '/EMPM_S' // Sn // '_<JP>.bin'
         Ns = 0
@@ -593,8 +600,8 @@ contains
         close(uS)
     end subroutine nph_channels
 
-    ! 4-phonon EMPM on top of a complete EMPM_3PH run ... the 2- & 3-phonon states (basis, E, C & X) from Bin/EMPM_S2_*.bin &
-        ! Bin/EMPM_S3_*.bin, the 2-phonon densities of all 2-phonon states cached, the 3-phonon densities on the fly ...
+    ! 4-phonon EMPM on top of a complete EMPM_3PH run ... the 2- & 3-phonon states (basis, E, C & X) from EMPM/bin/EMPM_S2_*.bin &
+        ! EMPM/bin/EMPM_S3_*.bin, the 2-phonon densities of all 2-phonon states cached, the 3-phonon densities on the fly ...
         ! basis |c lambda> of the 3-phonon states c & the phonons, rows E_c + E_lambda <= E4max, channels JP4 ...
     subroutine EMPM_4PH(Params)
         type(params_t), intent(in) :: Params
@@ -613,32 +620,34 @@ contains
         !$ call omp_set_max_active_levels(1)
         write(*,'(a)') 'Starting EMPM 4-phonon calculation ...'
         write(*,'(a)') trim(Params%Calc%Path)
-        if (.not. is_dir(io_path(Params,'/EMPM'))) then
-            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in given Input_File path ... run EMPM_TDA first ...'
+        ! the reference first: EMPM/bin may be left over from an earlier run on a reference that is gone ...
+        if (.not. EMPM_reference_check(Params,.false.)) return
+        if (.not. is_dir(empm_path(Params,'/bin'))) then
+            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in ' // empm_path(Params,'/bin') // ' ... run EMPM_TDA first ...'
             return
         end if
-        call remove_dir(io_path(Params,'/EMPM/4Phonon'))
-        call make_dir(io_path(Params,'/EMPM/4Phonon'))
+        call remove_dir(empm_path(Params,'/4Phonon'))
+        call make_dir(empm_path(Params,'/4Phonon'))
         call timer_start(t0)
 
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = EMPM_reference_orbitals(Params)
         call EMPM_space_make(Params,Orb,Space)
-        call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
+        call Fmat_import(Space,empm_path(Params,'/bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
         write(*,'(/,a)') 'Preparing the EMPM pair space, 6j table & F blocks ...'
         call timer_start(t1)
         call EMPM_pairs_make(Space,F_ph,Ph,Pairs)
         call timer_report(t1)
 
-        write(*,'(/,a)') 'Importing the 2- & 3-phonon states of EMPM_3PH (Bin/EMPM_S2_*.bin & Bin/EMPM_S3_*.bin) ...'
+        write(*,'(/,a)') 'Importing the 2- & 3-phonon states of EMPM_3PH (EMPM/bin/EMPM_S2_*.bin & EMPM/bin/EMPM_S3_*.bin) ...'
         call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2)
-        if (S2%N == 0) call fatal('EMPM_4PH ... no 2-phonon states in Bin/EMPM_S2_*.bin, run EMPM_3PH first')
+        if (S2%N == 0) call fatal('EMPM_4PH ... no 2-phonon states in EMPM/bin/EMPM_S2_*.bin, run EMPM_3PH first')
         call EMPM_states_read(states_prefix(Params,3),3*Ph%J_max,S2%N,Ph%N,S3)
-        if (S3%N == 0) call fatal('EMPM_4PH ... no 3-phonon states in Bin/EMPM_S3_*.bin, run EMPM_3PH first')
+        if (S3%N == 0) call fatal('EMPM_4PH ... no 3-phonon states in EMPM/bin/EMPM_S3_*.bin, run EMPM_3PH first')
         write(*,'(a)') TAB // '2-phonon states = ' // istr(S2%N) // ' (spurious ' // istr(count(S2%Spur)) // ') , 3-phonon ' // &
                        'states = ' // istr(S3%N) // ' (spurious ' // istr(count(S3%Spur)) // ')'
 
-        open(newunit=uY, file=io_path(Params,'/EMPM/4Phonon/Summary.dat'), status='replace', action='write')
+        open(newunit=uY, file=empm_path(Params,'/4Phonon/Summary.dat'), status='replace', action='write')
         write(uY,'(a)') 'EMPM 4-phonon calculation ... ' // istr(S2%N) // ' 2-phonon & ' // istr(S3%N) // &
                         ' 3-phonon states from EMPM_3PH , 4-phonon rows E_c + E_lambda <= ' // &
                         cfmt_f(Params%Calc%EMPM%E4max,0,4) // ' MeV , number of 1-phonon states = ' // istr(Ph%N)
@@ -665,7 +674,7 @@ contains
     ! Full EMPM Hamiltonian per J^P channel, diagonalized sequentially with up to 1, 2, .. Full_N (<= 4) phonons, on top of
         ! complete EMPM_2PH (Save_X), EMPM_3PH & EMPM_4PH runs ... basis [ground (0+) ; 1-phonon ; 2- ; 3- ; 4-phonon states],
         ! H built once up to Full_N, its leading [0 ; .. ; n] block diagonalized for n = 1 .. Full_N, each with its own outputs
-        ! in EMPM/Full/<n>Phonon & Bin/EMPM_FULL<n>_<JP>_*.bin ... diagonal the energies of each subspace, couplings
+        ! in EMPM/Full/<n>Phonon & EMPM/bin/EMPM_FULL<n>_<JP>_*.bin ... diagonal the energies of each subspace, couplings
         ! n+1 <- n: H = X^T V with V(alpha lambda; a) = (-1)^(Ja+J_alpha+J_lambda)/(2Ja+1) sum_s rho_(a alpha)(J_lambda; s) W(s,lambda)
         ! (n-phonon densities of a, as vintn12 & vintn23) ... n+2 <- n: only the pair-creation part V20 of H, which commutes with
         ! the phonon operators, G_0 = h20 = <gamma|H|0> of the 0+ 2-phonon states, G_n(beta; alpha) = 1/sqrt(2J+1)
@@ -706,15 +715,21 @@ contains
         if (Nf < 1 .or. Nf > 4) call fatal('EMPM_FULL ... Full_N must be 1, 2, 3 or 4')
         write(*,'(a)') 'Starting the full EMPM Hamiltonian, diagonalized with up to 1 .. ' // istr(Nf) // ' phonons ...'
         write(*,'(a)') trim(Params%Calc%Path)
-        call remove_dir(io_path(Params,'/EMPM/Full'))
+        ! the reference first: EMPM/bin may be left over from an earlier run on a reference that is gone ...
+        if (.not. EMPM_reference_check(Params,.false.)) return
+        if (.not. is_dir(empm_path(Params,'/bin'))) then
+            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in ' // empm_path(Params,'/bin') // ' ... run EMPM_TDA first ...'
+            return
+        end if
+        call remove_dir(empm_path(Params,'/Full'))
         do nn = 1, Nf
-            call make_dir(io_path(Params,'/EMPM/Full/' // istr(nn) // 'Phonon'))
+            call make_dir(empm_path(Params,'/Full/' // istr(nn) // 'Phonon'))
         end do
         call timer_start(t0)
 
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = EMPM_reference_orbitals(Params)
         call EMPM_space_make(Params,Orb,Space)
-        call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
+        call Fmat_import(Space,empm_path(Params,'/bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
         ! Ortho ... all spurious states are left out of the basis: the spurious 1- phonon i_cm (the normalized E1 vector of
             ! EMPM_TDA) & the spurious n-phonon states (the last ones of each channel, n_phys = N_phys(J,P) physical) ... the
@@ -750,25 +765,25 @@ contains
         CMn = CMx .or. CMl .or. (Params%Calc%EMPM%CM_Ncm .and. (Ph%i_cm == 0 .or. Keep))
         CMa = CMx .or. CMp .or. CMl .or. CMn
 
-        write(*,'(/,a)') 'Importing the n-phonon states (Bin/EMPM_S<n>_*.bin) ...'
+        write(*,'(/,a)') 'Importing the n-phonon states (EMPM/bin/EMPM_S<n>_*.bin) ...'
         J_all = Ph%J_max
         if (Nf >= 2) then
             ! Full_N = 2 ... X of the 2-phonon states per channel only when needed (Lazy, load_x2 / free_x2), as for the 4-phonon
                 ! states with Full_N = 4 (208Pb: X of all 2-phonon channels 311 GB) ...
             call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2,Lazy=(Nf == 2),No_Xt=.true.)
-            if (S2%N == 0) call fatal('EMPM_FULL ... no 2-phonon states in Bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X first')
+            if (S2%N == 0) call fatal('EMPM_FULL ... no 2-phonon states in EMPM/bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X first')
             J_all = max(J_all, S2%J_max)
         end if
         if (Nf >= 3) then
             call EMPM_states_read(states_prefix(Params,3),3*Ph%J_max,S2%N,Ph%N,S3,No_Xt=.true.)
-            if (S3%N == 0) call fatal('EMPM_FULL ... no 3-phonon states in Bin/EMPM_S3_*.bin, run EMPM_3PH first')
+            if (S3%N == 0) call fatal('EMPM_FULL ... no 3-phonon states in EMPM/bin/EMPM_S3_*.bin, run EMPM_3PH first')
             J_all = max(J_all, S3%J_max)
         end if
         if (Nf >= 4) then
             ! Lazy ... X of the 4-phonon states per channel only when needed (EMPM_states_load_X): X(J,P) while J^P is built
                 ! & coupled to N_cm, X(Jt,Pt) of one intermediate channel at a time in EMPM_cm_blocks ...
             call EMPM_states_read(states_prefix(Params,4),4*Ph%J_max,S3%N,Ph%N,S4,Lazy=.true.,No_Xt=.true.)
-            if (S4%N == 0) call fatal('EMPM_FULL ... no 4-phonon states in Bin/EMPM_S4_*.bin, run EMPM_4PH first')
+            if (S4%N == 0) call fatal('EMPM_FULL ... no 4-phonon states in EMPM/bin/EMPM_S4_*.bin, run EMPM_4PH first')
             J_all = max(J_all, S4%J_max)
         end if
         write(*,'(a)') TAB // 'States ... 1-phonon ' // istr(Ph%N) // &
@@ -1044,7 +1059,7 @@ contains
                     end if
                     if (CMn) Mcm = Mcm + mtm(Bt,Bt)
                     if (Params%Calc%EMPM%CM_Dump) then
-                        open(newunit=uC, file=io_path(Params,'/Bin/EMPM_CMB_' // Tag // '_' // jp_str(Jt,Pt) // '.bin'), &
+                        open(newunit=uC, file=empm_path(Params,'/bin/EMPM_CMB_' // Tag // '_' // jp_str(Jt,Pt) // '.bin'), &
                              access='stream', form='unformatted', status='replace', action='write')
                         write(uC) size(Bph,1), size(Bph,2)
                         write(uC) Bph, Bhp, Bd
@@ -1077,7 +1092,7 @@ contains
                     end if
                 end if
                 if (Params%Calc%EMPM%CM_Dump) then
-                    open(newunit=uC, file=io_path(Params,'/Bin/EMPM_CMH_' // Tag // '.bin'), access='stream', &
+                    open(newunit=uC, file=empm_path(Params,'/bin/EMPM_CMH_' // Tag // '.bin'), access='stream', &
                          form='unformatted', status='replace', action='write')
                     write(uC) N, [n0, n1, n2, n3, n4]
                     write(uC) Hf
@@ -1322,7 +1337,7 @@ contains
         ! Output of one diagonalization of the full H with up to nn phonons, the same for all variants (Lab = unproj, proj,
             ! svd, lawson, projL, exact, space): EMPM/Full/<nn>Phonon/Full_<Lab>_<JP>.dat ... i, E (MeV, relative to E_HF),
             ! exact <N_cm> (-1 without CMn), phys = <N_cm> < 0.5 (1 for all states without <N_cm>), 0- .. 4-phonon weights;
-            ! Bin/EMPM_FULL<nn>_<JP>_E_<Lab>.bin & _Ncm_<Lab>.bin, with Zb also _Z_<Lab>.bin (Nb, then the eigenvectors on
+            ! EMPM/bin/EMPM_FULL<nn>_<JP>_E_<Lab>.bin & _Ncm_<Lab>.bin, with Zb also _Z_<Lab>.bin (Nb, then the eigenvectors on
             ! the <= nn basis); the lowest states in the log & Summary_<Lab>.dat (unproj / svd, proj) ...
         subroutine write_full(Lab,Ev,Z,Nc,Zb)
             character(len=*), intent(in) :: Lab
@@ -1356,8 +1371,8 @@ contains
             end do
             Nph = size(Ev)
             if (size(Nc) > 0) Nph = count(Nc < 0.5_dp)
-            Dir = '/EMPM/Full/' // istr(nn) // 'Phonon'
-            open(newunit=uq, file=io_path(Params,Dir // '/Full_' // Lab // '_' // Tag // '.dat'), status='replace', action='write')
+            Dir = '/Full/' // istr(nn) // 'Phonon'
+            open(newunit=uq, file=empm_path(Params,Dir // '/Full_' // Lab // '_' // Tag // '.dat'), status='replace', action='write')
             write(uq,'(a)') 'EMPM_FULL J^P = ' // Tag // ' with up to ' // istr(nn) // ' phonons, ' // Ds // ' ... basis ' // &
                             istr(Nb(0)) // ' + ' // istr(Nb(1)) // ' + ' // istr(Nb(2)) // ' + ' // istr(Nb(3)) // ' + ' // &
                             istr(Nb(4)) // ' (0- .. 4-phonon), ' // istr(size(Ev)) // ' states, ' // istr(Nph) // ' physical' // &
@@ -1397,19 +1412,19 @@ contains
                 end if
             end do
             close(uq)
-            Bf = '/Bin/EMPM_FULL' // istr(nn) // '_' // Tag // '_'
-            open(newunit=uq, file=io_path(Params,Bf // 'E_' // Lab // '.bin'), access='stream', form='unformatted', &
+            Bf = '/bin/EMPM_FULL' // istr(nn) // '_' // Tag // '_'
+            open(newunit=uq, file=empm_path(Params,Bf // 'E_' // Lab // '.bin'), access='stream', form='unformatted', &
                  status='replace', action='write')
             write(uq) Ev
             close(uq)
             if (size(Nc) > 0) then
-                open(newunit=uq, file=io_path(Params,Bf // 'Ncm_' // Lab // '.bin'), access='stream', form='unformatted', &
+                open(newunit=uq, file=empm_path(Params,Bf // 'Ncm_' // Lab // '.bin'), access='stream', form='unformatted', &
                      status='replace', action='write')
                 write(uq) Nc
                 close(uq)
             end if
             if (Zb) then
-                open(newunit=uq, file=io_path(Params,Bf // 'Z_' // Lab // '.bin'), access='stream', form='unformatted', &
+                open(newunit=uq, file=empm_path(Params,Bf // 'Z_' // Lab // '.bin'), access='stream', form='unformatted', &
                      status='replace', action='write')
                 write(uq) Nb
                 write(uq) Z
@@ -1421,7 +1436,7 @@ contains
         subroutine summary_open(us1,Lab)
             integer, intent(out) :: us1
             character(len=*), intent(in) :: Lab
-            open(newunit=us1, file=io_path(Params,'/EMPM/Full/' // istr(nn) // 'Phonon/Summary_' // Lab // '.dat'), &
+            open(newunit=us1, file=empm_path(Params,'/Full/' // istr(nn) // 'Phonon/Summary_' // Lab // '.dat'), &
                  status='replace', action='write')
             write(us1,'(a)') 'EMPM_FULL with up to ' // istr(nn) // ' phonons, ' // Lab // ' ... per J^P the dimensions n0 .. n4, ' // &
                              'the number of states & of physical states (<N_cm> < 0.5), the lowest physical state: index, E ' // &
@@ -1501,10 +1516,10 @@ contains
         ! between the EMPM bases [0 ; 1-phonon ; 2-phonon] by the machinery of the CM operator (EMPM_cm_blocks: ph part
         ! 1/sqrt3 sum_lambda bL X, hp part, pp/hh part by the density recursion; Q Hermitian: bR = bL, EMPM_op_make), the
         ! within-level matrices only for the block 1- x 0+ (EMPM_cm_dlevels_nc with Sel) ... M_t(k) = Z_1-(:,k)^T B_t
-        ! Z_0+(:,gs) with the eigenvectors of Bin/EMPM_FULL<n>_<JP>_Z_<lab>.bin (lab = unproj or svd, proj), n = 1 .. Full_N,
+        ! Z_0+(:,gs) with the eigenvectors of EMPM/bin/EMPM_FULL<n>_<JP>_Z_<lab>.bin (lab = unproj or svd, proj), n = 1 .. Full_N,
         ! gs = the lowest 0+ state with <N_cm> < 0.5 (the lowest one without <N_cm>) ... B_ph = M_p^2, B_is = (M_p + M_n)^2/4,
         ! B_iv = (e_p M_p - e_n M_n)^2 (recoil charges N/A, Z/A), as EMPM_TDA_strengths & the NCSM transitions ...
-        ! EMPM/Transitions/Full<n>_<lab>_E1.dat (k, E, Ex = E - E_gs, N_cm, phys, B_ph, B_is, B_iv) ...
+        ! EMPM/transitions/Full<n>_<lab>_E1.dat (k, E, Ex = E - E_gs, N_cm, phys, B_ph, B_is, B_iv) ...
     subroutine EMPM_TRANS(Params)
         type(params_t), intent(in) :: Params
         type(orb1b_t), allocatable :: Orb(:)
@@ -1532,10 +1547,16 @@ contains
         if (Nf < 1 .or. Nf > 2) call fatal('EMPM_TRANS ... Full_N must be 1 or 2')
         write(*,'(a)') 'Starting B(E1; 0+ -> 1-) of the full EMPM states with up to 1 .. ' // istr(Nf) // ' phonons ...'
         write(*,'(a)') trim(Params%Calc%Path)
+        ! the reference first: EMPM/bin may be left over from an earlier run on a reference that is gone ...
+        if (.not. EMPM_reference_check(Params,.false.)) return
+        if (.not. is_dir(empm_path(Params,'/bin'))) then
+            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in ' // empm_path(Params,'/bin') // ' ... run EMPM_TDA first ...'
+            return
+        end if
         call timer_start(t0)
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = EMPM_reference_orbitals(Params)
         call EMPM_space_make(Params,Orb,Space)
-        call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
+        call Fmat_import(Space,empm_path(Params,'/bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
         Keep = Params%Calc%EMPM%CM_Keep .and. Ph%i_cm > 0
         if (Ph%i_cm > 0 .and. .not. Keep) call fatal('EMPM_TRANS ... needs complete sets (Ortho = .false., or Ortho with CM_Keep)')
@@ -1543,7 +1564,7 @@ contains
         call EMPM_pairs_make(Space,F_ph,Ph,Pairs)
         if (Nf >= 2) then
             call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2,Lazy=.true.,No_Xt=.true.)
-            if (S2%N == 0) call fatal('EMPM_TRANS ... no 2-phonon states in Bin/EMPM_S2_*.bin')
+            if (S2%N == 0) call fatal('EMPM_TRANS ... no 2-phonon states in EMPM/bin/EMPM_S2_*.bin')
         end if
         call EMPM_states1_make(Ph,S1)
         e_p = real(Params%Calc%A - Params%Calc%Z,dp)/real(Params%Calc%A,dp)
@@ -1571,7 +1592,7 @@ contains
             call trans_mem('E1 blocks')
         end do
 
-        if (.not. is_dir(io_path(Params,'/EMPM/Transitions'))) call make_dir(io_path(Params,'/EMPM/Transitions'))
+        if (.not. is_dir(empm_path(Params,'/transitions'))) call make_dir(empm_path(Params,'/transitions'))
         Labs = [character(len=8) :: 'unproj', 'proj']
         if (Ph%i_cm > 0 .and. .not. Keep) Labs(1) = 'svd'
         do nn = 1, Nf
@@ -1616,7 +1637,7 @@ contains
                     v = matmul(Bt(it)%v(1:r1,1:c0),Psi)
                     Mt(:,it) = matmul(v,Z1)
                 end do
-                open(newunit=u, file=io_path(Params,'/EMPM/Transitions/Full' // istr(nn) // '_' // Lab // '_E1' // Fsuf // '.dat'), &
+                open(newunit=u, file=empm_path(Params,'/transitions/Full' // istr(nn) // '_' // Lab // '_E1' // Fsuf // '.dat'), &
                      status='replace', action='write')
                 S = 0.0_dp
                 Sp = 0.0_dp
@@ -1661,7 +1682,7 @@ contains
             integer, intent(in) :: n
             character(len=*), intent(in) :: Tg, Lb
             character(len=:), allocatable :: F
-            F = io_path(Params,'/Bin/EMPM_FULL' // istr(n) // '_' // Tg // '_Z_' // Lb // '.bin')
+            F = empm_path(Params,'/bin/EMPM_FULL' // istr(n) // '_' // Tg // '_Z_' // Lb // '.bin')
         end function zfile
 
         ! eigenvectors (Nb, Z), energies & <N_cm> (empty if not written) of one EMPM_FULL diagonalization ...
@@ -1674,7 +1695,7 @@ contains
             integer(i8) :: Sz
             character(len=:), allocatable :: Fb
             logical :: Exn
-            Fb = io_path(Params,'/Bin/EMPM_FULL' // istr(n) // '_' // Tg // '_')
+            Fb = empm_path(Params,'/bin/EMPM_FULL' // istr(n) // '_' // Tg // '_')
             inquire(file=Fb // 'E_' // Lb // '.bin', size=Sz)
             Nst = int(Sz/8_i8)
             allocate(E(Nst))
@@ -1738,7 +1759,7 @@ contains
     end subroutine EMPM_TRANS
 
     ! Strength function B(E1; 0+_gs -> 1-) of the EMPM with up to 3 phonons by Lanczos, without the 3-phonon eigenproblem ...
-        ! g.s. = the lowest 0+ of EMPM_FULL with Full_N = 2 (Bin/EMPM_FULL2_0+_Z_unproj.bin), 1- space = [1-phonon ;
+        ! g.s. = the lowest 0+ of EMPM_FULL with Full_N = 2 (EMPM/bin/EMPM_FULL2_0+_Z_unproj.bin), 1- space = [1-phonon ;
         ! 2-phonon states (EMPM_S2) ; redundant 3-phonon basis |a lambda; 1-> of all 2-phonon states a & phonons lambda] ...
         ! a vector of the 3-phonon sector is kept by its coefficients c on the redundant basis (not unique): the equations of
         ! motion give H|i> = sum_k A(i,k)|k>, so H acts as c -> A^T c, and the scalar product is c^T D d with the metric D ...
@@ -1830,6 +1851,12 @@ contains
                        istr(m) // ' steps), ' // trim(merge('redundant 3-phonon basis              ','independent rows of the 3-phonon basis',Full)) // ' ...'
         write(*,'(a)') trim(Params%Calc%Path)
         if (m < 1) call fatal('EMPM_SF ... SF_Steps must be positive')
+        ! the reference first: EMPM/bin may be left over from an earlier run on a reference that is gone ...
+        if (.not. EMPM_reference_check(Params,.false.)) return
+        if (.not. is_dir(empm_path(Params,'/bin'))) then
+            write(*,'(/,a)') 'Error! ... No EMPM TDA solution is available in ' // empm_path(Params,'/bin') // ' ... run EMPM_TDA first ...'
+            return
+        end if
         e_p = real(Params%Calc%A - Params%Calc%Z,dp)/real(Params%Calc%A,dp)
         e_n = real(Params%Calc%Z,dp)/real(Params%Calc%A,dp)
         select case (Nm)
@@ -1843,15 +1870,15 @@ contains
             call fatal('EMPM_SF ... SF_Op must be ''iv'', ''is'' or ''ph''')
         end select
         call timer_start(t0)
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        Orb = EMPM_reference_orbitals(Params)
         call EMPM_space_make(Params,Orb,Space)
-        call Fmat_import(Space,io_path(Params,'/Bin/EMPM_F.bin'),F_ph)
+        call Fmat_import(Space,empm_path(Params,'/bin/EMPM_F.bin'),F_ph)
         call EMPM_phonons_import(Params,Space,F_ph,Ph)
         if (Ph%i_cm > 0) call fatal('EMPM_SF ... needs the complete sets of Ortho = .false.')
         if (Ph%J_max < 1) call fatal('EMPM_SF ... no 1- phonons')
         call EMPM_pairs_make(Space,F_ph,Ph,Pairs)
         call EMPM_states_read(states_prefix(Params,2),2*Ph%J_max,Ph%N,Ph%N,S2)
-        if (S2%N == 0) call fatal('EMPM_SF ... no 2-phonon states in Bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X first')
+        if (S2%N == 0) call fatal('EMPM_SF ... no 2-phonon states in EMPM/bin/EMPM_S2_*.bin, run EMPM_2PH with Save_X first')
         call EMPM_states1_make(Ph,S1)
         n1 = Ph%N_ch(1,2)
         l0 = Ph%First(1,2)
@@ -1894,7 +1921,7 @@ contains
         ! ground state: the lowest 0+ of EMPM_FULL with up to 2 phonons, basis [HF ; 0+ phonons ; 0+ 2-phonon states] ...
         call read_gs()
         if (Nb0(0) /= 1 .or. Nb0(1) /= Ph%N_ch(0,1) .or. Nb0(2) /= n20 .or. any(Nb0(3:4) /= 0)) &
-            call fatal('EMPM_SF ... the 0+ basis of Bin/EMPM_FULL2_0+_Z_unproj.bin does not match (EMPM_FULL with Full_N = 2)')
+            call fatal('EMPM_SF ... the 0+ basis of EMPM/bin/EMPM_FULL2_0+_Z_unproj.bin does not match (EMPM_FULL with Full_N = 2)')
         write(*,'(a)') TAB // 'g.s. = 0+ state ' // istr(g) // ' of EMPM_FULL (<= 2 phonons) , E - E_HF = ' // cfmt_f(Eg,0,6) // &
                        ' MeV , weights 0 / 1 / 2 phonons = ' // cfmt_f(Psi(1)**2,0,4) // ' / ' // &
                        cfmt_f(sum(Psi(2:1+Nb0(1))**2),0,4) // ' / ' // cfmt_f(sum(Psi(2+Nb0(1):)**2),0,4)
@@ -2014,8 +2041,8 @@ contains
             write(*,'(a)') TAB // 'total strength S0 = |Q g|^2 = ' // cfmt_e(S0,0,10) // ' e^2 fm^2 (1- / 2- / 3-phonon parts ' // &
                            cfmt_f(sum(x12(1:n1)**2)/S0,0,6) // ' / ' // cfmt_f(sum(x12(n1+1:)**2)/S0,0,6) // ' / ' // &
                            cfmt_f(dot_product(Yv(:,nc),Yv(:,nc))/S0,0,6) // ')'
-            call make_dir(io_path(Params,'/EMPM/SF'))
-            Fl = io_path(Params,'/EMPM/SF/SF_E1_' // Nm // '.dat')
+            call make_dir(empm_path(Params,'/SF'))
+            Fl = empm_path(Params,'/SF/SF_E1_' // Nm // '.dat')
             DimS = istr(n1) // ' + ' // istr(n2) // ' + ' // istr(r) // ' (independent rows of ' // istr(B3%N_tr) // ')'
             allocate(Q12(n12,m+1), Q3(r,m+1), al(m), be(m), w12(n12), wy(r))
             Q12(:,1) = x12/sqrt(S0)
@@ -2115,8 +2142,8 @@ contains
             write(*,'(a)') TAB // 'total strength S0 = |Q g|^2 = ' // cfmt_e(S0,0,10) // ' e^2 fm^2 (1- / 2- / 3-phonon parts ' // &
                            cfmt_f(sum(x12(1:n1)**2)/S0,0,6) // ' / ' // cfmt_f(sum(x12(n1+1:)**2)/S0,0,6) // ' / ' // &
                            cfmt_f(dot_product(x3,px)/S0,0,6) // ')'
-            call make_dir(io_path(Params,'/EMPM/SF'))
-            Fl = io_path(Params,'/EMPM/SF/SF_E1_' // Nm // '.dat')
+            call make_dir(empm_path(Params,'/SF'))
+            Fl = empm_path(Params,'/SF/SF_E1_' // Nm // '.dat')
             DimS = istr(n1) // ' + ' // istr(n2) // ' + ' // istr(N3) // ' (redundant)'
             allocate(Q12(n12,m+1), Q3(N3,m+1), P3(N3,m+1), al(m), be(m))
             Q12(:,1) = x12/sqrt(S0)
@@ -2209,14 +2236,14 @@ contains
             !$omp end parallel do
         end subroutine axpy3
 
-        ! g.s. from Bin/EMPM_FULL2_0+_{E,Z,Ncm}_unproj.bin: the lowest 0+ (with <N_cm> < 0.5 when <N_cm> is there) ...
+        ! g.s. from EMPM/bin/EMPM_FULL2_0+_{E,Z,Ncm}_unproj.bin: the lowest 0+ (with <N_cm> < 0.5 when <N_cm> is there) ...
         subroutine read_gs()
             integer :: uz, Nst
             integer(i8) :: Sz
             real(dp), allocatable :: Nc(:)
             character(len=:), allocatable :: Fb
             logical :: Ex
-            Fb = io_path(Params,'/Bin/EMPM_FULL2_0+_')
+            Fb = empm_path(Params,'/bin/EMPM_FULL2_0+_')
             inquire(file=Fb // 'Z_unproj.bin', exist=Ex)
             if (.not. Ex) call fatal('EMPM_SF ... no ' // Fb // 'Z_unproj.bin, run EMPM_FULL with Full_N = 2 first')
             inquire(file=Fb // 'E_unproj.bin', size=Sz)
@@ -2300,7 +2327,7 @@ contains
         end subroutine sf_write
     end subroutine EMPM_SF
 
-    ! Folder of the n-phonon state files EMPM_S<n>_<JP>.bin ... States_Dir (a leading $VARIABLE expanded) or Bin of the
+    ! Folder of the n-phonon state files EMPM_S<n>_<JP>.bin ... States_Dir (a leading $VARIABLE expanded) or EMPM/bin of the
         ! output folder ...
     function states_dir(Params) result(Dir)
         type(params_t), intent(in) :: Params
@@ -2310,7 +2337,7 @@ contains
 
         Dir = trim(adjustl(Params%Calc%EMPM%States_Dir))
         if (len(Dir) == 0) then
-            Dir = io_path(Params,'/Bin')
+            Dir = empm_path(Params,'/bin')
             return
         end if
         if (Dir(1:1) == '$') then

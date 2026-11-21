@@ -52,7 +52,7 @@ contains
             call TDA_transitions_recalculate(Inp%Params)
         case ('RPA_transitions_recalculate')
             call RPA_transitions_recalculate(Inp%Params)
-        ! LEGACY (removed in cleanup stage) ... base-version HF-RPA / HF-RRPA (EMPM reads HF_RPA output until stage 5) ...
+        ! LEGACY (removed in cleanup stage) ... base-version HF-RPA / HF-RRPA on the HF_LEGACY output (io/<Path>/Bin) ...
         case ('HF_RPA')
             call HF_RPA(Inp%Params)
         case ('HF_RPA_transition_densities')

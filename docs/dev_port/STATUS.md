@@ -577,3 +577,130 @@ Still open (owner decisions / not run):
 - Edge cases checked only by reading: RPA 1- with `Ortho = .true.` and N_ph = 1; transition currents with M = 0 for
   E1/E3; TDA externals with `Reference_TBCF`. Stage-1 `OBDM_natural_orbitals` and the other routines listed by the
   review as not compared line by line are covered only by the matching test cases.
+
+## 2026-11-21 — stage 5 part 1, EMPM on the dev HF reference (spec `consumers.md` sections 2, 3; owner decisions 1-8)
+
+Done (details & deviations in `docs/PORTING_NOTES.md`, section "stage 5 part 1"):
+- Shared helpers (section 2; the rest existed since stages 1-4): `nj_params::ref_path`; `nj_orbitals::read_h1b_diag`
+  (diagonal check 1e-10) and the reference specific of the generic `orbitals_ph_make` (Orb from `orb.bin`, H1b path,
+  holes/particles with 1e-8, fatal on fractional occupations); `nj_linalg::spurious_ortho` (core, moved from
+  `nj_ph_common::ph_spurious_ortho`, used by the dev TDA/RPA and the EMPM). `&empm Reference` (default 'HF') in
+  `nj_params` / `nj_input` (`read_empm` now assigns component-wise).
+- EMPM (section 3.1-3.4): all seven steps read `io/<Path>/<Reference>/bin/{orb,C,H1b,H2b}.bin`; reference / BMF /
+  diagonal / integer-occupation checks; dev spurious convention (E(1) = <spur|A|spur>, cut 1e-14, core `spurious_ortho`,
+  `eig_sym`); output layout `io/<Path>/EMPM/{bin,spectra,transitions}` + `TDA_summary.dat` (dev text), other names
+  unchanged; `States_Dir` default `EMPM/bin`; local `EMPM_phonon_count` and summary helpers, so `src/empm` no longer
+  uses `nj_hf_rpa` / `nj_hf_rpa_export` (`files.mk` comment updated). `nujuliet.f90`: `EMPM*` no longer route `'HF'`
+  to `HF_LEGACY` (`NCSM` still does; part 2).
+- New test case `empm_ncsm` (no Julia counterpart): legacy baseline inputs `tests/dev_port/fortran/empm_ncsm_legacy/`
+  (frozen binary `nujuliet-snap-d753f29`, `HF_LEGACY` + EMPM_* + NCSM), dev inputs `fortran/empm_ncsm/` (dev HF +
+  EMPM_* + dev TDA; the NCSM twins are `*.nml.todo` for part 2), error cases `fortran/empm_ncsm/errors/`,
+  `run_empm_ncsm.sh baseline|dev|compare`, `empm_compare.py` (legacy→dev name map, max deviation per file, eigenvector
+  gauges, `--tda` mode). README section "Stage-5 EMPM / NCSM checks".
+
+Verification (binary `nujuliet_s5`, build dir `build_s5`; baseline `work/empm_baseline`, dev `work/empm_dev_t16`):
+- Baseline (frozen binary, 16 threads): 18 files, 45 s wall in all (02_He4c_EMPM 38.8 s, every other file <= 1 s).
+  Dev chain: 12 files, 45 s (02_He4c_EMPM 38.1 s).
+- dev HF vs legacy HF (Tol 1e-10): `C/H1b/H2b/rho.bin` identical for 4He, <= 3.6e-15 for 16O / 40Ca (C, H2b column
+  signs for 40Ca); same level order (closed shells, Aufbau = naive filling here).
+- Dev vs baseline, `empm_compare.py` (1714 files, tol 1e-10): energies / spectra (875 files: `*_E*.bin`, `Spectrum.dat`,
+  `Full_*.dat`, `TDA.dat`) max 7.0e-11 relative (O16w 2PH 0+, ill-conditioned spurious D block; all others <= 9.4e-12),
+  `*_Ncm_*.bin` (329) <= 3.0e-13, transitions & SF (39: TDA_E<L>, Full<n>_<lab>_E1*, SF_E1_*) 0 beyond the printed
+  digits, `Levels.dat`, `TDA_Structure.dat` (|X|), `Basis_*.dat` (without the Ind column), `States*.dat`,
+  `Summary*.dat` (without timings) equal; He4c (complete 4-phonon chain, Ortho false) and He4t (TRANS, SF) every file
+  exact. Spurious E(1) (12 files `ok*`/`SIGN*`): legacy 0, dev 1.935505 (He4o), 0.518022 (O16), 0.557930 (O16w),
+  -3.957443 (Ca40) MeV, all other values equal. GAUGE (20 files, O16/O16w/Ca40/He4o 2PH): another choice of
+  independent rows among dependent ones in a few rows (`Ind`, `Kc`), energies equal. DIFF (47): 45 He4o amplitude
+  files (2PH C, S2/S3, FULL Z: the 1- phonons of the Ortho TDA come out with other signs/rotations, a basis gauge;
+  energies, N_cm, weights, B(E1) of He4o equal) and O16w `EMPM_FULL_{0+,1-}_Z.bin`. MISSING 21: NCSM (part 2).
+- Proof that the remaining differences are only the spurious convention + 1e-16 HF input: scratch build with the legacy
+  spurious algorithm (`Spur_Ortho`, `eig_general`, E(1) = 0, cut 1e-6): He4o all files ok (0 DIFF); the same build on the
+  legacy HF files (symlinked as `HF/bin/*`) reproduces the frozen binary's O16 and Ca40 EMPM bit for bit (47 files, max 0).
+- EMPM_TDA (full space) vs the dev TDA action (Reference 'HF'; He4c Ortho false, He4o, O16, Ca40 Ortho true):
+  `spectra/TDA.dat` and `transitions/TDA_E{0,1,2,3}.dat` identical to the printed digits, `EMPM_TDA_E.bin` vs
+  `TDA_E.bin` <= 1.6e-13 MeV (incl. the spurious E(1)).
+- Error paths (`errors/`): fractional occupations (20O, ESH false), `BMF = false` (no H2b.bin), `Reference = 'HF-MBPT'`
+  (non-diagonal H1b), missing reference (message + skip, exit 0), EMPM_2PH without EMPM_TDA (message + skip),
+  `Reference` with '/': all give the expected message.
+- Threads: 8 vs 16 threads 191 of 1805 files differ at 1e-12, 1 vs 16 threads 198 (energies <= 2.2e-11, SF Lanczos
+  coefficients 9e-8, otherwise eigenvector signs / degenerate rotations / pivot choices); the frozen binary shows the
+  same (8 vs 16: 194 of 1732 files, the same files and sizes): threaded MKL in EMPM_TDA (dsyevr signs) .. FULL, not a
+  race of the stage-5 code. Wall time of the dev chain: 16 threads 44 s, 8 threads 70 s, 1 thread 439 s (He4c 409 s).
+  Debug build (`-check all -warn all`, `build_s5_dbg`, removed afterwards): all dev steps except He4c run
+  without runtime errors (array-temporary warnings of the existing EMPM code only), no compiler warnings.
+- Regression of the dev TDA/RPA after the `spurious_ortho` move: bundled O16 steps 01-04 vs Julia 141 ok, 12 SIGN,
+  0 DIFF (as stage 3).
+
+Open items (part 2): NCSM on the reference (`window_make` already reads the EMPM reference H1b through the default of
+`EMPM_space_make`, but its `Orb` still comes from `orbitals_make`), the `NCSM` routing in `nujuliet.f90`, the NCSM
+dev inputs (`*.nml.todo`), the app layer and README/CLAUDE.md (consumers.md sections 4, 5, 7).
+
+## 2026-11-21 — stage 5 part 2, NCSM on the dev HF reference, app layer, README (spec `consumers.md` sections 4, 5, 7)
+
+Done (details & deviations in `docs/PORTING_NOTES.md`, section "stage 5 part 2"):
+- NCSM (section 4): orbitals from `<&empm Reference>/bin/orb.bin` for `Hamiltonian = 'EMPM'` or `Basis = 'HF'`, else
+  `orbitals_make(Params)` (Calc.Nmax size, was LEGACY Int.Nmax); `'EMPM'` Hamiltonian reads `H2b.bin` (missing: fatal),
+  `H1b.bin` via `read_h1b_diag` (non-diagonal: fatal), `C.bin`, `rho.bin` (diagonal 0/1 within 1e-8, else fatal, values
+  used as read), E_HF from `<Reference>/HF_summary.dat`; `trans_init` reads `<Reference>/bin/C.bin`; `window_make` gets
+  the reference orbitals (NCSM `Window` works again); `V2b_read(Params,V,Orb_NN)` signature was already the dev one.
+  Outputs unchanged in `io/<Path>/NCSM/`.
+- `nujuliet.f90`: `NCSM` no longer routes `'HF'` to `HF_LEGACY` (only `HF_RPA*`, `HF_RRPA*` do); usage text names
+  `io/`; dispatcher comments (incl. the stubs). Removed-action fatals not added (owner decision, stage 6);
+  `&transition_currents M` default stays 0 (deviation, same result as dev's -1); `&parse` + `V2b_parse` /
+  `V3b_no2b_parse` existed.
+- Tests: `fortran/empm_ncsm/*NCSM*.nml.todo` renamed to `.nml` (06, 07, 08, 13, 16); new error cases
+  `errors/e7_ncsm_fractional` (20O ESH false, NCSM EMPM/HO), `e8_ncsm_hf_mbpt` (Reference 'HF-MBPT', NCSM EMPM/HF),
+  `e9_ncsm_fractional_window` (20O, NCSM `Window`). `tests/dev_port/README.md` updated.
+- README.md (section 7: actions table, namelists, output layout, EMPM, NCSM, compatibility, verification);
+  CLAUDE.md "Runs" solver mapping and "Original Julia code" only.
+
+Verification (binary `nujuliet_s5`, `BUILD=build_s5`; clean full build: 0 warnings, identical binary to the incremental one):
+- `run_empm_ncsm.sh dev 16` (work/empm_dev_t16): all 17 files run (NCSM steps 0.07-0.14 s each); all 9 error cases give
+  the expected message (e7/e9: integer occupations, e8: "need an HF reference with diagonal H1b").
+- `run_empm_ncsm.sh compare 16`: DIFF 47, GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12, **0 MISSING** (the
+  EMPM rows are those of part 1). The 21 NCSM files: 17 ok (He4t 14 files incl. NN / EMPM-HO / EMPM-HF npnh with
+  transitions **byte-identical** to the baseline; O16 spectra; O16w `Window` 2.4e-15), 4 SIGN (O16 `_E0/_E1/_E2/_E3.dat`:
+  |d| <= 9.8e-13, the sign of the M_p, M_n amplitude columns = eigenvector phase). Cause: the 16O dev HF differs from the
+  legacy HF at <= 3.6e-15; the frozen binary run on the dev HF files (copied to the legacy names) gives the same kind
+  of roundoff/sign differences, and on identical HF files (4He) the dev NCSM is bit-identical. A first version that
+  snapped the occupations to exact 0/1 flipped signs in 8 He4t files; removed (values used as read).
+- Regression vs `work/julia_t8` (8 threads, compare.py 1e-8): bundled 411 ok + 36 SIGN; ca40_5sh 92 + 8; o16_open
+  106 + 7; hf_options 14; mbpt_options 23 + 6; rpa_options 308 + 29; qp_options 150 + 14 + 3 DIFF (the known O20_HBCS
+  HFB files); scrpa_options 197 + 22. 0 MISSING / EXTRA / SIZE. Same counts as stage 4.
+- Legacy: `runs/test_Ca40_9sh/stage5_final_legacy` (Ca40.nml: HF, HF_RPA, HF_RRPA, 16 threads, 2:17, 0.87 GB)
+  byte-identical to `stage2_mbpt_legacy/io` (`diff -rq`: no output).
+
+Open: `tests/empm_fci_check.py` still needs the HRF tables of `HF_LEGACY`; NCSM with a missing reference is fatal
+(EMPM: message + skip); stage 6 (cleanup): removed-action fatals, `&hf_efa`/`&rrpa`/legacy chain removal.
+
+## 2026-11-21 — stage 5 independent verification (final tree, clean `make`, `./nujuliet`)
+
+- Build: `build_s5`/`nujuliet_s5`/`build`/`nujuliet` removed, clean `make`: 0 warnings. No source changes by the verifier.
+- Fresh legacy baseline (frozen `nujuliet-snap-d753f29`, 16 threads, own work dir) vs fresh dev run of `./nujuliet`
+  (`empm_compare.py`, tol 1e-10): DIFF 47, GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12, 0 MISSING; no `ok` file
+  above 1e-10. Every legacy EMPM/NCSM/HF-reference file is mapped (only `HF/Densities` unmapped; dev-only files are
+  `orb.bin`, HF densities and the dev TDA). Independent checks of the non-ok classes:
+  He4o (HF inputs identical): `EMPM_2PH_*_C`, `EMPM_S2_*` (X and C) and `EMPM_FULL1_1-_Z_*` agree to <= 5e-13 once the
+  sign of the two flipped 1- phonons (i = 10, 11; spurious-projection algorithm) is applied to the 2-phonon / 1-phonon
+  basis; TDA amplitude sign changes are whole-phonon flips in He4o/O16/O16w, and in Ca40 a consistent product of phonon
+  signs and HF orbital signs (GF(2) solve, 0 contradictions; HF `C.bin` SIGN); Ca40/O16 `Basis_*` GAUGE = swapped
+  pivots |a b> vs |b a>; O16w `EMPM_FULL_{0+,1-}_Z` sit on the 0+/1- 2PH bases whose Ind flags differ (GAUGE);
+  O16 NCSM `_E*.dat` SIGN = whole-row phase flips of the M_p/M_n columns, other columns <= 1e-24 absolute.
+  EMPM_TDA vs dev TDA (`--tda`): spectra/transitions 0 beyond the printed digits, `EMPM_TDA_E` vs `TDA_E` <= 1.6e-13 MeV;
+  `EMPM_TDA_X.bin` and `TDA_X.bin` have the same sorted |X| (<= 1.1e-13), stored in another component order.
+- vs `work/julia_t8` (8 threads, compare.py 1e-8): bundled 411+36 SIGN, ca40_5sh 92+8, o16_open 106+7, hf_options 14,
+  mbpt_options 23+6, rpa_options 308+29, qp_options 150+14+3 DIFF (known O20_HBCS), scrpa_options 197+22;
+  0 SIZE/MISSING/EXTRA. Bundled 1 vs 8 threads (`--strict-sign`, 1e-12): 447 ok.
+- Legacy Ca40.nml (fresh dir, 16 threads, 2:29, 0.86 GB): `diff -rq` vs `stage2_mbpt_legacy/io` empty.
+- Error cases e1..e9: all give their EXPECT text. `Solvers = 'HF', 'EMPM_TDA', 'NCSM'` in one `&run` (16O): dev HF
+  (`HF/bin` identical to the separate run), no `Bin/` produced, NCSM energies equal.
+- grep `src/empm`, `src/ncsm`: no `Bin/`, `_HF.bin`, `IO/`; `nj_hf_rpa*` only in comments, no such `use`.
+- Review follow-up (same day): `empm_compare.py` allows SIGN only for sign-gauge files (`HF/bin/{C,H1b,H2b}.bin`,
+  `EMPM_TDA_X.bin`, `EMPM_F.bin`, `TDA_Structure.dat`, NCSM `_E<L>.dat` M_p/M_n columns per row), compares text numbers
+  beyond their own printed unit (was: the coarsest unit of the file, up to 1e-1 in the NCSM tables), checks the energies
+  of GAUGE `EMPM_2PH_*_C` files, exits 1 on DIFF/SIZE/MISSING; `--tda` reports missing files as MISSING; dead
+  `spurious_masks()` removed. EMPM_2PH..SF check the reference first; `'EMPM'` stops after a skipped EMPM_TDA (PORTING_NOTES
+  stage 5 part 2 item 7). Clean `make` 0 warnings; `run_empm_ncsm.sh dev 16` vs `work/empm_baseline`: DIFF 47 (He4o 45,
+  O16w 2: the known amplitude-basis files), GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12, 0 MISSING (classes
+  per file identical to before); `--tda` worst 1.5e-14, 0 MISSING; error cases e1..e11 ok; bundled vs `julia_t8`
+  (1e-8): 411 ok + 36 SIGN, 0 DIFF.

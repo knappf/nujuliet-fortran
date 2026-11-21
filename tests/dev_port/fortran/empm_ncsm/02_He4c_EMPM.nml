@@ -1,0 +1,26 @@
+! empm_ncsm dev-form input (dev HF -> EMPM/NCSM reading io/<Path>/<Reference>/bin/*); legacy twin in ../empm_ncsm_legacy
+! 4He 3 shells, complete EMPM chain up to 4 phonons, Ortho = false; FULL 1..4 with proj/unproj, exact CM, variants, Lawson;
+! dev TDA (Reference HF, Ortho = false) for the full-space EMPM_TDA == TDA check
+! Run all files of this directory in order from one work directory (see ../../run_empm_ncsm.sh dev)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 4, Z = 2, hw = 16.0, Nmax = 2, N2max = 4, N3max = 6
+  CMS = 'CMS1+2B'
+  Path = 'He4c'
+/
+&hf
+  Tol = 1e-10
+/
+&empm
+  Ortho = .false., Save_X = .true., Full_N = 4, Full_Diag = 'both', CM_Exact = .true., CM_Variants = .true., CM_Beta = 10.0
+/
+&tda
+  Ortho = .false.
+/
+&run
+  Solvers = 'TDA', 'EMPM_TDA', 'EMPM_2PH', 'EMPM_3PH', 'EMPM_4PH', 'EMPM_FULL'
+/

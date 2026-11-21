@@ -5,7 +5,7 @@ module nj_empm_space
     use nj_types
     use nj_params
     use nj_utils
-    use nj_orbitals, only : orbitals_ph_make
+    use nj_orbitals, only : orbitals_ph_make, orbitals_import
     implicit none
     private
 
@@ -25,8 +25,55 @@ module nj_empm_space
     end type empm_space_t
 
     public :: EMPM_space_make, EMPM_space_export, level_label, EMPM_npnh_dims
+    public :: empm_path, empm_ref_path, EMPM_reference_check, EMPM_reference_orbitals
 
 contains
+
+    ! io/<Path>/EMPM // Suffix ... the EMPM output folder (dev-style "Name" folder: bin/, spectra/, transitions/, Levels.dat,
+        ! TDA_summary.dat, 2Phonon/, ..., owned & wiped by EMPM_TDA) ...
+    function empm_path(Params,Suffix) result(Path)
+        type(params_t), intent(in) :: Params
+        character(len=*), intent(in) :: Suffix
+        character(len=:), allocatable :: Path
+        Path = io_path(Params,'/EMPM' // Suffix)
+    end function empm_path
+
+    ! io/<Path>/<&empm Reference> // Suffix ... the HF-like reference read by the EMPM (and the NCSM 'EMPM' Hamiltonian) ...
+    function empm_ref_path(Params,Suffix) result(Path)
+        type(params_t), intent(in) :: Params
+        character(len=*), intent(in) :: Suffix
+        character(len=:), allocatable :: Path
+        Path = ref_path(Params,Params%Calc%EMPM%Reference,Suffix)
+    end function empm_ref_path
+
+    ! .true. if the reference io/<Path>/<Reference>/bin exists (otherwise an error is printed, as the dev TDA does) ...
+        ! H2b.bin (written by HF only with BMF = .true.) is checked when Need_H2b ...
+    logical function EMPM_reference_check(Params,Need_H2b) result(Ok)
+        type(params_t), intent(in) :: Params
+        logical, intent(in) :: Need_H2b
+        logical :: Ex
+        Ok = is_dir(empm_ref_path(Params,'/bin'))
+        if (.not. Ok) then
+            write(*,'(/,a)') "Error! ... No precomputed reference ''" // empm_ref_path(Params,'') // "'' is available ... run " // &
+                             trim(Params%Calc%EMPM%Reference) // ' first (&empm Reference) ...'
+            return
+        end if
+        if (Need_H2b) then
+            inquire(file=empm_ref_path(Params,'/bin/H2b.bin'), exist=Ex)
+            if (.not. Ex) call fatal('EMPM ... the reference 2-body Hamiltonian ' // empm_ref_path(Params,'/bin/H2b.bin') // &
+                                     ' is missing ... run HF with BMF = .true.')
+        end if
+    end function EMPM_reference_check
+
+    ! Orbitals of the reference (orb.bin: LHO labels & the occupations of the reference, e.g. the Aufbau occupations of the
+        ! dev HF) ...
+    function EMPM_reference_orbitals(Params) result(Orb)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), allocatable :: Orb(:)
+        if (.not. is_dir(empm_ref_path(Params,'/bin'))) call fatal('EMPM ... no reference ' // empm_ref_path(Params,'') // &
+                                                                 ' ... run ' // trim(Params%Calc%EMPM%Reference) // ' first')
+        Orb = orbitals_import(Params,empm_ref_path(Params,'/bin/orb.bin'))
+    end function EMPM_reference_orbitals
 
     ! Number of npnh states of the window per J^P (J = 0 .. J_max, P = 1 +, 2 -), kp proton & n-kp neutron particle-hole
         ! pairs ... m-scheme counts N(2M, parity) from the products of the particle & hole subsets, d_J = N(2J) - N(2J+2)
@@ -104,17 +151,24 @@ contains
         end function conv
     end function EMPM_npnh_dims
 
-    subroutine EMPM_space_make(Params,Orb,Space)
+    ! Orb ... the orbitals of the reference (EMPM_reference_orbitals), H1b_File (default the H1b.bin of &empm Reference) ...
+        ! its diagonal gives the HF energies; it must be diagonal & the occupations integer (orbitals_ph_make) ...
+    subroutine EMPM_space_make(Params,Orb,Space,H1b_File)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         type(empm_space_t), intent(out) :: Space
+        character(len=*), intent(in), optional :: H1b_File
         type(pninteger_t) :: N_Particle, N_Hole
         type(pnsvector_t) :: Particle, Hole
         type(empm_level_t), allocatable :: Lev_p(:), Lev_n(:)
         integer :: W_pHole(2), W_pPart(2), W_nHole(2), W_nPart(2), N_lev
 
         write(*,'(/,a)') 'Preparing the restricted EMPM single-particle space ...'
-        call orbitals_ph_make(Params,Orb,N_Particle,Particle,N_Hole,Hole)
+        if (present(H1b_File)) then
+            call orbitals_ph_make(Params,Orb,H1b_File,N_Particle,Particle,N_Hole,Hole)
+        else
+            call orbitals_ph_make(Params,Orb,empm_ref_path(Params,'/bin/H1b.bin'),N_Particle,Particle,N_Hole,Hole)
+        end if
         Lev_p = ranked_levels(-1,Hole%p,Particle%p)
         Lev_n = ranked_levels(1,Hole%n,Particle%n)
 
@@ -229,7 +283,7 @@ contains
         integer :: u, i
         character(len=1) :: tc
 
-        open(newunit=u, file=io_path(Params,'/EMPM/Levels.dat'), status='replace', action='write')
+        open(newunit=u, file=empm_path(Params,'/Levels.dat'), status='replace', action='write')
         write(u,'(a)') 'Restricted EMPM single-particle space ... HF levels ordered by energy within each isospin (k = 1 deepest)'
         write(u,'(/,a)') cfmt_s('i',5) // cfmt_s('t',3) // cfmt_s('k',5) // cfmt_s('a',5) // cfmt_s('n',5) // cfmt_s('l',5) // &
                          cfmt_s('2j',5) // cfmt_s('Occ',5) // cfmt_s('E',15) // '   ' // 'Level'

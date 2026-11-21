@@ -1,5 +1,5 @@
 ! TDA phonons of the restricted EMPM space as the 1-phonon building blocks of the EMPM ... counterpart of 1phonon/1f_*.dat
-    ! & tda_r_overl.dat of the original EMPM codes, rebuilt from Bin/EMPM_TDA_*.bin & Bin/EMPM_F.bin ...
+    ! & tda_r_overl.dat of the original EMPM codes, rebuilt from EMPM/bin/EMPM_TDA_*.bin & EMPM/bin/EMPM_F.bin ...
     ! Running phonon index over the (J,P) channels, J outer & P inner, as in EMPM/TDA_Structure.dat ... or with
         ! Legacy_Order the numbering of 1phonon/1f_states.dat of the original Tda: parity - before +, J inner, the spurious
         ! phonon the last one of the 1- channel ... phonons of one channel stay contiguous in both cases ...
@@ -85,8 +85,8 @@ contains
             end do
         end if
 
-        open(newunit=uE, file=io_path(Params,'/Bin/EMPM_TDA_E.bin'), access='stream', form='unformatted', status='old', action='read')
-        open(newunit=uX, file=io_path(Params,'/Bin/EMPM_TDA_X.bin'), access='stream', form='unformatted', status='old', action='read')
+        open(newunit=uE, file=empm_path(Params,'/bin/EMPM_TDA_E.bin'), access='stream', form='unformatted', status='old', action='read')
+        open(newunit=uX, file=empm_path(Params,'/bin/EMPM_TDA_X.bin'), access='stream', form='unformatted', status='old', action='read')
         ! Binary files hold the channels J outer & P inner ... solution nu of a channel goes to First + Pos(nu) - 1 ...
         do J = 0, J_max
             do P = 1, 2

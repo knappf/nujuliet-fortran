@@ -557,3 +557,94 @@ legacy `HF_RRPA` action, `&rrpa` and `nj_hf_rrpa*` are untouched (decision 2; re
    are added in the order k = 1..64 at the end. The result is independent of the thread count and schedule (bitwise
    equal for 1 and 8 threads and between runs); it differs from dev's serial order only by rounding (<= 1e-13 in the
    outputs). Dev sums serially; this is a summation-order change only.
+
+## NuJuliet dev port (f3f7a33) ... stage 5 part 1, EMPM on the dev HF reference (spec `docs/dev_port/consumers.md` sections 2, 3)
+
+EMPM has no Julia counterpart; the items below are Fortran-side conventions (owner decisions of consumers.md section 8).
+
+1. Reference (decision 2): Fortran-only `&empm Reference` (`character(len=64)`, default `'HF'`, validated like the TDA
+   `Reference`: non-empty, no `/`). All EMPM steps read `io/<Path>/<Reference>/bin/{orb,C,H1b,H2b}.bin`
+   (`nj_params::ref_path`, `nj_empm_space::empm_ref_path`). Only HF-like references: `nj_orbitals::read_h1b_diag` stops
+   if an off-diagonal element of H1b exceeds 1e-10 (HF-MBPT natural orbitals), a missing `H2b.bin` stops with
+   "run HF with BMF = .true.". A missing reference folder prints dev's TDA-style "Error! ..." and skips the step (exit 0).
+2. Occupations (decision 8): the orbitals come from the reference `orb.bin` (the Aufbau occupations of the dev HF, LHO
+   labels n, l, j), no longer from `orbitals_make`. New specific `orbitals_ph_make(Params,Orb,H1b_File,...)` of the generic
+   `orbitals_ph_make` (holes pO >= 1 - 1e-8, particles pO <= 1e-8; any other occupation stops with "EMPM/NCSM need integer
+   occupations: closed (sub)shell nucleus or &hf ESH=.true."). The diagonal check runs first, so an HF-MBPT reference is
+   reported as non-diagonal. The LEGACY specific (exact 0/1 tests, `Bin/h_HF.bin`) is unchanged for HF_RPA/HF_RRPA and
+   the legacy HF-MBPT until the cleanup stage. `EMPM_space_make(...,H1b_File)` takes the H1b path (default: the EMPM
+   reference).
+3. Layout (decision 3a): `io/<Path>/EMPM/bin/` holds every EMPM binary (`EMPM_F`, `EMPM_TDA_{E,X}`, `EMPM_2PH_*`,
+   `EMPM_FULL*`, `EMPM_CMB_*`, `EMPM_CMH_*`, default state files `EMPM_S<n>_*`, SF scratch); `EMPM/spectra/TDA.dat`,
+   `EMPM/transitions/{TDA_E<L>,Full<n>_<lab>_E1*}.dat`, `EMPM/TDA_summary.dat`; all other names unchanged (`Levels.dat`,
+   `TDA_Structure.dat`, `2Phonon/`, `3Phonon/`, `4Phonon/`, `Full/<n>Phonon/`, `SF/`). `EMPM_TDA` checks the reference
+   before it removes `io/<Path>/EMPM` and creates `bin/` and `spectra/`; a new TDA therefore also removes the later EMPM
+   binaries and the default state files (invalid after a new TDA). `States_Dir` (override) unchanged, default
+   `EMPM/bin`. `EMPM_2PH .. EMPM_SF` print "run EMPM_TDA first" and skip when `EMPM/bin` is missing (FULL, TRANS, SF had
+   no check before).
+4. TDA summary (decision 4): `EMPM/TDA_summary.dat` has the dev `TDA_summary` text (header with "Nuclide data", the
+   center-of-mass Ortho line, the stability line, the lowest excitation, the dimension tables) plus the EMPM items
+   (Reference, Ortho, windows, F-matrix) instead of the TDA parameters; local copies of the header / dimension helpers.
+5. Spurious 1- state (decision 5): `E(1) = <spur|A|spur>` (dev) instead of 0, noise cut 1e-14 instead of 1e-6, the
+   orthonormal complement from the core `nj_linalg::spurious_ortho` (the closed-form Gram-Schmidt of dev
+   `TDA_spurious_ortho!`, moved from `nj_ph_common`, shared with the dev TDA/RPA; code unchanged) and the symmetric
+   solver (`eig_sym`) on U^T A U instead of `eig_general`. The other channels keep `eig_general` (dsyevr for the exactly
+   symmetric A, as before). `EMPM_phonons_import` recomputes E(i_cm) = <cm|A|cm> from A, so the 2PH .. SF energies do
+   not depend on E(1). Consequences seen in the baseline comparison: the 1- phonons of an `Ortho` TDA come out with other
+   signs (and rotations inside degenerate subspaces), so every amplitude file built on them (2PH C, state files, FULL Z)
+   differs by this basis gauge, while energies, <N_cm>, weights, B(E1) and the Lanczos strength functions agree; the cut
+   change moves the cm vector by components below 1e-6 and the energies by <= 7e-11 (relative). With the legacy
+   algorithm patched back in (scratch build) and the legacy HF files as the reference, the port reproduces the frozen
+   binary bit for bit (O16, Ca40: 47 files, max deviation 0).
+6. Chain-A independence (decision 7): local `EMPM_phonon_count` (verbatim copy of `HF_RPA_phonon_count`), local summary
+   helpers; `nj_empm_*` no longer use `nj_hf_rpa` / `nj_hf_rpa_export`. `nj_hf_rpa::Spur_Ortho` stays for the legacy
+   HF_RPA until the cleanup stage. `'HF'` in a `&run` with `EMPM_*` actions runs the dev HF (only `HF_RPA*`, `HF_RRPA*`
+   and, until stage 5 part 2, `NCSM` still route `'HF'` to `HF_LEGACY`).
+7. Observation, not a deviation: the pivoted Cholesky of the EMPM metric chooses the independent rows among (nearly)
+   linearly dependent ones (the spurious |cm, lambda> rows); input differences at the 1e-16 level (dev HF vs legacy HF:
+   O16, Ca40 `C.bin` / `H2b.bin` agree to 7e-16) or another MKL thread count change that choice in a few rows
+   (`Ind` of `2Phonon/Basis_*.dat`, `Kc` of the state files), so `EMPM_2PH_*_C.bin` is not comparable there while the
+   energies and the overlaps X are. The EMPM results also depend on the thread count at the 1e-11 level (threaded MKL
+   dgemm/dsyevd in EMPM_2PH .. FULL); the frozen stage-4 binary shows the same pattern and size (8 vs 16 threads: 194 vs
+   191 files differ at 1e-12, energies <= 2e-11), so this is not a race of the stage-5 code.
+
+## NuJuliet dev port (f3f7a33) ... stage 5 part 2, NCSM on the dev HF reference & app layer (spec `docs/dev_port/consumers.md` sections 4, 5, 7)
+
+NCSM has no Julia counterpart; the items below are Fortran-side conventions (owner decisions of consumers.md section 8).
+
+1. Reference: the NCSM uses the reference of `&empm Reference` (default `'HF'`). With `Hamiltonian = 'EMPM'` or
+   `Basis = 'HF'` the orbitals come from `io/<Path>/<Reference>/bin/orb.bin` (`EMPM_reference_orbitals`, fatal when the
+   folder is missing; the EMPM steps print "Error! ..." and skip instead), otherwise from `orbitals_make(Params)` with the
+   Calc.Nmax size (dev default; before: the LEGACY Int.Nmax size). The NN Hamiltonian depends on the labels only
+   (`T1b` is local in n, `V2b_read` builds its own interaction orbitals and the NCSM uses the a <= a_max(Calc) slices):
+   `NCSM_NN_Nmax2.dat` is byte-identical to the legacy baseline. The `'EMPM'` Hamiltonian reads `H2b.bin` (missing:
+   fatal "run HF with BMF = .true."), `H1b.bin` through `read_h1b_diag` (off-diagonal > 1e-10 fatal, so an HF-MBPT
+   reference is refused; only the diagonal was used before as well), `C.bin`, `rho.bin`, and E_HF from
+   `<Reference>/HF_summary.dat` (consumers.md 4.1 names `io/<Path>/HF/HF_summary.dat`; identical for the default
+   reference, the reference folder keeps E_HF consistent with the other files; a missing file still gives the old
+   warning and E_HF = 0). `trans_init` (Basis 'HF') reads `<Reference>/bin/C.bin`.
+2. Occupations: the diagonal of `rho.bin` (HF basis) must be 0 or 1 within 1e-8, otherwise fatal with the EMPM text
+   "EMPM/NCSM need integer occupations: closed (sub)shell nucleus or &hf ESH=.true." (order: H2b present, H1b diagonal,
+   occupations). The values are used **as read** (e.g. 1.0000000000000002), as before: snapping them to exactly 0/1
+   moved C0 by 1e-16 and flipped eigenvector signs (M_p, M_n columns) of the 4He transition files; without it the 4He
+   NCSM files are byte-identical to the legacy baseline.
+3. Window (`Window = .true.`): `window_make` now gets the reference orbitals, so `EMPM_space_make` (H1b of the
+   reference, integer-occupation check) works; it was broken in the stage-5 part-1 tree (orbitals of `orbitals_make` with
+   the LHO filling, not the reference).
+4. Routing: `NCSM` no longer routes `'HF'` to `HF_LEGACY` (`legacy_hf_consumer` = `HF_RPA*`, `HF_RRPA*` only).
+5. App layer (consumers.md 5): usage text names `io/`; dispatcher comments updated (chain A/B/C action lists, stubs).
+   Not done by owner decision (stage 6): the removed-action fatals for `HF_RPA*`/`HF_RRPA*` (still working legacy
+   actions), the removal of `&hf_efa`, `&rrpa`, `Broy_Qmax`, `Broy_Bmax`. Deviation: `&transition_currents M` keeps the
+   default 0 instead of dev's -1 (dev maps -1 to 0, so the dev result is identical); a default of -1 would change the
+   LEGACY `HF_RPA_transition_currents`, where -1 is a real projection. `&parse` with `V2b_parse`, `V3b_no2b_parse`
+   (and the Fortran `PARSE` = both) existed since stage 1.
+6. README (consumers.md 7): actions table, namelists, output layout, EMPM (reference, integer occupations, EMPM/bin,
+   spectra, transitions, TDA_summary.dat, "equals TDA with Reference='HF'", spurious E(1)), NCSM, compatibility,
+   verification rewritten. The `tests/empm_fci_check.py` paragraph still needs the HRF text tables of `HF_LEGACY`
+   (dev's HF has no HRF output); noted there.
+7. Review follow-up (Fortran-side robustness, no effect on results): `EMPM_2PH`, `EMPM_3PH`, `EMPM_4PH`, `EMPM_FULL`,
+   `EMPM_TRANS`, `EMPM_SF` call `EMPM_reference_check` before the `EMPM/bin` check, so a stale `EMPM/bin` of an
+   earlier run is not used when the reference is missing ("Error! ... No precomputed reference ..." + skip, exit 0,
+   instead of the fatal of `EMPM_reference_orbitals`). `EMPM_TDA(Params,Ok)` returns a success flag; the combined
+   `'EMPM'` action stops after a skipped EMPM_TDA ("Error! ... EMPM_TDA did not run, the 2-phonon step of EMPM is
+   skipped ..."). Error cases `e10_stale_empm_no_reference`, `e11_empm_after_failed_tda`.

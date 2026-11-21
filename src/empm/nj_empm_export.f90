@@ -5,7 +5,6 @@ module nj_empm_export
     use nj_types
     use nj_params
     use nj_utils
-    use nj_hf_rpa_export, only : rpa_summary_header, dimensions_block, spectrum_block_end
     use nj_empm_space
     use nj_empm_fmat, only : fmat_t
     implicit none
@@ -27,31 +26,70 @@ contains
         integer(i8) :: t0
 
         call timer_start(t0)
-        call EMPM_TDA_summary(Params,Space,F_ph,N_nu)
+        call EMPM_TDA_summary(Params,Space,F_ph,N_nu,E_TDA)
         call EMPM_TDA_binary_export(Params,N_nu,E_TDA,X_TDA)
         call EMPM_TDA_spectrum_export(Params,N_nu,E_TDA)
         call EMPM_TDA_structure_export(Params,Space,N_nu,Orb_Phonon,Phonon,E_TDA,X_TDA)
         call timer_report(t0)
     end subroutine EMPM_TDA_export
 
-    subroutine EMPM_TDA_summary(Params,Space,F_ph,N_nu)
+    ! EMPM/TDA_summary.dat ... the text of the dev TDA_summary (nj_tda; header, Ortho, stability & the lowest excitation,
+        ! dimensions; local copies so that the EMPM depends on core modules only) with the EMPM items (reference, windows,
+        ! F-matrix) instead of the TDA parameters ...
+    subroutine EMPM_TDA_summary(Params,Space,F_ph,N_nu,E_TDA)
         type(params_t), intent(in) :: Params
         type(empm_space_t), intent(in) :: Space
         type(fmat_t), intent(in) :: F_ph
         integer, intent(in) :: N_nu(0:,:)
-        integer :: u
+        type(rvec_t), intent(in) :: E_TDA(0:,:)
+        integer :: u, J, P, nu, N_neg, J_min, P_min, J_max
+        real(dp) :: E_min
+        logical :: Ortho
 
         write(*,'(/,a)') 'Preparing the EMPM TDA summary file ...'
-        open(newunit=u, file=io_path(Params,'/EMPM/TDA_Summary.dat'), status='replace', action='write')
-        call rpa_summary_header(u,Params,'Spherical Tamm-Dancoff Approximation in the restricted EMPM space review:', &
-                                Params%Calc%EMPM%Ortho)
+        Ortho = Params%Calc%EMPM%Ortho
+        J_max = 2*Params%Calc%Nmax + 1
+        N_neg = 0
+        E_min = huge(1.0_dp)
+        J_min = -1
+        P_min = 0
+        do J = 0, J_max
+            do P = 1, 2
+                do nu = 1, N_nu(J,P)
+                    if (Ortho .and. J == 1 .and. P == 2 .and. nu == 1 .and. N_nu(J,P) > 1) cycle
+                    if (E_TDA(J,P)%v(nu) < -1.0e-8_dp) N_neg = N_neg + 1
+                    if (E_TDA(J,P)%v(nu) < E_min) then
+                        E_min = E_TDA(J,P)%v(nu)
+                        J_min = J
+                        P_min = P
+                    end if
+                end do
+            end do
+        end do
+
+        open(newunit=u, file=empm_path(Params,'/TDA_summary.dat'), status='replace', action='write')
+        call summary_header(u,Params,'Spherical Tamm-Dancoff Approximation in the restricted EMPM space review:')
+        write(u,'(/,a)') 'EMPM parameters:'
+        write(u,'(a)') TAB // "Reference = ''" // trim(Params%Calc%EMPM%Reference) // "'',   Ortho = " // trim(merge('true ','false',Ortho))
         write(u,'(/,a)') 'Restricted particle-hole space ... windows of the HF levels ordered by energy (1 = deepest level):'
         call window_line('proton holes     ',Space%pHole)
         call window_line('proton particles ',Space%pPart)
         call window_line('neutron holes    ',Space%nHole)
         call window_line('neutron particles',Space%nPart)
         write(u,'(/,a)') 'F-matrix:    L_max = ' // istr(F_ph%L_max) // ' , number of level pairs = ' // istr(sum(F_ph%N))
-        call dimensions_block(u,N_nu,2*Params%Calc%Nmax + 1,'TDA')
+        if (Ortho) then
+            write(u,'(/,a)') 'Orthogonalization of spurious center-of-mass levels (1-) is included ...'
+        else
+            write(u,'(/,a)') 'Orthogonalization of spurious center-of-mass levels (1-) is NOT included ...'
+        end if
+        if (N_neg == 0) then
+            write(u,'(a)') TAB // 'TDA spectrum is STABLE ... no negative eigenvalues detected ...'
+        else
+            write(u,'(a)') TAB // 'TDA spectrum is UNSTABLE ... ' // istr(N_neg) // ' negative eigenvalue(s) detected ...'
+        end if
+        if (J_min >= 0) write(u,'(a)') TAB // 'Lowest TDA excitation energy:   E = ' // cfmt_f(E_min,12,6) // ' MeV   (J = ' // &
+                                       istr(J_min) // ', P = ' // merge('+','-',P_min == 1) // ')'
+        call dimensions_block(u,N_nu,J_max,'TDA')
         close(u)
         write(*,'(a)') TAB // 'EMPM TDA summary file exported ...'
 
@@ -80,9 +118,9 @@ contains
         integer :: u1, u2, J, P
 
         write(*,'(/,a)') 'Performing binary export of EMPM TDA energies E & amplitudes X ...'
-        open(newunit=u1, file=io_path(Params,'/Bin/EMPM_TDA_X.bin'), access='stream', form='unformatted', status='replace', &
+        open(newunit=u1, file=empm_path(Params,'/bin/EMPM_TDA_X.bin'), access='stream', form='unformatted', status='replace', &
              action='write')
-        open(newunit=u2, file=io_path(Params,'/Bin/EMPM_TDA_E.bin'), access='stream', form='unformatted', status='replace', &
+        open(newunit=u2, file=empm_path(Params,'/bin/EMPM_TDA_E.bin'), access='stream', form='unformatted', status='replace', &
              action='write')
         do J = 0, 2*Params%Calc%Nmax + 1
             do P = 1, 2
@@ -103,7 +141,7 @@ contains
         integer :: u, J, P, nu
         character(len=1) :: Pc
 
-        open(newunit=u, file=io_path(Params,'/EMPM/Spectra/TDA.dat'), status='replace', action='write')
+        open(newunit=u, file=empm_path(Params,'/spectra/TDA.dat'), status='replace', action='write')
         write(u,'(a)') cfmt_s('J',5,.true.) // ' ' // cfmt_s('P',5,.true.) // ' ' // cfmt_s('E',20,.true.)
         do J = 0, 2*Params%Calc%Nmax + 1
             do P = 1, 2
@@ -111,7 +149,8 @@ contains
                 do nu = 1, N_nu(J,P)
                     write(u,'(a)') cfmt_d(J,5,.true.) // ' ' // cfmt_s(Pc,5,.true.) // ' ' // cfmt_f(E_TDA(J,P)%v(nu),20,6,.true.)
                 end do
-                call spectrum_block_end(u)
+                write(u,'(a)') ''
+                write(u,'(a)') ''
             end do
         end do
         close(u)
@@ -133,7 +172,7 @@ contains
         real(dp) :: Norm_p
         character(len=1) :: Pc, tc
 
-        open(newunit=u, file=io_path(Params,'/EMPM/TDA_Structure.dat'), status='replace', action='write')
+        open(newunit=u, file=empm_path(Params,'/TDA_Structure.dat'), status='replace', action='write')
         write(u,'(a)') 'EMPM TDA phonon structure ... components with |X| >= ' // cfmt_f(X_min,0,2)
         Ind = 0
         do J = 0, 2*Params%Calc%Nmax + 1
@@ -167,5 +206,54 @@ contains
         end do
         close(u)
     end subroutine EMPM_TDA_structure_export
+
+    ! Header of the summary ... copy of ph_summary_header (dev TDA/RPA summaries) ...
+    subroutine summary_header(u,Params,Title)
+        integer, intent(in) :: u
+        type(params_t), intent(in) :: Params
+        character(len=*), intent(in) :: Title
+        integer :: N_max
+        N_max = Params%Calc%Nmax
+        write(u,'(a)') Title
+        write(u,'(/,a)') 'Nuclide data:    A = ' // istr(Params%Calc%A) // ', Z = ' // istr(Params%Calc%Z)
+        write(u,'(/,a)') 'Calculation data:    hw = ' // jstr(Params%Calc%hw) // ' , N_max = ' // istr(N_max) // &
+                         ', s.p. J-basis size = ' // istr((N_max+1)*(N_max+2)/2) // ', s.p. M-basis size = ' // &
+                         istr((N_max+1)*(N_max+2)*(N_max+3)/6)
+        write(u,'(a)') TAB // TAB // TAB // "Center-of-Mass System correction is set to:   CMS = ''" // trim(Params%Calc%CMS) // "''"
+        if (Params%Calc%CMS == 'CMS1+2B') then
+            write(u,'(/,a)') TAB // TAB // TAB // 'Combined 1-body + 2-body Center-of-Mass System (CMS) motion correction is set ...'
+        else if (Params%Calc%CMS == 'CMS2B') then
+            write(u,'(/,a)') TAB // TAB // TAB // 'Only pure 2-body Center-of-Mass System (CMS) motion correction is set ...'
+        else
+            write(u,'(/,a)') TAB // TAB // TAB // 'No Center-of-Mass System (CMS) motion correction is set ...'
+        end if
+    end subroutine summary_header
+
+    ! Dimension tables of the 1p-1h subspaces ... copy of ph_dimensions_block on the EMPM channel counts N_nu(J,P) ...
+    subroutine dimensions_block(u,N_nu,J_max,Kind)
+        integer, intent(in) :: u, J_max
+        integer, intent(in) :: N_nu(0:,:)
+        character(len=*), intent(in) :: Kind
+        integer :: J, N_M_tot
+        write(u,'(/,a)') 'Information on dimensions of 1-phonon 1p-1h ' // Kind // ' subspaces ...'
+        N_M_tot = 0
+        do J = 0, J_max
+            N_M_tot = N_M_tot + (N_nu(J,1) + N_nu(J,2)) * (2*J + 1)
+        end do
+        write(u,'(/,a)') 'Total number of 1 phonon states in J-scheme = ' // istr(sum(N_nu))
+        write(u,'(a)') 'Total number of 1 phonon states in M-scheme = ' // istr(N_M_tot)
+        write(u,'(/,a)') 'J' // TAB // 'N_phonon'
+        do J = 0, J_max
+            write(u,'(a)') istr(J) // TAB // istr(N_nu(J,1) + N_nu(J,2))
+        end do
+        write(u,'(/,a)') 'Subspace' // TAB // 'P = +'
+        do J = 0, J_max
+            write(u,'(a)') istr(J) // TAB // istr(N_nu(J,1))
+        end do
+        write(u,'(/,a)') 'Subspace' // TAB // 'P = -'
+        do J = 0, J_max
+            write(u,'(a)') istr(J) // TAB // istr(N_nu(J,2))
+        end do
+    end subroutine dimensions_block
 
 end module nj_empm_export

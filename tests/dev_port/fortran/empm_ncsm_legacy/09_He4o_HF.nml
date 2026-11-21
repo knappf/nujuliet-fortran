@@ -1,0 +1,19 @@
+! empm_ncsm LEGACY BASELINE input (frozen stage-4 binary nujuliet-snap-d753f29: legacy HF + EMPM/NCSM reading io/<Path>/Bin/*)
+! 4He 3 shells, HF
+! Run all files of this directory in order from one work directory (see ../../run_empm_ncsm.sh baseline)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 4, Z = 2, hw = 16.0, Nmax = 2, N2max = 4, N3max = 6
+  CMS = 'CMS1+2B'
+  Path = 'He4o'
+/
+&hf
+  Tol = 1e-10
+/
+&run
+  Solvers = 'HF_LEGACY'
+/

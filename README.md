@@ -1,21 +1,21 @@
 # NuJuliet — Fortran port
 
 Fortran (2008) port of [NuJuliet](https://github.com/folpradek/NuJuliet), a spherical nuclear
-many-body solver originally written in Julia. The port reproduces the solvers, file formats and
-output files of the original:
+many-body solver originally written in Julia. The port follows NuJuliet **dev f3f7a33** (solvers, file formats and
+output files); EMPM and NCSM are Fortran-only extensions that read the dev HF output.
 
-| Action (`&run`)                    | Julia call                          |
+| Action (`&run`)                    | Julia call (dev)                    |
 |------------------------------------|-------------------------------------|
-| `HF`                               | `HF(Params)` (+ HF-MBPT, HF-EFA)    |
-| `HF_RPA`                           | `HF_RPA(Params)` (HF-TDA & HF-RPA)  |
-| `HF_RPA_transition_densities`      | `HF_RPA_transition_densities(...)`  |
-| `HF_RPA_transition_currents`       | `HF_RPA_transition_currents(...)`   |
-| `TDA`, `RPA`                       | `TDA(Params)`, `RPA(Params)` (dev; reference `io/<Path>/<Reference>`) |
-| `HF_ScRPA`                         | `HF_ScRPA(Params)` (dev HF-based self-consistent RPA, `&rpa`; replaces `HF_RRPA`) |
-| `HF_RRPA`                          | `HF_RRPA(Params)` (legacy, removed in the cleanup stage) |
-| `HF_RRPA_transition_densities`     | `HF_RRPA_transition_densities(...)` |
-| `HF_RRPA_transition_currents`      | `HF_RRPA_transition_currents(...)`  |
-| `BCS`, `HFB`, `QTDA`, `QRPA`       | `BCS`, `HFB`, `QTDA`, `QRPA`        |
+| `HF`                               | `HF(Params)` (HF, `V_HF`, `ESH`, MBPT(2,3) energies, HF-MBPT export `&hf_mbpt`) |
+| `TDA`, `RPA`                       | `TDA(Params)`, `RPA(Params)` (reference `io/<Path>/<Reference>`, output `io/<Path>/<Name>`) |
+| `HF_ScRPA`                         | `HF_ScRPA(Params)` (HF-based self-consistent RPA, `&rpa`) |
+| `TDA_transition_densities`, `RPA_transition_densities` | `TDA_/RPA_transition_densities(Params; JP, nu_list, File_Name)` |
+| `TDA_transition_operator_densities`, `RPA_transition_operator_densities` | `TDA_/RPA_transition_operator_densities(...)` |
+| `TDA_transition_analysis`, `RPA_transition_analysis` | `TDA_/RPA_transition_analysis(...; Cut)` |
+| `TDA_transition_currents`, `RPA_transition_currents` | `TDA_/RPA_transition_currents(...; M, xN_grid, zN_grid)` |
+| `TDA_transitions_recalculate`, `RPA_transitions_recalculate` | `TDA_/RPA_transitions_recalculate(Params)` |
+| `BCS`, `HFB`, `QTDA`, `QRPA`, `pnQTDA` | `BCS`, `HFB`, `QTDA`, `QRPA`, `pnQTDA` |
+| `V2b_parse`, `V3b_no2b_parse` (`PARSE` = both) | `V2b_parse`, `V3b_no2b_parse` (`&parse`) |
 | `EMPM_TDA`                         | — EMPM: F-matrix & TDA in a restricted ph space (`Fmat`, `Tda`) |
 | `EMPM_2PH`                         | — EMPM: 2-phonon equations of motion (`phon_dens1`, `phon_int`, `eqm2`) |
 | `EMPM`                             | — complete EMPM: `EMPM_TDA` + `EMPM_2PH` + couplings & full Hamiltonian (`nondiag`, `fullham`) |
@@ -23,11 +23,13 @@ output files of the original:
 | `EMPM_TRANS`                       | — EMPM: B(E1; 0+_gs -> 1-) of the `EMPM_FULL` states (Full_N <= 2) |
 | `EMPM_SF`                          | — EMPM: E1 strength function with up to 3 phonons by Lanczos, no 3-phonon eigenproblem |
 | `NCSM`                             | — no-core shell model (HO Nmax or npnh in the HF basis), optional transitions |
+| `HF_LEGACY`, `HF_RPA*`, `HF_RRPA*` | LEGACY base-version solvers (`io/<Path>/Bin/*`), kept until the cleanup stage; `HF` in a `&run` with `HF_RPA*` / `HF_RRPA*` runs `HF_LEGACY` |
 
 > **Earlier test runs (until 2026-11-06)** are in `backup_2026-11-06/`. It holds `runs/` (inputs, logs, results and
 > plots; the `runs/...` paths quoted below refer to it), `tests/` (the Python cross-checks), `doc/` (the notes), `bin/` (the old binaries
 > and builds), `snapshot/` (src, Makefile, README and doc as of that date) and `runs_cmtop/` (the validation runs of
 > the top-level <N_cm> completion, `4He_NN4sh_cmtop`, `4He_NN5sh_cmtop`, moved there on the same day). `runs/` starts empty.
+> Runs and inputs before stage 5 (2026-11-21) use the base-version layout (`IO/<Path>/Bin/...`, `HF_RPA`).
 
 ## Building
 
@@ -41,67 +43,108 @@ make debug                # runtime-checked build -> ./nujuliet_debug
 
 ## Running
 
-Run from the directory that contains `IO/` (outputs go to `IO/<Path>/`, as in the original):
+Run from the directory that contains `io/` (outputs go to `io/<Path>/`, as in dev):
 
 ```sh
-OMP_NUM_THREADS=16 ./nujuliet inputs/sample_O16.nml [more inputs ...]
+OMP_NUM_THREADS=16 ./nujuliet O16_HF_TDA.nml O16_RPA.nml [more inputs ...]
 ```
 
-Each input file describes one calculation. All namelist groups are optional; omitted values take
-the defaults of the Julia parameter structs (`Source/Import_Structures.jl`).
+The input files run in sequence. Each describes one calculation; all namelist groups are optional and omitted
+values take the defaults of the dev parameter structs (`src/import_structures.jl`).
 
 ```fortran
-&interaction  NN_File='IO/NN.bin', NNN_File='IO/NNN.bin', hw=16.0, Nmax=3, N2max=6, N3max=9
+&interaction  NN_File='io/NN.bin', NNN_File='io/NNN.bin', hw=16.0, Nmax=3, N2max=6, N3max=9
               ! cP2N, cP3N, cRes, pG2N, nG2N /
-&calculation  A=16, Z=8, hw=16.0, Nmax=3, N2max=6, N3max=9, CMS='CMS1+2B', Path='' /  ! Path='' -> default name
-&hf           Tol=1e-7, Imax=100, BMF=.true., HRF=.false. /
-&hf_efa       A=0, Z=0, BMF=.true. /
-&rpa          Ortho=.true. /
-&rrpa         Ortho=.true., Tol=1e-7, Imax=150, ScV3N=.true., ScOBH=.true., dOBDM=.false. /
-&bcs          ScBCS=.false., Tol=1e-7, Imax=500, q=0.05, A0=0, Z0=0, pD0=0.5, nD0=0.5, BMF=.true., HRF=.false. /
+&calculation  A=16, Z=8, hw=16.0, Nmax=3, N2max=6, N3max=9, CMS='CMS1+2B', Path='' /  ! Path='' -> default name; CM_Lawson (Fortran)
+&hf           Tol=1e-7, Imax=100, V_HF=.false., BMF=.true., ESH=.false. /     ! HRF accepted, dead in dev
+&hf_mbpt      Export=.false., TBCF=.false., ScH=.false. /                     ! HF.MBPT: export io/<Path>/HF-MBPT/bin
+&tda          Name='TDA', Reference='HF', Reference_TBCF=.false., Ortho=.true., Tol_hol=0.7, Tol_par=0.1 /
+&rpa          Name='RPA', Reference='HF', Reference_TBCF=.false., RPA_Orb=.false., Ortho=.true., Transitions='Linear',
+              Tol=1e-5, Tol_hol=0.7, Tol_par=0.1, Imax=150, OBDM_diagonal=.false., OBDM_alpha=0.6, ScH=.true.,
+              TBCF=.false., TBCF_alpha=0.8, TBCF_beta=5.0, DEV=.false. /     ! also HF_ScRPA
+&bcs          ScBCS=.false., Tol=1e-7, Imax=500, q=0.05, A0=0, Z0=0, pD0=0.5, nD0=0.5, BMF=.true. /
 &hfb          Tol=1e-7, Imax=150, Pairing='Full', dLmax=0.5, pL0=-3.0, nL0=-3.0, pa0=0.25, na0=0.25,
-              Broy_m=8, Broy_Qmax=3, Broy_Amax=0.9, Broy_Bmax=0.3, Broy_Tmax=0.9,
-              LNT=.false., LNRes=.true., BMF=.true., HRF=.false. /
-&qtda         Ortho=.true. /
-&qrpa         Ortho=.true. /
-&empm         pHole=0,0, pPart=0,0, nHole=0,0, nPart=0,0, Ortho=.true., E2max=1e8, JP2='', Mem_GB=100.0, Cache_GB=50.0,
-              Full_H=.false., D_Spectrum=.false., Dry_Run=.false.,
-              E1max=1e8, Legacy_Order=.false., Spur_Rows='all', Legacy_Spur=.false. /   ! last line: comparisons with the original runs only
-&transition_densities  JP='1-', nu_list=5,6,7, File_Name='Phonon_Densities' /
-&transition_currents   JP='1-', M=0, nu_list=5,6,7, File_Name='Phonon_Currents', xN_grid=40, zN_grid=40 /
-&run          Solvers='HF', 'HF_RPA', 'HF_RRPA' /
+              Broy_m=8, Broy_Amax=0.8, Broy_Tmax=0.9, LNT=.false., LNRes=.true., BMF=.true. /
+&qtda         Ortho=.true., Reference='HFB' /
+&qrpa         Ortho=.true., Reference='HFB' /
+&pnqtda       Reference='HFB' /
+&empm         Reference='HF', pHole=0,0, pPart=0,0, nHole=0,0, nPart=0,0, Ortho=.true., E2max=1e8, JP2='', ... /  ! see EMPM
+&ncsm         Hamiltonian='NN', Basis='HO', Trunc='Nmax', Nmax_List=..., ... /                                  ! see NCSM
+&transition_densities           JP='1-', nu_list=5,6,7, File_Name='Phonon_Densities' /
+&transition_operator_densities  JP='1-', nu_list=5,6,7, File_Name='Phonon_Transition_Operator_Densities' /
+&transition_analysis            JP='1-', nu_list=5,6,7, File_Name='Phonon_Transtion_Analysis', Cut=0.1 /   ! [sic] dev name
+&transition_currents            JP='1-', M=0, nu_list=5,6,7, File_Name='Phonon_Currents', xN_grid=40, zN_grid=40 /
+&parse        N_max_Out=..., N_2max_Out=..., N_3max_Out=..., NN_Out_File='io/NN_parsed.bin', NNN_Out_File='io/NNN_parsed.bin' /
+&run          Solvers='HF', 'TDA', 'RPA' /
 ```
 
-The sample inputs in `inputs/` reproduce `Scripts/sample_script_run.jl` with the bundled
-ΔN²LO_GO(394) interaction files `IO/NN.bin` & `IO/NNN.bin`.
+* One input file per TDA/RPA flavour: a namelist group is read once per file, so e.g. an HF-TDA and an HF-ScRPA
+  (different `Name`/`Reference`) need two files, run in one `nujuliet a.nml b.nml` call. Only the first file should
+  contain `HF`: HF wipes `io/<Path>`. `Name` and `Reference` are folder names (non-empty, no `/`); `Name = Reference`
+  is refused.
+* `M` of `&transition_currents`: dev's default -1 means 0; the port keeps the default 0 (same result).
+* LEGACY groups `&hf_efa`, `&rrpa` and the HFB `Broy_Qmax`, `Broy_Bmax` are still accepted (base-version solvers, ignored
+  by the dev solvers) until the cleanup stage.
+* The dev sample `scripts/sample_script_run.jl` (with `io/NN.bin`, `io/NNN.bin`, the bundled ΔN²LO_GO(394) files) is
+  mirrored by the `bundled` case of `tests/dev_port` (namelists in `tests/dev_port/fortran/bundled/`). The `inputs/`
+  directory quoted in older notes is not part of the repository.
+
+## Output layout
+
+```
+io/<Path>/HF/            HF_summary.dat, densities/, bin/{orb,C,rho,H1b,H2b}.bin   (H2b.bin only with BMF = .true.)
+io/<Path>/HF-MBPT/bin/   {orb,C,rho,H1b,H2b}.bin of the HF-MBPT natural orbitals (&hf_mbpt Export)
+io/<Path>/<TDA Name>/    TDA_summary.dat, bin/, spectra/, transitions/, amplitudes/, densities/, levels/
+io/<Path>/<RPA Name>/    RPA_summary.dat, bin/, spectra/, transitions/, amplitudes/, densities/ (also HF_ScRPA)
+io/<Path>/{BCS,HFB,QTDA,QRPA,pnQTDA}/   <solver>_summary.dat, bin/, spectra/, ...
+io/<Path>/EMPM/          TDA_summary.dat, Levels.dat, TDA_Structure.dat, bin/, spectra/, transitions/,
+                         2Phonon/, 3Phonon/, 4Phonon/, Full/<n>Phonon/, SF/
+io/<Path>/NCSM/          NCSM_<Ham>_..._dat (+ _E<L>.dat, _SF_*, checkpoints)
+```
+
+`orb.bin` holds one record per orbital a = 1 .. a_max(Calc.Nmax): `a, n, l, 2j` (int64) and the proton & neutron
+occupations `pO, nO` (float64), little-endian stream. `C.bin` (HF orbitals in the HO basis), `rho.bin` (density in the
+HF basis), `H1b.bin` (one-body Hamiltonian, diagonal for HF) and `H2b.bin` (normal-ordered two-body Hamiltonian, O2b
+layout) are the reference read by TDA/RPA (`Reference`), EMPM and NCSM (`&empm Reference`).
 
 ## EMPM extension (`src/empm/`)
 
 First step of the Equation of Motion Phonon Method, ported from the `Fmat` & `Tda` programs of the original
-EMPM codes. `EMPM_TDA` runs on top of a finished `HF` run (`Bin/C_HF.bin`, `Bin/h_HF.bin`, `Bin/V2B_HF.bin`):
+EMPM codes. `EMPM_TDA` runs on top of a finished `HF` run: it reads the reference
+`io/<Path>/<Reference>/bin/{orb,C,H1b,H2b}.bin` of `&empm Reference` (default `'HF'`). The reference must be
+HF-like: `H1b.bin` diagonal (off-diagonal elements <= 1e-10, so `'HF-MBPT'` is refused), `H2b.bin` present (`&hf
+BMF = .true.`) and **integer occupations** in `orb.bin` (0 or 1 within 1e-8): a closed (sub)shell nucleus, or `&hf
+ESH = .true.` for an open shell (the dev HF with `ESH = .false.` gives fractional occupations, which are fatal). A
+missing reference prints "Error! ... No precomputed reference ..." and skips the step (as the dev TDA).
 
 1. restricted s.p. space ... windows `(first, last)` of the HF levels of each isospin ordered by energy
    (1 = deepest level), the numbering of `input_tda_coup.dat`; a zero bound means the full range
    (holes 1 .. N_occupied, particles N_occupied+1 .. a_max); windows must not mix occupied & empty levels,
 2. F-matrix `F^L(i,j,k,l) = sum_J (2J+1) (-1)^(j_j+j_k-L-J) {j_i j_j L; j_l j_k J} V^J(ik,jl)` over all level
    pairs of the restricted space (convention of `fmat_unfi.f90`),
-3. TDA `A(ph,p'h') = (e_p - e_h) delta - (-1)^(j_p'+j_h'+J) F^J(p,h,h',p')`, spurious 1- state removed as in `HF_RPA`.
+3. TDA `A(ph,p'h') = (e_p - e_h) delta - (-1)^(j_p'+j_h'+J) F^J(p,h,h',p')`, spurious 1- state removed with the dev
+   convention (as the dev `TDA`): the CM vector |spur> is kept as the first 1- phonon with E(1) = <spur|A|spur> (not 0),
+   the other 1- phonons from the symmetric eigenproblem in its orthonormal complement (`Ortho = .true.`).
 
 ```fortran
 &empm  pHole = 7, 16, pPart = 17, 45, nHole = 11, 22, nPart = 23, 55, Ortho = .true. /   ! 208Pb, hw_12_55_jshells
 &run   Solvers = 'EMPM_TDA' /
 ```
 
-Outputs in `IO/<Path>/`: `EMPM/Levels.dat` (the restricted space), `EMPM/TDA_Summary.dat`, `EMPM/Spectra/TDA.dat`,
-`EMPM/TDA_Structure.dat` (phonon composition), `Bin/EMPM_F.bin` (F-matrix, channel by channel `L`, `P`),
-`Bin/EMPM_TDA_E.bin` & `Bin/EMPM_TDA_X.bin` (channel by channel `J`, `P`, as `Bin/TDA_*.bin`). The pair & phonon
-structure behind the binary files is rebuilt from the `&empm` windows (`Fmat_initialize`, `EMPM_TDA_phonons`).
-With the full space (no `&empm` group) the energies & amplitudes equal those of `HF_RPA` (TDA).
+Outputs in `io/<Path>/EMPM/` (`EMPM_TDA` checks the reference, then wipes this folder, so a new TDA also removes the
+later EMPM binaries): `Levels.dat` (the restricted space), `TDA_summary.dat` (the dev `TDA_summary` text with the EMPM
+items), `spectra/TDA.dat`, `transitions/TDA_E<L>.dat`, `TDA_Structure.dat` (phonon composition), `bin/EMPM_F.bin`
+(F-matrix, channel by channel `L`, `P`), `bin/EMPM_TDA_E.bin` & `bin/EMPM_TDA_X.bin` (channel by channel `J`, `P`, as
+the TDA `bin/TDA_*.bin`). Every EMPM binary (2PH, FULL, state files, CM dumps, SF scratch) is in `EMPM/bin/`. The pair &
+phonon structure behind the binary files is rebuilt from the `&empm` windows (`Fmat_initialize`, `EMPM_TDA_phonons`).
+With the full space (no `&empm` group) the energies, amplitudes and transitions equal those of the `TDA` action with
+`Reference = 'HF'` (incl. the spurious E(1)). The later steps (`EMPM_2PH` .. `EMPM_SF`) print "run EMPM_TDA first" and
+skip when `EMPM/bin` is missing; they recompute the CM energy from A, so they do not depend on E(1).
 
 ### 2-phonon step (`EMPM_2PH`)
 
-Port of `phon_dens1`, `phon_int`, `eqm2_svd` & `eqm2_admat`. It runs on top of `EMPM_TDA` (reads `Bin/EMPM_F.bin` &
-`Bin/EMPM_TDA_*.bin`, rebuilds the space from the same `&empm` windows) ... **nothing is written to disk in between**:
+Port of `phon_dens1`, `phon_int`, `eqm2_svd` & `eqm2_admat`. It runs on top of `EMPM_TDA` (reads `EMPM/bin/EMPM_F.bin` &
+`EMPM/bin/EMPM_TDA_*.bin`, rebuilds the space from the same `&empm` windows) ... **nothing is written to disk in between**:
 the 1-phonon densities rho_gb(s;i1,i2) & the redefined interaction V_gb(s;k,l) of a phonon g (for all phonons b) are
 computed when a row of A & D needs them (`nj_empm_dens.f90`), as dense blocks per (J,P) channel of b, so that the A & D
 rows are dgemm contractions.
@@ -127,7 +170,7 @@ rows are dgemm contractions.
 
 Outputs: `EMPM/2Phonon/Spectrum.dat` (J, P, E, spurious flag), `EMPM/2Phonon/Summary.dat` (dimensions, timings,
 |AD - (AD)^T|), `EMPM/2Phonon/Basis_<J><P>.dat` (truncated basis with spurious & independence flags),
-`Bin/EMPM_2PH_<J><P>_E.bin` & `_C.bin` (energies, amplitudes C(independent row, solution)).
+`EMPM/bin/EMPM_2PH_<J><P>_E.bin` & `_C.bin` (energies, amplitudes C(independent row, solution)).
 The log also prints the eigenvalue spectrum of the spurious & truncated D blocks per decade.
 
 Validated against the original binaries (208Pb, small window, 1-, 2+, 0+): identical dimensions, A & D rows equal to
@@ -144,7 +187,7 @@ V(a; alpha lambda) = (-1)^(Ja+Jal+Jl)/(2Ja+1) sum_s rho_(a alpha)(Jl; s) W_l(s),
 states while the D rows are built, P = D V, H_12 = sqrt(2J+1) C^T P (`fullham`), nothing is stored on disk. The full
 Hamiltonian [ground ; 1-phonon (without the spurious phonon) ; physical 2-phonon] is diagonalized by `dsyevd`.
 Outputs `EMPM/2Phonon/Full_<J><P>.dat` (E with 0-, 1- & 2-phonon weights), `Full_<J><P>_1phon.dat`,
-`Bin/EMPM_FULL_<J><P>_E.bin` & `_Z.bin`. Validated against `Nondiag12` + `Fullham` (small 208Pb window, 1- & 0+ with the
+`EMPM/bin/EMPM_FULL_<J><P>_E.bin` & `_Z.bin`. Validated against `Nondiag12` + `Fullham` (small 208Pb window, 1- & 0+ with the
 ground state): same spectra & weights to the single precision of the original files.
 
 Eigensolver of the 2-phonon step: `dsygvd` (divide & conquer) replaces `dsygv`; it returns C normalized by C^T D C = 1. `D_Spectrum = .true.` prints the
@@ -205,8 +248,8 @@ dimension with < 1% extra rows visited (0+ 1583 of 46028 rows, 3+ 5967 of 187560
 
 Spurious states with `Ortho` as in "CM treatment" below. Outputs in `EMPM/3Phonon/`: `Spectrum.dat` (J, P, E, spurious
 flag), `Summary.dat` (2- & 3-phonon channels with dimensions, spurious states & solutions, |AD - (AD)^T|), `States2.dat` &
-`States3.dat` (index, J, P, E, spurious flag) and, as input of the 4-phonon step, the state sets `Bin/EMPM_S2_<JP>.bin`
-(2-phonon) & `Bin/EMPM_S3_<JP>.bin` (3-phonon), raw streams of -3 (format marker), N_full, n, N_ind, N_phys (int32),
+`States3.dat` (index, J, P, E, spurious flag) and, as input of the 4-phonon step, the state sets `EMPM/bin/EMPM_S2_<JP>.bin`
+(2-phonon) & `EMPM/bin/EMPM_S3_<JP>.bin` (3-phonon), raw streams of -3 (format marker), N_full, n, N_ind, N_phys (int32),
 Al(N_full), La(N_full) (int32: the (n-1)-phonon state of each basis state, numbered as in `States2.dat` for S3 or the phonon
 index for S2, and the phonon lambda), E(n), Kc(N_ind) (int32, full-basis indices of the independent rows, ascending),
 C(N_ind,n) on those rows (zero on all others), X(N_full,n) = sqrt(2J+1) D(independent rows)^T C & R(N_phys,n-N_phys)
@@ -224,12 +267,12 @@ to 533528): all channels with E3max = 40 MeV (10k rows) in 104 s on 28 threads, 
 
 ### 4-phonon step (`EMPM_4PH`)
 
-On top of a complete `EMPM_3PH` run (same output folder): the 2- & 3-phonon states are read from `Bin/EMPM_S2_*.bin` &
-`Bin/EMPM_S3_*.bin`, the 2-phonon densities of all 2-phonon states are cached and the 3-phonon densities of the row states
+On top of a complete `EMPM_3PH` run (same output folder): the 2- & 3-phonon states are read from `EMPM/bin/EMPM_S2_*.bin` &
+`EMPM/bin/EMPM_S3_*.bin`, the 2-phonon densities of all 2-phonon states are cached and the 3-phonon densities of the row states
 computed on the fly with the same recoupling formula one level up (the (n-2)-phonon densities rho_(al mu) are then the
 2-phonon densities). Basis |c lambda; J^P> of the 3-phonon states c & the phonons, rows E_c + E_lambda <= `E4max`, channels
 `JP4`; the A & D rows, H = A D^T, the |AD - (AD)^T| check, the eigenproblem & the exports (`EMPM/4Phonon/Spectrum.dat`,
-`Summary.dat`, `States4.dat`, `Bin/EMPM_S4_<JP>.bin`) as in the 3-phonon step (shared code, `nph_channels` &
+`Summary.dat`, `States4.dat`, `EMPM/bin/EMPM_S4_<JP>.bin`) as in the 3-phonon step (shared code, `nph_channels` &
 `nj_empm_eqm3.f90` with the lower level as an argument). Complete 4He (3 shells): 3739 independent 4-phonon states = the
 4p4h J-states in every J^P channel, |AD - (AD)^T| <= 5.4e-13, 94 s on 28 threads.
 
@@ -272,7 +315,7 @@ level, pp & hh parts from the rank-1 n-phonon densities (`EMPM_densityN(..., Sig
 |<J'||L||psi>|^2/(2J+1) per channel, H diagonalized on its null space (N_cm < `CM_Tol`, default 1e-4) for every truncation
 n = 1 .. Full_N (b changes the phonon number by at most 1, so the rows of level n+1 make the condition exact for n < Full_N).
 `Full_unproj_<JP>.dat` lists E & N_cm of the unprojected states, the log the N_cm range & gap per channel;
-`CM_Dump = .true.` writes the full H & the L blocks (Bin/EMPM_CMH_*, EMPM_CMB_*) for `tests/empm_cm_exact_check.py HRF_DIR
+`CM_Dump = .true.` writes the full H & the L blocks (EMPM/bin/EMPM_CMH_*, EMPM_CMB_*) for `tests/empm_cm_exact_check.py HRF_DIR
 EMPM_DIR [--fit]` (reference: exact N_cm in the m-scheme FCI). 4He, 3 shells (`runs/4He_CMX`, copy of the `runs/4He` chain,
 `run_He4_CMX_FULL.sh`, ~3 min): the hp phase (-1)^(J'-J), the normalizations & G2 reproduce N_cm of all FCI eigenstates to
 1.3e-8 (`--fit`); the N_cm = 0 dimensions (with 3 phonons 1+/7-, with 4 phonons 196+/176- at M = 0, null eigenvalues
@@ -299,7 +342,7 @@ with X, and the Hf couplings 2<-1, 3<-2, 4<-3 by the threaded `mtm`.
 the intermediate rows (`EMPM_cm_dims`), so for every truncation n EMPM_FULL also imposes, after the exact condition
 (rows q <= n+1): `space` P_n b_cm psi = 0 (rows q <= n) and `proj` P_(n-1) b_cm psi = 0 (rows q <= n-1; physical =
 complement of P_n b+_cm acting on the <= n-1 phonon space, i.e. the SVD idea of `Ortho` with the full b_cm instead of its
-ph part). Spectra & exact <N_cm> of the states go to `Bin/EMPM_FULL<n>_<JP>_E_<space|proj>.bin` & `_Ncm_<...>.bin`
+ph part). Spectra & exact <N_cm> of the states go to `EMPM/bin/EMPM_FULL<n>_<JP>_E_<space|proj>.bin` & `_Ncm_<...>.bin`
 (the exact output is unchanged). `tests/empm_cm_exact_check.py --variants` reproduces both to 6e-10 MeV (3 shells);
 `tests/empm_cm_chain_check.py --out` gives the exact <N_cm> of the SVD (`Ortho`) states; `runs/plot_cm_svd_exact.py
 IO_SVD IO_EXACT` plots no CM / SVD / proj / exact per J^P (`runs/plots/He4_{3,4}sh_cm_svd_exact*`). Findings for 4He:
@@ -383,9 +426,9 @@ products (the bulk of b+_cm |a>) can be kept completely in an energy-truncated b
 ### Chain TDA -> 2PH -> 3PH -> 4PH -> FULL
 
 Each step reads the states saved by the previous one: `EMPM_2PH` with `Save_X = .true.` writes the 2-phonon states (basis,
-E, C on the full basis, X = sqrt(2J+1) D(independent rows)^T C) to `Bin/EMPM_S2_<JP>.bin` & `EMPM/2Phonon/States2.dat`
+E, C on the full basis, X = sqrt(2J+1) D(independent rows)^T C) to `EMPM/bin/EMPM_S2_<JP>.bin` & `EMPM/2Phonon/States2.dat`
 (off by default ... large for big spaces), `EMPM_3PH` reads them (it no longer solves the 2-phonon problem itself) and
-writes `Bin/EMPM_S3_<JP>.bin`, `EMPM_4PH` reads S2 & S3 and writes `Bin/EMPM_S4_<JP>.bin`. Example: `runs/run_He4_HF.sh`,
+writes `EMPM/bin/EMPM_S3_<JP>.bin`, `EMPM_4PH` reads S2 & S3 and writes `EMPM/bin/EMPM_S4_<JP>.bin`. Example: `runs/run_He4_HF.sh`,
 `run_He4_EMPM2.sh`, `run_He4_EMPM3.sh`, `run_He4_EMPM4.sh`, `run_He4_FULL.sh` (or `run_He4_chain.sh`), 4He in 3 shells,
 ~3 min on 28 threads.
 
@@ -408,7 +451,7 @@ projection P_(n-1) b_cm psi = 0 (below; needs complete sets). All variants are w
 method, dimensions n0 .. n4, number of states & of physical states) and the columns i, E (relative to E_HF), exact <N_cm>
 (-1 if not computed), phys (<N_cm> < 0.5), w0 .. w4 (0- .. 4-phonon weights). <N_cm> is computed (`CM_Ncm = .true.`,
 default) whenever the sets are complete. `Summary_<lab>.dat` (unproj or svd, proj) lists per channel the dimensions, the
-numbers of states & physical states and the lowest physical state; binaries `Bin/EMPM_FULL<n>_<JP>_E_<lab>.bin`,
+numbers of states & physical states and the lowest physical state; binaries `EMPM/bin/EMPM_FULL<n>_<JP>_E_<lab>.bin`,
 `_Ncm_<lab>.bin`, and `_Z_<lab>.bin` (n0 .. n4, eigenvectors) for unproj & proj; the 5 lowest states in the log.
 `tests/proj_physical.py IO_DIR` collects the physical proj states of all J^P (`Full_proj_physical.dat`).
 `runs/plot_empm_spectra.py` (with `plot_He4_spectra.sh`) plots the spectra of any subspace sets side by side (gnuplot).
@@ -416,6 +459,8 @@ Complete 4He (3 shells): with 4 phonons the whole 4-nucleon space, all 6040 eige
 independent M-scheme FCI of the same normal-ordered H to 6e-10 MeV in every J^P channel (the 1e-10 rounding of `V2B_HF.dat`):
 `tests/empm_fci_check.py HRF_DIR EMPM_DIR` (HF energies from `Bin/h_HF.bin`, `V2B_HF.dat` & `Orbitals_HF.dat` of an HF run with
 `&hf HRF = .true.`, e.g. `runs/4He/He4_HF_HRF.nml`, J from <J^2>, ~2 min), FCI spectrum in `HRF_DIR/FCI_Spectrum.dat`.
+These text files come from the HRF output of the base-version HF (`HF_LEGACY` with `HRF = .true.`); the dev HF writes no
+HRF tables (`HRF` is a dead input), so the check needs `HF_LEGACY` until it is ported to `HF/bin/*.bin`.
 The pn blocks of `V2B_HF.dat` & of the full N x N pn matrices of `Bin/V2B_*.bin` were written with the packed index of the
 lower triangle also for Ket > Bra (wrong upper triangle) until Nov 2026; the solvers were not affected, the import now reads
 the lower triangle only, so older files remain valid.
@@ -445,9 +490,9 @@ On top of an `EMPM_FULL` run with `Full_N` = 1 or 2 (same input, `Solvers = 'EMP
 .false.` or `Ortho` with `CM_Keep`). The E1 operator of protons and neutrons (1-body, HF basis) goes through the CM-operator
 machinery (`EMPM_op_make`: ph strengths bL = bR, pair weights wD; `EMPM_cm_dlevels_nc` with `Sel` for 0+ -> 1-;
 `EMPM_cm_blocks`), giving <1- basis||Q_t||0+ basis> on [0 ; 1-phonon ; 2-phonon]. With the eigenvectors of
-`Bin/EMPM_FULL<n>_<JP>_Z_<lab>.bin` (lab = unproj or svd, proj; n = 1 .. Full_N):
+`EMPM/bin/EMPM_FULL<n>_<JP>_Z_<lab>.bin` (lab = unproj or svd, proj; n = 1 .. Full_N):
 M_t(k) = Z_1-(:,k)^T B_t Z_0+(:,gs), gs = the lowest 0+ with <N_cm> < 0.5; B_ph = M_p^2, B_is = (M_p + M_n)^2/4, B_iv =
-(e_p M_p - e_n M_n)^2 (e_p = N/A, e_n = Z/A), as `EMPM_TDA` & `NCSM`. Output `EMPM/Transitions/Full<n>_<lab>_E1.dat`
+(e_p M_p - e_n M_n)^2 (e_p = N/A, e_n = Z/A), as `EMPM_TDA` & `NCSM`. Output `EMPM/transitions/Full<n>_<lab>_E1.dat`
 (k, E - E_HF, Ex, N_cm, physical flag, B_ph, B_is, B_iv; header with the g.s., the sums & the B_iv centroid); for n = 2 also
 from |HF> (the 0+ basis state 1, Ex = E - E_HF): `Full2_<lab>_E1_fromHF.dat`. Only X of 0+ & 1- are loaded. Checks (4He
 4 shells, complete): unprojected <= 1 / <= 2 phonons equal NCSM <= 1p1h / <= 2p2h (Transitions) in all 8 / 126 1- states
@@ -457,7 +502,7 @@ from |HF> (the 0+ basis state 1, Ex = E - E_HF): `Full2_<lab>_E1_fromHF.dat`. On
 
 B(E1; 0+_gs -> 1-) with the g.s. up to 2 phonons and the 1- space up to 3 phonons, without the 3-phonon eigenproblem and
 without the full diagonalization (`EMPM_SF` in `nj_empm_driver.f90`). It runs on top of `EMPM_TDA`, `EMPM_2PH` (all channels,
-`Save_X = .true.`) and `EMPM_FULL` with `Full_N = 2`, `JPF = '0+'` (the g.s. = lowest 0+ of `Bin/EMPM_FULL2_0+_Z_unproj.bin`);
+`Save_X = .true.`) and `EMPM_FULL` with `Full_N = 2`, `JPF = '0+'` (the g.s. = lowest 0+ of `EMPM/bin/EMPM_FULL2_0+_Z_unproj.bin`);
 `Ortho = .false.`. Input (`&empm`): `SF_Steps` (100), `SF_Op` = `'iv'` (default), `'is'`, `'ph'`, `SF_Reorth` (.true.),
 `SF_Mode`. The 1- space is [1-phonon ; 2-phonon states ; 3-phonon sector], the couplings are those of `EMPM_FULL` taken
 before the projection on the 3-phonon states (H|a_2> -> sqrt(2J+1) V(:,a), H|lambda> -> h20(gamma) on |gamma lambda>,
@@ -495,14 +540,18 @@ default A mod 2), `N_Eig`, `Lanczos_Max` (largest number of matrix-vector produc
 MeV), `Lanczos_Basis` (thick-restart basis, 0 = max(2 N_Eig + 50, 100)), `Matrix_GB` (0 = 70% of MemAvailable),
 `Trunc` (`'Nmax'` default; `'npnh'`: all m-states e <= Calc%Nmax, at most `Nmax_List(i)` particles outside the lowest
 A m-states, both parities, output `NCSM_<Ham>_<Basis>_<n>p<n>h<p|m>[_B<beta>].dat` ... the EMPM n-phonon space),
-`Basis` (`'HO'` default; `'HF'` with `'EMPM'`: H kept in the HF orbitals, N_cm built from b & N transformed with C_HF,
+`Basis` (`'HO'` default; `'HF'` with `'EMPM'`: H kept in the HF orbitals, N_cm built from b & N transformed with C,
 so that `npnh` counts excitations w.r.t. the HF reference like the EMPM). Checks (4He NN only, 5 shells,
 `runs/4He_NN5sh`): the complete space (4p4h) in HO & HF gives identical E, <J^2> & <N_cm>; the 3p3h M = 0 dimensions
 39209 / 38528 equal the EMPM 0..3-phonon J-scheme counts summed over J.
 Hamiltonians: `'NN'` T_int + V_NN in the HO basis ((1 - 1/A) T + V_NN with the 2-body CMS term of `V2b_read`, no HF run
-needed, translationally invariant) and `'EMPM'` the normal-ordered EMPM Hamiltonian E_HF + e :a+a: + 1/4 V2B_HF :a+a+aa:
-of the HF run in `IO/<Path>` (h_HF diagonal, residual 3-body dropped; its plain form is built in the HF basis &
-transformed back to HO with C_HF), energies also relative to E_HF. Basis: products of proton & neutron SDs
+needed, translationally invariant) and `'EMPM'` the normal-ordered EMPM Hamiltonian E_HF + e :a+a: + 1/4 H2b :a+a+aa:
+of the HF reference `io/<Path>/<&empm Reference>/bin/{orb,H1b,H2b,C,rho}.bin` (default `io/<Path>/HF/bin`; E_HF from
+its `HF_summary.dat`; H1b diagonal, residual 3-body dropped; its plain form is built in the HF basis & transformed back
+to HO with C), energies also relative to E_HF. As for the EMPM the reference must be HF-like (diagonal `H1b.bin`, so
+`'HF-MBPT'` is refused) with integer occupations (diagonal of `rho.bin` 0 or 1 within 1e-8, else fatal: closed
+(sub)shells or `&hf ESH = .true.`). With `'EMPM'` or `Basis = 'HF'` the orbitals come from the reference `orb.bin`,
+otherwise from the LHO construction (Calc.Nmax). Basis: products of proton & neutron SDs
 (single-particle space e <= min(Calc%Nmax, e_F + Nmax), a warning if Calc%Nmax cuts the Nmax space), m-scheme 2-body
 tables per pair block (2M, parity) within the pair quanta cut (needs N2max >= the largest pair quanta). Engine (v2):
 one operator H + Beta_CM N_cm (tables combined), each column generated from the like-particle species matrices & the
@@ -512,7 +561,7 @@ Lanczos (Wu & Simon: full reorthogonalization in a basis of `Lanczos_Basis` vect
 restart), so many states (e.g. hundreds at beta 0 among the CM copies) need bounded memory. <J^2> & <N_cm> (b_mu =
 sqrt(2) (r_mu/b)_(N->N-1) as in `tests/empm_cm_check.py`) of the final states on the fly in blocks of 16 vectors; E =
 <H> = Ritz value - Beta <N_cm>. Output per state E, J (from <J^2>), <N_cm> & the residual in
-`IO/<Path>/NCSM/NCSM_<Ham>_Nmax<N>[_B<beta>].dat`. Checks: 4He in 4 shells with the EMPM Hamiltonian
+`io/<Path>/NCSM/NCSM_<Ham>_Nmax<N>[_B<beta>].dat`. Checks: 4He in 4 shells with the EMPM Hamiltonian
 (`runs/4He_4sh/He4_NCSM.nml`, Nmax 12 / 11 = the complete 4-shell space, M = 0 dimensions 39806 / 39492) reproduces
 `tests/fci_sparse_cm.py` (all J^P, incl. <N_cm>) to 4.7e-9 MeV; with `'NN'` (`runs/4He_NCSM`, Nmax 2 .. 10) every <N_cm>
 is an integer to 1e-16 (exact CM factorization) and the intrinsic levels of Nmax reappear unchanged as CM excitations
@@ -549,21 +598,30 @@ valid checkpoint (same dimension, operator & S0) continues after its last step, 
 `Tr_Lanczos` extends a finished run (from the checkpoint at step <= Tr_Lanczos - 1). Delete both files to start from step 1.
 The setup (basis, species matrices, g.s.) is redone on restart. Check: 16O 3 shells, 40 steps in one run vs 15 + restart,
 coefficients equal to the run-to-run noise (alpha 7e-8 MeV, beta 6e-12 MeV), single & double vectors.
-`EMPM_TDA` writes `EMPM/Transitions/TDA_E<L>.dat` (E, B_ph, B_is, B_iv as `HF_RPA`). Checks: 16O 4 shells, <= 1p1h vs
-HF_RPA TDA (`Ortho = .false.`) all E0 .. E3 states, energies exactly & B to 4e-9 (`tests/cmp_ncsm_tda_tr.py`); 208Pb
+`EMPM_TDA` writes `EMPM/transitions/TDA_E<L>.dat` (E, B_ph, B_is, B_iv as the TDA). Checks: 16O 4 shells, <= 1p1h vs
+TDA (`Ortho = .false.`) all E0 .. E3 states, energies exactly & B to 4e-9 (`tests/cmp_ncsm_tda_tr.py`); 208Pb
 window (NN + NNN, 13 shells), NCSM <= 1p1h vs EMPM_TDA equal (B to 3e-9); 16O g.s. <= 2p2h with 1- <= 3p3h agrees with
 the full <= 3p3h to 0.05 MeV & 0.03 % in B; SF Lanczos = dense.
 
 ## Compatibility with the Julia code
 
-* Binary files (`IO/*/Bin/*.bin`, NuHamil interaction files) are raw little-endian streams and are
-  byte-compatible in both directions, so Julia and Fortran stages can be mixed.
+* Byte-compatible with NuJuliet dev f3f7a33: binary files (`io/*/HF/bin/*.bin`, `io/*/HF-MBPT/bin/*.bin`,
+  `io/*/<Name>/bin/*.bin`, NuHamil interaction files) are raw little-endian streams, `orb.bin` with the int64 labels
+  `a, n, l, 2j` and the float64 occupations per orbital. The port reads Julia files, so Julia and Fortran stages can be
+  mixed, with one exception: the pn block of a two-body file (`H2b.bin`, `sigma.bin`) is written by Julia as the full
+  N x N square with the packed lower-triangle index (aliased upper triangle), by the port as the true symmetric matrix,
+  so Julia cannot read a pn block written by the port (Fortran HF -> Julia TDA/RPA).
 * Text outputs have the same names, layout and number formats.
-* Results agree with the Julia code to ~1e-12 or better; eigenvector-based quantities can differ by
-  arbitrary signs/phases (LAPACK gauge) without changing any physical output.
-* Intentional deviations, bug fixes and Julia quirks are listed in `docs/PORTING_NOTES.md`.
+* Results agree with the Julia code to ~1e-12 or better (1e-8 in the test harness); eigenvector-based quantities can
+  differ by arbitrary signs/phases (LAPACK gauge) without changing any physical output.
+* EMPM and NCSM have no Julia counterpart; their file conventions are described above (`&empm Reference`, `EMPM/bin`).
+* Intentional deviations, bug fixes and Julia quirks are listed in `docs/PORTING_NOTES.md`; the state of the dev port is
+  in `docs/dev_port/STATUS.md`.
 
 ## Verification
 
-`tests/compare_outputs.py REF_DIR NEW_DIR [--tol 1e-8]` compares two output folders
-(binary files element-wise and modulo sign, text files token-wise with a numeric tolerance).
+`tests/dev_port/` (see its `README.md`): Julia reference runs of the dev code (`run_julia.sh`), the same cases with the
+port (`run_fortran.sh`, namelists in `tests/dev_port/fortran/<case>/`) and `compare.py JULIA_IO FORTRAN_IO [--tol 1e-8]`
+(walks the lowercase `io/<Path>/...` trees: binary files element-wise and modulo column signs, text files token-wise with
+a numeric tolerance; `gauge_check.py` for eigenvector gauges). EMPM / NCSM: `run_empm_ncsm.sh baseline|dev|compare`
+against a legacy baseline of the frozen stage-4 binary (`empm_compare.py`).

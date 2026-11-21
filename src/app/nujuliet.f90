@@ -19,7 +19,8 @@ program nujuliet
     logical :: Handled, Legacy_HF
 
     if (command_argument_count() < 1) then
-        write(*,'(a)') 'Usage: nujuliet input1.nml [input2.nml ...]'
+        write(*,'(a)') 'Usage: nujuliet input1.nml [input2.nml ...]   (run from the directory containing io/; the input ' // &
+                       'files run in sequence, outputs in io/<Path>/)'
         stop
     end if
 
@@ -27,8 +28,8 @@ program nujuliet
         call get_command_argument(i_arg, Arg)
         call read_input(trim(Arg), Run)
         write(*,'(/,a)') '=== NuJuliet input file: ' // trim(Arg) // ' ... output folder io/' // trim(Run%Params%Calc%Path)
-        ! LEGACY (removed in cleanup stage) ... the not-yet-ported solvers read the base-version HF output io/<Path>/Bin/*,
-        ! so 'HF' runs the legacy HF when one of them follows in the same &run ...
+        ! LEGACY (removed in cleanup stage) ... HF_RPA* & HF_RRPA* read the base-version HF output io/<Path>/Bin/*, so 'HF'
+        ! runs the legacy HF when one of them is in the same &run (EMPM_*, EMPM & NCSM read the dev reference) ...
         Legacy_HF = .false.
         do k = 1, Run%N_Actions
             if (legacy_hf_consumer(trim(Run%Actions(k)))) Legacy_HF = .true.
@@ -44,6 +45,7 @@ program nujuliet
                 end if
             case ('HF_LEGACY')       ! LEGACY (removed in cleanup stage)
                 call HF_LEGACY(Run%Params)
+            ! NCSM (Fortran-only) ... Hamiltonian 'EMPM' / Basis 'HF' read the dev reference of &empm Reference ...
             case ('NCSM')
                 call NCSM(Run%Params)
             ! Interaction parse utilities (&parse) ... 'PARSE' = V2b_parse & V3b_no2b_parse (the latter only with an NNN_File) ...
@@ -54,6 +56,8 @@ program nujuliet
             case ('PARSE')
                 call parse_nn()
                 if (len_trim(Run%Params%Int%NNN_File) > 0) call parse_nnn()
+            ! chain A (TDA, RPA, HF_ScRPA, TDA_/RPA_transition_*, LEGACY HF_RPA* / HF_RRPA*), chain B (BCS, HFB, QTDA, QRPA,
+                ! pnQTDA), chain C (EMPM_TDA .. EMPM_SF, EMPM) ...
             case default
                 call dispatch_rpa(trim(Run%Actions(k)),Run,Handled)
                 if (.not. Handled) call dispatch_qp(trim(Run%Actions(k)),Run,Handled)
@@ -65,11 +69,11 @@ program nujuliet
 
 contains
 
-    ! LEGACY (removed in cleanup stage) ... solvers that read the base-version HF output (io/<Path>/Bin/*) ...
+    ! LEGACY (removed in cleanup stage) ... solvers that read the base-version HF output (io/<Path>/Bin/*) ... the EMPM & the
+        ! NCSM read the dev reference io/<Path>/<&empm Reference>/bin/* since stage 5 (no longer routed) ...
     logical function legacy_hf_consumer(Action)
         character(len=*), intent(in) :: Action
-        legacy_hf_consumer = (index(Action,'HF_RPA') == 1 .or. index(Action,'HF_RRPA') == 1 .or. &
-                              index(Action,'EMPM') == 1 .or. Action == 'NCSM')
+        legacy_hf_consumer = (index(Action,'HF_RPA') == 1 .or. index(Action,'HF_RRPA') == 1)
     end function legacy_hf_consumer
 
     subroutine parse_nn()

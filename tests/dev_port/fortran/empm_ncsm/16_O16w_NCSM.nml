@@ -1,0 +1,25 @@
+! empm_ncsm dev-form input (dev HF -> EMPM/NCSM reading io/<Path>/<Reference>/bin/*); legacy twin in ../empm_ncsm_legacy
+! 16O 4 shells, NCSM in the EMPM window (Window), npnh <= 2p2h, 0+ only
+! Run all files of this directory in order from one work directory (see ../../run_empm_ncsm.sh dev)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 16, Z = 8, hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+  CMS = 'CMS1+2B'
+  Path = 'O16w'
+/
+&hf
+  Tol = 1e-10
+/
+&empm
+  pHole = 2, 3, pPart = 4, 8, nHole = 2, 3, nPart = 4, 8
+/
+&ncsm
+  Hamiltonian = 'EMPM', Basis = 'HF', Trunc = 'npnh', Window = .true., Nmax_List = 2, M2 = 0, Parity = 0, N_Eig = 4
+/
+&run
+  Solvers = 'NCSM'
+/

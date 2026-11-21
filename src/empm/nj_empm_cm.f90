@@ -90,7 +90,7 @@ contains
                 end if
             end do
         end do
-        C = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
+        C = O1b_import(Params,Orb,empm_ref_path(Params,'/bin/C.bin'))
         TrL = Tr1b_transformation(Params,Orb,C,TrL)
         TrR = Tr1b_transformation(Params,Orb,C,TrR)
 
@@ -209,7 +209,7 @@ contains
         type(o1b_t) :: C
         integer :: l, p, h, ap, ah, s, k, i1, i2, a1, a2
         TrOp = Tr1b_initialize(Params,Orb,1.0_dp)
-        C = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
+        C = O1b_import(Params,Orb,empm_ref_path(Params,'/bin/C.bin'))
         TrOp = Tr1b_transformation(Params,Orb,C,TrOp)
         Op%A = Params%Calc%A
         allocate(Op%bL(Ph%N), Op%bR(Ph%N), Op%wD(Pairs%S), Op%wC(Pairs%S))

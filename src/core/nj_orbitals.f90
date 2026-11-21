@@ -12,6 +12,16 @@ module nj_orbitals
     public :: orbitals_1p1h_make, orb2b_1p1h_index, orbitals_2qp_make, orb2b_2qp_index, OBDM_natural_orbitals, a_max_of
     ! LEGACY (removed in cleanup stage) ... dead in dev ("Old remove soon"), still used by the old TDA/RPA/RRPA, HF-MBPT & EMPM ...
     public :: orbitals_ph_make, orbitals_ph_list, orbitals_one_phonon_make
+    ! stage 5 (EMPM / NCSM consumers of an HF-like reference) ...
+    public :: read_h1b_diag
+
+    ! orbitals_ph_make(Params,Orb,N_Particle,Particle,N_Hole,Hole) ... LEGACY (Bin/h_HF.bin, exact occupations 0/1, removed in
+        ! the cleanup stage) ... orbitals_ph_make(Params,Orb,H1b_File,N_Particle,Particle,N_Hole,Hole) ... stage 5: Orb from the
+        ! reference orb.bin, the HF energies from the diagonal of its H1b.bin (checked to be diagonal), holes pO >= 1 - 1e-8,
+        ! particles pO <= 1e-8, any other occupation fatal ...
+    interface orbitals_ph_make
+        module procedure orbitals_ph_make_legacy, orbitals_ph_make_ref
+    end interface orbitals_ph_make
 
     ! orbitals_export(Params,Orb,Export_Path) ... binary orbital table (dev) ... orbitals_export(Params,Orb) ... LEGACY
         ! human-readable tables of the HRF switch (no caller in dev, removed in cleanup stage) ...
@@ -272,7 +282,7 @@ contains
 
     ! LEGACY (removed in cleanup stage) ... particle & hole states with HF single-particle energies read from Bin/h_HF.bin ...
         ! holes are the orbitals with occupation 1, particles those with 0 (fractional occupations belong to neither) ...
-    subroutine orbitals_ph_make(Params,Orb,N_Particle,Particle,N_Hole,Hole)
+    subroutine orbitals_ph_make_legacy(Params,Orb,N_Particle,Particle,N_Hole,Hole)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         type(pninteger_t), intent(out) :: N_Particle, N_Hole
@@ -309,7 +319,124 @@ contains
                 Hole%n(N_Hole%n) = spstate_t(Orb(a)%a,Orb(a)%l,Orb(a)%j,nSPE(a))
             end if
         end do
-    end subroutine orbitals_ph_make
+    end subroutine orbitals_ph_make_legacy
+
+    ! Diagonal of a reference 1-body Hamiltonian file (O1b layout: protons then neutrons, for a, for b with l_a == l_b &
+        ! j_a == j_b) ... the EMPM (F-matrix, A = (e_p - e_h) delta - F) & the NCSM 'EMPM' Hamiltonian assume an HF reference
+        ! with a diagonal h, so any off-diagonal element |h(a,b)| > 1e-10 is fatal (e.g. the HF-MBPT natural orbitals) ...
+    subroutine read_h1b_diag(Params,Orb,File,pSPE,nSPE)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), intent(in) :: Orb(:)
+        character(len=*), intent(in) :: File
+        real(dp), allocatable, intent(out) :: pSPE(:), nSPE(:)
+        real(dp), parameter :: Tol_diag = 1.0e-10_dp
+        real(dp) :: ME, ME_off
+        integer :: a_max, a, b, u, iso, Ios, a_off, b_off, iso_off
+        character(len=512) :: Msg
+
+        a_max = a_max_of(Params%Calc%Nmax)
+        if (size(Orb) < a_max) call fatal('read_h1b_diag: fewer orbitals than a_max(Calc.Nmax) ... ' // trim(File))
+        allocate(pSPE(a_max), nSPE(a_max))
+        open(newunit=u, file=File, access='stream', form='unformatted', status='old', action='read', iostat=Ios, iomsg=Msg)
+        if (Ios /= 0) call fatal('read_h1b_diag: cannot open ' // trim(File) // ' ... ' // trim(Msg))
+        ME_off = 0.0_dp
+        a_off = 0
+        b_off = 0
+        iso_off = 0
+        do iso = 1, 2
+            do a = 1, a_max
+                do b = 1, a_max
+                    if (Orb(a)%l == Orb(b)%l .and. Orb(a)%j == Orb(b)%j) then
+                        read(u, iostat=Ios, iomsg=Msg) ME
+                        if (Ios /= 0) call fatal('read_h1b_diag: cannot read ' // trim(File) // ' ... ' // trim(Msg))
+                        if (a == b) then
+                            if (iso == 1) pSPE(a) = ME
+                            if (iso == 2) nSPE(a) = ME
+                        else if (abs(ME) > ME_off) then
+                            ME_off = abs(ME)
+                            a_off = a
+                            b_off = b
+                            iso_off = iso
+                        end if
+                    end if
+                end do
+            end do
+        end do
+        close(u)
+        if (ME_off > Tol_diag) call fatal('the 1-body Hamiltonian ' // trim(File) // ' is not diagonal: |h(' // istr(a_off) // ',' // &
+                                          istr(b_off) // ')| = ' // cfmt_e(ME_off,0,3) // ' for the ' // &
+                                          trim(merge('protons ','neutrons',iso_off == 1)) // ' (> 1e-10) ... the EMPM & the ' // &
+                                          'NCSM ''EMPM'' Hamiltonian need an HF reference with diagonal H1b (not HF-MBPT)')
+    end subroutine read_h1b_diag
+
+    ! Particles & holes of an HF-like reference ... Orb from its orb.bin (the occupations of the dev HF: Aufbau, possibly
+        ! fractional), the HF energies from the diagonal of H1b_File (read_h1b_diag) ... holes pO >= 1 - 1e-8, particles
+        ! pO <= 1e-8 (in the order of the orbitals, as the legacy version) ... any other occupation is fatal: the EMPM & the
+        ! NCSM work with a Slater determinant ...
+    subroutine orbitals_ph_make_ref(Params,Orb,H1b_File,N_Particle,Particle,N_Hole,Hole)
+        type(params_t), intent(in) :: Params
+        type(orb1b_t), intent(in) :: Orb(:)
+        character(len=*), intent(in) :: H1b_File
+        type(pninteger_t), intent(out) :: N_Particle, N_Hole
+        type(pnsvector_t), intent(out) :: Particle, Hole
+        real(dp), parameter :: Tol_occ = 1.0e-8_dp
+        real(dp), allocatable :: pSPE(:), nSPE(:)
+        integer :: a_max, a
+
+        a_max = a_max_of(Params%Calc%Nmax)
+        ! the diagonal check first: an HF-MBPT reference (natural orbitals) is rejected as not HF-like ...
+        call read_h1b_diag(Params,Orb,H1b_File,pSPE,nSPE)
+        do a = 1, a_max
+            if (.not. (is_int_occ(Orb(a)%pO) .and. is_int_occ(Orb(a)%nO))) &
+                call fatal('EMPM/NCSM need integer occupations: closed (sub)shell nucleus or &hf ESH=.true. ... orbital ' // &
+                           istr(a) // ' (l = ' // istr(Orb(a)%l) // ', 2j = ' // istr(Orb(a)%j) // ') has pO = ' // &
+                           jstr(Orb(a)%pO) // ', nO = ' // jstr(Orb(a)%nO))
+        end do
+
+        N_Hole%p = count(Orb(1:a_max)%pO >= 1.0_dp - Tol_occ)
+        N_Particle%p = count(Orb(1:a_max)%pO <= Tol_occ)
+        N_Hole%n = count(Orb(1:a_max)%nO >= 1.0_dp - Tol_occ)
+        N_Particle%n = count(Orb(1:a_max)%nO <= Tol_occ)
+        allocate(Particle%p(N_Particle%p), Particle%n(N_Particle%n), Hole%p(N_Hole%p), Hole%n(N_Hole%n))
+
+        N_Particle%p = 0
+        N_Particle%n = 0
+        N_Hole%p = 0
+        N_Hole%n = 0
+        do a = 1, a_max
+            if (Orb(a)%pO <= Tol_occ) then
+                N_Particle%p = N_Particle%p + 1
+                Particle%p(N_Particle%p) = sp_state(a,pSPE(a))
+            else
+                N_Hole%p = N_Hole%p + 1
+                Hole%p(N_Hole%p) = sp_state(a,pSPE(a))
+            end if
+            if (Orb(a)%nO <= Tol_occ) then
+                N_Particle%n = N_Particle%n + 1
+                Particle%n(N_Particle%n) = sp_state(a,nSPE(a))
+            else
+                N_Hole%n = N_Hole%n + 1
+                Hole%n(N_Hole%n) = sp_state(a,nSPE(a))
+            end if
+        end do
+
+    contains
+
+        logical function is_int_occ(O)
+            real(dp), intent(in) :: O
+            is_int_occ = (O <= Tol_occ .or. O >= 1.0_dp - Tol_occ)
+        end function is_int_occ
+
+        type(spstate_t) function sp_state(a,E)
+            integer, intent(in) :: a
+            real(dp), intent(in) :: E
+            sp_state%a = Orb(a)%a
+            sp_state%l = Orb(a)%l
+            sp_state%j = Orb(a)%j
+            sp_state%E = E
+        end function sp_state
+
+    end subroutine orbitals_ph_make_ref
 
     ! LEGACY (removed in cleanup stage) ... particle-hole phonon indices ... ParticleHole%p(J,P,p,h) with J starting at 0 ...
     function orbitals_ph_list(J_max,N_Particle,Particle,N_Hole,Hole) result(ParticleHole)

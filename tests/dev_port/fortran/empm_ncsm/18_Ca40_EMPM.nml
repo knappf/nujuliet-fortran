@@ -1,0 +1,23 @@
+! empm_ncsm dev-form input (dev HF -> EMPM/NCSM reading io/<Path>/<Reference>/bin/*); legacy twin in ../empm_ncsm_legacy
+! 40Ca 4 shells: full-space EMPM_TDA (Ortho), 2PH E2max 40, 1- and 0+;
+! dev TDA for the full-space EMPM_TDA == TDA check
+! Run all files of this directory in order from one work directory (see ../../run_empm_ncsm.sh dev)
+&interaction
+  NN_File  = '/auto/brno12-cerit/nfs4/home/knapp/NuHamil_files/NN+NNN files/DN2LOGO394/NN-DN2LOGO394_vbare2.0_hw12_emax16_e2max32.me2j.bin'
+  NNN_File = '/auto/brno12-cerit/nfs4/home/knapp/NuHamil_files/NN+NNN files/DN2LOGO394/NNN_DN2LOGO394_hw12_hwt12_emax16_e2max32_e3max28_jmax3_59.stream.bin'
+  hw = 12.0, Nmax = 16, N2max = 32, N3max = 28
+/
+&calculation
+  A = 40, Z = 20, hw = 12.0, Nmax = 3, N2max = 6, N3max = 6
+  CMS = 'CMS1+2B'
+  Path = 'Ca40'
+/
+&hf
+  Tol = 1e-10
+/
+&empm
+  E2max = 40.0, JP2 = '0+', '1-'
+/
+&run
+  Solvers = 'TDA', 'EMPM_TDA', 'EMPM_2PH'
+/

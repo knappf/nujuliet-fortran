@@ -1,4 +1,5 @@
-! Dispatcher of the &run actions handled by chain C (EMPM) ...
+! Dispatcher of the &run actions handled by chain C (EMPM: EMPM_TDA, EMPM_2PH .. EMPM_SF, EMPM) ... all read the dev
+    ! reference io/<Path>/<&empm Reference>/bin/* & write io/<Path>/EMPM/ (stage 5) ...
 module nj_dispatch_empm
     use nj_params, only : params_t
     use nj_input, only : run_input_t
@@ -12,6 +13,7 @@ contains
         type(run_input_t), intent(in) :: Inp
         logical, intent(out) :: Handled
         type(params_t) :: P
+        logical :: Ok
         Handled = .true.
         select case (Action)
         case ('EMPM_TDA')
@@ -30,7 +32,12 @@ contains
             call EMPM_SF(Inp%Params)
         case ('EMPM')
             ! Complete EMPM ... TDA phonons & F-matrix, 2-phonon states, couplings & the full Hamiltonian ...
-            call EMPM_TDA(Inp%Params)
+            call EMPM_TDA(Inp%Params,Ok)
+            if (.not. Ok) then
+                ! no reference: EMPM_TDA printed the error & skipped, so EMPM/bin (if any) is stale ...
+                write(*,'(/,a)') 'Error! ... EMPM_TDA did not run, the 2-phonon step of EMPM is skipped ...'
+                return
+            end if
             P = Inp%Params
             P%Calc%EMPM%Full_H = .true.
             call EMPM_2PH(P)

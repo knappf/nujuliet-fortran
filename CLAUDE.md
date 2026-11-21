@@ -37,10 +37,12 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
 
 ## Runs
 
-- Put runs in `runs/<name>/` (gitignored) and run from that directory: outputs go to `IO/<Path>/` relative to
-  the cwd (default Path e.g. `A208_Z82_hw12.0_Nmax12_N2max24_N3max24_CMS1+2B`).
-- Solver mapping: MBPT is part of `HF` (enabled by `&hf BMF=.true.`, the default); `HF_RPA` gives both HF-TDA & HF-RPA;
-  `HF_RRPA` is a separate solver.
+- Put runs in `runs/<name>/` (gitignored) and run from that directory: outputs go to `io/<Path>/` relative to
+  the cwd (default Path e.g. `A208_Z82_hw12.0_Nmax12_N2max24_N3max24_CMS1+2B`; runs made before stage 5 used `IO/`).
+- Solver mapping (dev): MBPT is part of `HF` (enabled by `&hf BMF=.true.`, the default; `&hf_mbpt Export` writes the
+  HF-MBPT reference); `TDA`, `RPA` and `HF_ScRPA` are separate actions (one input file per `Name`/`Reference`); EMPM and
+  NCSM read the HF reference of `&empm Reference` (default `io/<Path>/HF/bin`). The LEGACY `HF_RPA` (HF-TDA & HF-RPA)
+  and `HF_RRPA` stay reachable until the cleanup stage (with them in the `&run`, `HF` runs `HF_LEGACY`).
 - Run script pattern (see `runs/Pb208_13sh_hw12/run.sh`): set `OMP_NUM_THREADS`/`MKL_NUM_THREADS`,
   `OMP_STACKSIZE=512M`, `ulimit -s unlimited`, wrap in `/usr/bin/time -v`, and log to `logs/`. The user starts
   production runs manually, so prepare the scripts and do not launch them.
@@ -49,14 +51,17 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
 
 ## Original Julia code (reference / benchmark)
 
-- Cloned to `../NuJuliet` (github.com/folpradek/NuJuliet, commit c450842). Entry point:
-  `include("Source/Import_NuJuliet_Module.jl"); using .NuJuliet` (the top-level `import_NuJuliet.jl` is stale).
+- The port follows NuJuliet dev: `../NuJuliet_dev` (commit f3f7a33). Entry point: `include("src/import_NuJuliet.jl");
+  using .NuJuliet` (the dev sample is `scripts/sample_script_run.jl`, interaction files `io/NN.bin`, `io/NNN.bin`).
+  Run from the directory that holds `io/` (dev writes `io/<Path>/...` and needs `io/` to exist).
+- Reference for the comparisons: the patched worktree `../NuJuliet_dev_ref` (branch `port-ref` = f3f7a33 + the Julia
+  bug fixes F1-F5, never pushed), driven by `tests/dev_port/run_julia.sh` (see `tests/dev_port/README.md`). The base
+  version `../NuJuliet` (c450842, `include("Source/Import_NuJuliet_Module.jl")`, `IO/`) is only needed for the legacy
+  chain (its `runs/Pb208_13sh_hw12/` has the base-version 208Pb benchmark setup).
 - Julia via juliaup: `~/.julia/juliaup/julia-1.10.11+0.x64.linux.gnu/bin/julia --project=@v1.10` (the env already
   has CGcoefficient, Hungarian, etc.). Uses OpenBLAS (not MKL), so set `OPENBLAS_NUM_THREADS` along with `-t N`.
-- `IO/` must exist in the cwd: the code calls `mkdir("IO/<Path>")`, not `mkpath`.
-- Parameter defaults (HF/RPA/RRPA) match the Fortran namelist defaults.
-- Run: `../NuJuliet/runs/Pb208_13sh_hw12/` (`Pb208.jl` + `run.sh [NTHREADS]`) has the same setup as the Fortran run
-  and logs per-solver times to `logs/progress.txt`. Smoke test (16O, bundled IO/NN.bin, 8 threads): about 1 min.
+- Parameter defaults match the Fortran namelist defaults (dev structs, `src/import_structures.jl`).
+- Smoke test: `tests/dev_port/run_julia.sh bundled 8` (16O/4He/18O, bundled `io/NN.bin`, 8 threads): about 3.5 min.
 
 ## Comparing with Julia
 
@@ -92,3 +97,12 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   `nujuliet_78c3588` (dev-port stage 2, built in the worktree `../nujuliet-snap-78c3588`). Outputs go to `io/`; 'HF'
   runs HF_LEGACY automatically because HF_RPA/HF_RRPA are in the same &run. 16O smoke test of the chain passed. The user
   launches it: `./run.sh [NTHREADS]`.
+- 2026-11-20: the v2 Pb208 run was stopped by the user's request after 3:05 (peak 34 GB). HF, MBPT, TDA and RPA had
+  finished in under 2 h (outputs in `runs/Pb208_13sh_hw12_v2/io/`). RRPA stalled as before: eta 2e-6..7e-6 over
+  iterations 8-11, inner loops "cycled degenerate".
+- 2026-11-21: dev-port stage 4 (HF-ScRPA, commit d753f29). 40Ca 9 shells: HF_ScRPA converges in 26 iterations, 14.6 s at
+  32 threads (legacy HF_RRPA 154 s, stalled). Prepared `runs/Pb208_13sh_hw12_scrpa/` with the frozen binary
+  `nujuliet_d753f29` (worktree `../nujuliet-snap-d753f29`): `Pb208_scrpa.nml` (HF -> HF_ScRPA) then `Pb208_rpa.nml`
+  (TDA, RPA on the same HF). Estimate: HF ~2 h, ScRPA 15-25 min. The user launches it: `./run.sh [NTHREADS]` (default 64).
+- 2026-11-21: dev-port stage 5: EMPM and NCSM read the dev HF reference (`&empm Reference`, default 'HF'), EMPM outputs in
+  `io/<Path>/EMPM/{bin,spectra,transitions}`. Checked against a legacy baseline (`tests/dev_port/run_empm_ncsm.sh`).

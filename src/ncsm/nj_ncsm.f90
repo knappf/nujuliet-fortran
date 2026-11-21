@@ -8,9 +8,10 @@
         ! <jc mc jd md|J M> V^J(ab,cd) from the NuJuliet J-coupled storage (the convention of tests/empm_fci_check.py) ...
     ! Hamiltonians ...
         ! 'NN'    T_int + V_NN in the HO basis: (1 - 1/A) T + V_NN incl. the 2-body CM correction (CMS1+2B, V2b_read) ...
-        ! 'EMPM'  H = E_HF + sum e_a :a+a: + 1/4 sum V2B_HF :a+a+aa: (h_HF diagonal, residual 3-body dropped, as EMPM &
+        ! 'EMPM'  H = E_HF + sum e_a :a+a: + 1/4 sum H2b :a+a+aa: (H1b diagonal, residual 3-body dropped, as EMPM &
         !         tests/fci_sparse_cm.py) -> plain form u = e - V rho, C0 = -sum e rho + 1/2 V rho rho in the HF basis,
-        !         transformed back to HO with C_HF (u -> C u C^T, V2B_HF by O2b_transformation with C^T) ...
+        !         transformed back to HO with C (u -> C u C^T, H2b by O2b_transformation with C^T) ... the HF-like reference
+        !         io/<Path>/<&empm Reference>/bin/{orb,H1b,H2b,C,rho}.bin (stage 5; H1b diagonal, integer occupations) ...
     ! Observables: J^2 = sum j_i^2 + sum_(i/=j) j_i.j_j & N_cm = b+_cm.b_cm = 1/A (sum_i N_i + sum_(i/=j) b+(i).b(j)),
         ! b_mu = sqrt(2) (r_mu/b)_(N -> N-1) the HO lowering operator (radial wave functions positive at the origin, (l s) j
         ! coupling, as tests/empm_cm_check.py) ... Lawson term H + Beta_CM N_cm optional ...
@@ -26,13 +27,13 @@ module nj_ncsm
     use nj_utils
     use nj_hashmap
     use nj_wigner, only : wigner_init_float, fCG
-    use nj_orbitals, only : orbitals_make
+    use nj_orbitals, only : orbitals_make, read_h1b_diag
     use nj_o1b, only : O1b_import, T1b
     use nj_o2b, only : O2b_import, O2b_transformation, O2b_pp, O2b_pn, O2b_nn
     use nj_v2b, only : V2b_read
     use nj_linalg, only : eig_sym
     use nj_tr1b, only : tr1b_t, Tr1b_initialize, Tr1b_transformation
-    use nj_empm_space, only : empm_space_t, EMPM_space_make
+    use nj_empm_space, only : empm_space_t, EMPM_space_make, empm_ref_path, EMPM_reference_orbitals
     use omp_lib
     implicit none
     private
@@ -187,7 +188,7 @@ module nj_ncsm
     ! Energy cut of the current run ('npnh', Basis 'HF') ... Ecn(n) the cut of the npnh configurations (huge = none) ...
     logical, save :: UseCut = .false.
     real(dp), allocatable, save :: Ecn(:)
-    ! HF single-particle energies e(a,t) (diagonal of h_HF, set by hamiltonian_empm) ...
+    ! HF single-particle energies e(a,t) (diagonal of the reference H1b, set by hamiltonian_empm) ...
     real(dp), allocatable, save :: EpsHF(:,:)
 
     type :: eng_t
@@ -242,7 +243,7 @@ module nj_ncsm
     type(eng_t), pointer, save :: cEH => null()
 
     ! Transitions (&ncsm Transitions) ... QL(a,b,t,L) = <a||Q_L||b> (Edmonds, t = 1 p, 2 n, L = 0..3: r^2 Y_0, r Y_1, r^2 Y_2,
-        ! r^3 Y_3 of nj_tr1b) in the orbitals of the run (HF: transformed with C_HF), QH the same in the HO basis (convention
+        ! r^3 Y_3 of nj_tr1b) in the orbitals of the run (HF: transformed with C), QH the same in the HO basis (convention
         ! check), the ground state Xg (lowest state of parity +, M = 0) in its basis Bg & its energy Eg, kept for the parity - run
         ! (the SDs of 'npnh' do not depend on the parity: Bg indexes the same proton & neutron SDs) ...
     real(dp), allocatable, save :: QL(:,:,:,:), QH(:,:,:,:)
@@ -291,7 +292,14 @@ contains
         if (.not. is_dir(io_path(Params,'/NCSM'))) call make_dir(io_path(Params,'/NCSM'))
 
         ! Hamiltonian in the J-coupled HO storage, u(a,b,t) on the orbitals & C0 ...
-        Orb = orbitals_make(Params,Use_Int=.true.)        ! LEGACY Int.Nmax orbitals (old solvers, removed in cleanup stage)
+        ! orbitals ... the HF-like reference io/<Path>/<&empm Reference>/bin/orb.bin for the EMPM Hamiltonian or the HF basis
+            ! (stage 5; LHO labels in the LHO slots, Calc.Nmax size), else the LHO orbitals of orbitals_make (Calc.Nmax size,
+            ! dev default; T1b & V2b_read depend on the labels only) ...
+        if (Ham == 'EMPM' .or. Params%Calc%NCSM%Basis == 'HF') then
+            Orb = EMPM_reference_orbitals(Params)
+        else
+            Orb = orbitals_make(Params)
+        end if
         UseWin = Params%Calc%NCSM%Window
         if (allocated(RefO)) deallocate(RefO)
         if (allocated(ActO)) deallocate(ActO)
@@ -440,7 +448,7 @@ contains
             Hcap = Nmax
         end if
         ! Energy cut ('npnh', Basis 'HF') ... Ecn(n) = Ecut_npnh(min(n, last given)), Ecn(0) none; e = HF single-particle
-            ! energies (diagonal of h_HF); SDs pruned by their own excitation energy when every species has
+            ! energies (diagonal of H1b); SDs pruned by their own excitation energy when every species has
             ! a gap (all reference e below all others: E_other >= 0) ...
         Tag = ''
         UseCut = Trunc == 'npnh' .and. any(Params%Calc%NCSM%Ecut_npnh >= 0.0_dp)
@@ -738,7 +746,7 @@ contains
         TrH = Tr1b_initialize(Params,Orb,1.0_dp)
         HfBasis = Params%Calc%NCSM%Basis == 'HF'
         if (HfBasis) then
-            C = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
+            C = O1b_import(Params,Orb,empm_ref_path(Params,'/bin/C.bin'))
             TrOp = Tr1b_transformation(Params,Orb,C,TrH)
         else
             TrOp = TrH
@@ -1710,17 +1718,22 @@ contains
         type(orb2b_t), intent(out) :: Orb_NN
         real(dp), allocatable, intent(out) :: uH(:,:,:)
         real(dp), intent(out) :: C0, E_HF
-        type(o1b_t) :: h, CHF, Ct, Rho
-        real(dp), allocatable :: uF(:,:,:), occ(:,:), Cm(:,:)
+        type(o1b_t) :: CHF, Ct, Rho
+        real(dp), allocatable :: uF(:,:,:), occ(:,:), Cm(:,:), pSPE(:), nSPE(:)
+        real(dp), parameter :: Tol_occ = 1.0e-8_dp
         integer :: a_max, a, b, c, J, t, Pab
         real(dp) :: s
+        logical :: Ex
 
-        if (.not. is_dir(io_path(Params,'/Bin'))) call fatal('NCSM EMPM Hamiltonian ... no HF run in ' // io_path(Params,''))
-        call O2b_import(Params,Orb,io_path(Params,'/Bin/V2B_HF.bin'),V,Orb_NN)
-        h = O1b_import(Params,Orb,io_path(Params,'/Bin/h_HF.bin'))
-        CHF = O1b_import(Params,Orb,io_path(Params,'/Bin/C_HF.bin'))
-        Rho = O1b_import(Params,Orb,io_path(Params,'/Bin/Rho_HF.bin'))
-        E_HF = read_ehf(io_path(Params,'/HF/HF_Summary.dat'))
+        ! the HF-like reference io/<Path>/<&empm Reference>/bin/{H2b,H1b,C,rho}.bin (stage 5) & E_HF of its HF_summary.dat ...
+        if (.not. is_dir(empm_ref_path(Params,'/bin'))) call fatal('NCSM EMPM Hamiltonian ... no reference ' // &
+            empm_ref_path(Params,'') // ' ... run ' // trim(Params%Calc%EMPM%Reference) // ' first (&empm Reference)')
+        inquire(file=empm_ref_path(Params,'/bin/H2b.bin'), exist=Ex)
+        if (.not. Ex) call fatal('NCSM EMPM Hamiltonian ... the reference 2-body Hamiltonian ' // &
+                                 empm_ref_path(Params,'/bin/H2b.bin') // ' is missing ... run HF with BMF = .true.')
+        ! H1b diagonal (HF-like, not HF-MBPT) first, then the integer occupations ...
+        call read_h1b_diag(Params,Orb,empm_ref_path(Params,'/bin/H1b.bin'),pSPE,nSPE)
+        Rho = O1b_import(Params,Orb,empm_ref_path(Params,'/bin/rho.bin'))
         a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
         allocate(occ(a_max,2), uF(a_max,a_max,2))
         if (allocated(EpsHF)) deallocate(EpsHF)
@@ -1728,9 +1741,22 @@ contains
         do a = 1, a_max
             occ(a,1) = Rho%p(a,a)
             occ(a,2) = Rho%n(a,a)
-            EpsHF(a,1) = h%p(a,a)
-            EpsHF(a,2) = h%n(a,a)
+            EpsHF(a,1) = pSPE(a)
+            EpsHF(a,2) = nSPE(a)
         end do
+        ! the plain form & the SD reference need a determinant: occupations 0 or 1 within 1e-8 (used as read, as before) ...
+        do t = 1, 2
+            do a = 1, a_max
+                if (occ(a,t) > Tol_occ .and. occ(a,t) < 1.0_dp - Tol_occ) &
+                    call fatal('EMPM/NCSM need integer occupations: closed (sub)shell nucleus or &hf ESH=.true. ... ' // &
+                               empm_ref_path(Params,'/bin/rho.bin') // ': orbital ' // istr(a) // ' (l = ' // istr(Orb(a)%l) // &
+                               ', 2j = ' // istr(Orb(a)%j) // ') has the ' // trim(merge('proton ','neutron',t == 1)) // &
+                               ' occupation ' // cfmt_e(occ(a,t),0,10))
+            end do
+        end do
+        call O2b_import(Params,Orb,empm_ref_path(Params,'/bin/H2b.bin'),V,Orb_NN)
+        CHF = O1b_import(Params,Orb,empm_ref_path(Params,'/bin/C.bin'))
+        E_HF = read_ehf(empm_ref_path(Params,'/HF_summary.dat'))
         ! Window: the frozen core is in E_HF & e (normal order w.r.t. HF) ... H in the window = E_HF + e :a+a: + V :a+a+aa:
             ! normal-ordered w.r.t. the active reference -> plain form with the active holes only ... no window: the
             ! reference = the HF occupations ...
@@ -1751,8 +1777,7 @@ contains
         C0 = 0.0_dp
         do t = 1, 2
             do a = 1, a_max
-                if (t == 1) uF(a,a,t) = h%p(a,a)
-                if (t == 2) uF(a,a,t) = h%n(a,a)
+                uF(a,a,t) = EpsHF(a,t)
                 C0 = C0 - real(Orb(a)%j + 1,dp) * occ(a,t) * uF(a,a,t)
             end do
         end do
@@ -1801,7 +1826,7 @@ contains
             end do
         end do
 
-        ! Basis 'HF' ... H stays in the HF orbitals, C_HF kept for N_cm (b & N transformed to HF) ...
+        ! Basis 'HF' ... H stays in the HF orbitals, C kept for N_cm (b & N transformed to HF) ...
         if (Params%Calc%NCSM%Basis == 'HF') then
             allocate(uH(a_max,a_max,2), Uhf(a_max,a_max,2))
             uH = uF
@@ -1823,7 +1848,7 @@ contains
         Ct%n = transpose(CHF%n)
         call O2b_transformation(Params,Orb,Orb_NN,V,Ct)
         write(*,'(a)') TAB // 'EMPM Hamiltonian ... E_HF = ' // cfmt_f(E_HF,0,8) // ' MeV, C0 = ' // cfmt_f(C0,0,8) // &
-                       ' MeV (relative to E_HF), u & V2B_HF transformed to HO'
+                       ' MeV (relative to E_HF), u & H2b transformed to HO'
         C0 = C0 + E_HF
 
     contains
@@ -2158,7 +2183,7 @@ contains
         else
             call b_mscheme(SPS,Bm)
             w = 1.0_dp / real(A,dp)
-            ! species copies, in the HF orbitals b -> C^T b C (C(i,k) = C_HF(a_i,a_k) for the same l, j, m) ...
+            ! species copies, in the HF orbitals b -> C^T b C (C(i,k) = C(a_i,a_k) of the reference for the same l, j, m) ...
             allocate(Bs(SPS%ns,SPS%ns,-1:1,2))
             do sp = 1, 2
                 Bs(:,:,:,sp) = Bm

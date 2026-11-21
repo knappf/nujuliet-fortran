@@ -9,13 +9,12 @@ module nj_empm_tda
     use nj_utils
     use nj_linalg
     use nj_tr1b, only : tr1b_t
-    use nj_hf_rpa, only : HF_RPA_phonon_count, Spur_Ortho
     use nj_empm_space
     use nj_empm_fmat
     implicit none
     private
 
-    public :: EMPM_TDA_phonons, EMPM_TDA_allocate, EMPM_TDA_diagonalize, EMPM_TDA_strengths
+    public :: EMPM_TDA_phonons, EMPM_TDA_allocate, EMPM_TDA_diagonalize, EMPM_TDA_strengths, EMPM_phonon_count
 
 contains
 
@@ -35,7 +34,7 @@ contains
             call add_isospin(Space%nPart,Space%nHole,1)
             if (Pass == 1) allocate(Phonon(N_Phonon))
         end do
-        call HF_RPA_phonon_count(Params,N_Phonon,Phonon,N_nu,Orb_Phonon)
+        call EMPM_phonon_count(Params,N_Phonon,Phonon,N_nu,Orb_Phonon)
 
     contains
 
@@ -56,6 +55,36 @@ contains
         end subroutine add_isospin
 
     end subroutine EMPM_TDA_phonons
+
+    ! Phonons of each (J,P) channel, J = 0 .. 2 Nmax + 1 ... local copy of the LEGACY HF_RPA_phonon_count (nj_hf_rpa,
+        ! removed in the cleanup stage), so that the EMPM depends on core modules only ...
+    subroutine EMPM_phonon_count(Params,N_Phonon,Phonon,N_nu,Orb_Phonon)
+        type(params_t), intent(in) :: Params
+        integer, intent(in) :: N_Phonon
+        type(phstate_t), intent(in) :: Phonon(:)
+        integer, allocatable, intent(out) :: N_nu(:,:)
+        type(ivec_t), allocatable, intent(out) :: Orb_Phonon(:,:)
+        integer :: J_max, J, P, ph, N_ph
+
+        J_max = 2*Params%Calc%Nmax + 1
+        write(*,'(/,a)') 'Counting all 1p-1h phonon states ...'
+        allocate(N_nu(0:J_max,2), Orb_Phonon(0:J_max,2))
+        do J = 0, J_max
+            do P = 1, 2
+                N_ph = count(Phonon(1:N_Phonon)%J == J .and. Phonon(1:N_Phonon)%Par == P)
+                N_nu(J,P) = N_ph
+                allocate(Orb_Phonon(J,P)%v(N_ph))
+                N_ph = 0
+                do ph = 1, N_Phonon
+                    if (Phonon(ph)%J == J .and. Phonon(ph)%Par == P) then
+                        N_ph = N_ph + 1
+                        Orb_Phonon(J,P)%v(N_ph) = ph
+                    end if
+                end do
+            end do
+        end do
+        write(*,'(/,a)') 'Total number of phonons ... J_scheme phonon basis size = ' // istr(sum(N_nu))
+    end subroutine EMPM_phonon_count
 
     subroutine EMPM_TDA_allocate(Params,Space,F_ph,N_nu,Orb_Phonon,Phonon,A)
         type(params_t), intent(in) :: Params
@@ -96,8 +125,11 @@ contains
         write(*,'(a)') TAB // 'Matrices A allocated ...'
     end subroutine EMPM_TDA_allocate
 
-    ! TDA diagonalization with optional orthogonalization of the spurious 1- state ... as TDA_channel of HF_RPA_diagonalize,
-        ! the spurious state is the first 1- solution with E = 0 ...
+    ! TDA diagonalization with optional orthogonalization of the spurious 1- state ... dev convention (TDA_diagonalize of
+        ! nj_tda, src/TDA/TDA_diagonalize.jl:50-93): the 1- channel is solved in the orthonormal complement of the spurious
+        ! vector (core spurious_ortho, the closed-form Gram-Schmidt of the dev TDA; symmetric solver on U^T A U, ascending),
+        ! the spurious level is the 1st solution with X(:,1) = Spur & E(1) = <Spur|A|Spur> (the metric is 1 for the integer
+        ! occupations of the EMPM) ... the other channels unchanged (eig_general, i.e. dsyevr for the symmetric A) ...
     subroutine EMPM_TDA_diagonalize(Params,Space,A,N_nu,Orb_Phonon,Phonon,TrOp,E_TDA,X_TDA)
         type(params_t), intent(in) :: Params
         type(empm_space_t), intent(in) :: Space
@@ -129,8 +161,8 @@ contains
             logical, intent(in) :: Spur
             integer, intent(in) :: Orb_Ph(:)
             real(dp), allocatable, intent(out) :: E(:), X(:,:)
-            real(dp), allocatable :: Spur_State(:), V(:,:), U(:,:), A_ort(:,:)
-            complex(dp), allocatable :: W(:), Z(:,:)
+            real(dp), allocatable :: Spur_State(:), V(:,:), U(:,:), A_ort(:,:), w(:), Zr(:,:)
+            complex(dp), allocatable :: W_c(:), Z(:,:)
             integer :: N, Spur_Ind, k
             logical :: Is_Real
 
@@ -139,7 +171,8 @@ contains
             if (N == 0) return
             if (Spur .and. N > 1) then
                 Spur_State = spurious_state(Orb_Ph)
-                call Spur_Ortho(N,Spur_State,V,Spur_Ind)
+                allocate(V(N,N))
+                call spurious_ortho(V,Spur_State,Spur_Ind)
                 allocate(U(N,N-1))
                 do k = 1, Spur_Ind - 1
                     U(:,k) = V(:,k)
@@ -148,23 +181,24 @@ contains
                     U(:,k-1) = V(:,k)
                 end do
                 A_ort = mtm(U,mm(A_JP,U))
-                allocate(W(N-1), Z(N-1,N-1))
-                call eig_general(A_ort,W,Z,Is_Real)
-                E(1) = 0.0_dp
-                E(2:N) = real(W)
+                allocate(w(N-1), Zr(N-1,N-1))
+                call eig_sym(A_ort,w,Zr)
+                E(1) = dot_product(Spur_State,matmul(A_JP,Spur_State))
+                E(2:N) = w
                 X(:,1) = Spur_State
-                X(:,2:N) = mm(U,real(Z))
-                write(*,'(a)') TAB // 'Spurious 1- state removed ... <spur|A|spur> = ' // &
-                               cfmt_f(dot_product(Spur_State,matmul(A_JP,Spur_State)),0,6) // ' MeV'
+                X(:,2:N) = mm(U,Zr)
+                write(*,'(a)') TAB // 'Spurious 1- state removed ... E(1) = <spur|A|spur> = ' // cfmt_f(E(1),0,6) // ' MeV'
             else
-                allocate(W(N), Z(N,N))
-                call eig_general(A_JP,W,Z,Is_Real)
-                E = real(W)
+                allocate(W_c(N), Z(N,N))
+                call eig_general(A_JP,W_c,Z,Is_Real)
+                E = real(W_c)
                 X = real(Z)
             end if
         end subroutine TDA_channel
 
-        ! Normalized spurious (CM) state from the E1 operator restricted to the phonon basis ... as Spur_Ini ...
+        ! Normalized spurious (CM) state from the E1 operator restricted to the phonon basis ... dev TDA_spurious_ini:
+            ! (O_h - O_p) <p||E1||h> (= <p||E1||h> for the integer occupations of the EMPM), |.| < 1e-14 -> 0 (the base &
+            ! the legacy EMPM cut at 1e-6) ...
         function spurious_state(Orb_Ph) result(ph_CMS)
             integer, intent(in) :: Orb_Ph(:)
             real(dp), allocatable :: ph_CMS(:)
@@ -179,7 +213,7 @@ contains
                     ph_CMS(k) = TrOp%E1%p(a_p,a_h)
                 end if
             end do
-            where (abs(ph_CMS) < 1.0e-6_dp) ph_CMS = 0.0_dp
+            where (abs(ph_CMS) < 1.0e-14_dp) ph_CMS = 0.0_dp
             if (norm2(ph_CMS) == 0.0_dp) call fatal('No spurious 1- component in the restricted EMPM space ... set Ortho = .false.')
             ph_CMS = ph_CMS / norm2(ph_CMS)
         end function spurious_state
@@ -188,7 +222,7 @@ contains
 
     ! B(EL; 0 -> nu) of the TDA phonons in the window, L = 0..3 (E0 r^2, E1, E2, E3 of nj_tr1b) ... M_t = sum_ph
         ! <p||Q_L||h> X_ph (as HF_RPA_rM), B_ph = M_p^2, B_is = |M_p + M_n|^2/4, B_iv = |e_p M_p - e_n M_n|^2 (E1) or
-        ! |M_p - M_n|^2/4 ... EMPM/Transitions/TDA_E<L>.dat (E, B_ph, B_is, B_iv as HF_RPA) ...
+        ! |M_p - M_n|^2/4 ... EMPM/transitions/TDA_E<L>.dat (E, B_ph, B_is, B_iv as HF_RPA) ...
     subroutine EMPM_TDA_strengths(Params,Space,N_nu,Orb_Phonon,Phonon,TrOp,E_TDA,X_TDA)
         type(params_t), intent(in) :: Params
         type(empm_space_t), intent(in) :: Space
@@ -204,8 +238,8 @@ contains
         e_n = real(Params%Calc%Z,dp)/real(Params%Calc%A,dp)
         do L = 0, 3
             P = mod(L,2) + 1
-            if (.not. is_dir(io_path(Params,'/EMPM/Transitions'))) call make_dir(io_path(Params,'/EMPM/Transitions'))
-            open(newunit=u, file=io_path(Params,'/EMPM/Transitions/TDA_E' // istr(L) // '.dat'), status='replace', action='write')
+            if (.not. is_dir(empm_path(Params,'/transitions'))) call make_dir(empm_path(Params,'/transitions'))
+            open(newunit=u, file=empm_path(Params,'/transitions/TDA_E' // istr(L) // '.dat'), status='replace', action='write')
             write(u,'(4a21)') 'E                    ', 'B_ph                 ', 'B_is                 ', 'B_iv                 '
             do nu = 1, N_nu(L,P)
                 Mp = 0.0_dp
@@ -239,7 +273,7 @@ contains
             end do
             close(u)
         end do
-        write(*,'(a)') TAB // 'TDA transition strengths B(E0..E3) written to EMPM/Transitions/TDA_E<L>.dat'
+        write(*,'(a)') TAB // 'TDA transition strengths B(E0..E3) written to EMPM/transitions/TDA_E<L>.dat'
     end subroutine EMPM_TDA_strengths
 
 end module nj_empm_tda

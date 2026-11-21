@@ -8,6 +8,7 @@ module nj_linalg
     public :: eig_sym, eig_general, eig_general_complex, isposdef, mm, mtm, mmt, mtmm, identity, diagm, diag
     public :: zmm, zmhm, isposdef_c, hungarian
     public :: eig_sym_gen        ! stage 3 (TDA): generalized symmetric-definite problem ...
+    public :: spurious_ortho     ! stage 5: spurious 1- orthonormal complement shared by the dev TDA/RPA & EMPM ...
 
     interface
         subroutine dsygvd(Itype,Jobz,Uplo,n,A,Lda,B,Ldb,w,Work,Lwork,Iwork,Liwork,Info)
@@ -478,5 +479,50 @@ contains
             d(i) = A(i,i)
         end do
     end function diag
+
+    ! Orthonormal basis U of the 1p-1h space with U(:,Spur_ind) = Spur ... closed-form Gram-Schmidt of the unit vectors
+        ! with Spur projected out ... counterpart of TDA_spurious_ortho! == RPA_spurious_ortho! (dev src/TDA/TDA_spurious.jl:
+        ! 41-107) ... the dropped (linearly dependent) column is the first a, counted from N_ph down, with v2_a <= 0 or
+        ! sqrt(u2_a/v2_a) < 1e-4 ... in core so that the dev TDA/RPA (nj_ph_common) & the EMPM share it (stage 5) ...
+    subroutine spurious_ortho(U,Spur,Spur_ind)
+        real(dp), intent(out) :: U(:,:)
+        real(dp), intent(in) :: Spur(:)
+        integer, intent(out) :: Spur_ind
+        integer :: N_ph, a, b
+        real(dp) :: N_a, N_next, c_a, u2_a, v2_a, norm_a
+
+        N_ph = size(Spur)
+        Spur_ind = 0
+        U = 0.0_dp
+        N_a = 0.0_dp
+        do a = N_ph, 1, -1
+            N_next = N_a
+            N_a = N_a + Spur(a)**2
+            c_a = 0.0_dp
+            u2_a = 1.0_dp
+            if (N_a > 0.0_dp) then
+                c_a = Spur(a) / N_a
+                u2_a = N_next / N_a
+            end if
+            v2_a = 1.0_dp - Spur(a)**2
+            if (Spur_ind == 0) then
+                if (v2_a <= 0.0_dp) then
+                    Spur_ind = a
+                    cycle
+                else if (sqrt(u2_a / v2_a) < 1.0e-4_dp) then
+                    Spur_ind = a
+                    cycle
+                end if
+            end if
+            norm_a = 1.0_dp / sqrt(u2_a)
+            do b = a + 1, N_ph
+                U(b,a) = -norm_a * c_a * Spur(b)
+            end do
+            U(a,a) = sqrt(u2_a)
+        end do
+        ! Spur_ind = 0 cannot occur for a normalized Spur (the last non-zero component is always dependent) ...
+        if (Spur_ind == 0) call fatal('spurious_ortho: no linearly dependent direction found (Spur not normalized?)')
+        U(:,Spur_ind) = Spur
+    end subroutine spurious_ortho
 
 end module nj_linalg

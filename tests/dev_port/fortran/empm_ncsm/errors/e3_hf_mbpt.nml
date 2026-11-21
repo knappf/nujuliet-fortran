@@ -1,0 +1,21 @@
+! EXPECT: need an HF reference with diagonal H1b (not HF-MBPT)
+! empm_ncsm error path (dev form, run alone in a fresh io/ by ../../../run_empm_ncsm.sh dev): &empm Reference = 'HF-MBPT' (natural orbitals, non-diagonal H1b) -> EMPM_TDA fatal
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 16, Z = 8, hw = 16.0, Nmax = 2, N2max = 4, N3max = 6
+  CMS = 'CMS1+2B'
+  Path = 'O16'
+/
+&hf_mbpt
+  Export = .true.
+/
+&empm
+  Reference = 'HF-MBPT'
+/
+&run
+  Solvers = 'HF', 'EMPM_TDA'
+/

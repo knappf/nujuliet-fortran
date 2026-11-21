@@ -1,4 +1,5 @@
-! Dispatcher of the &run actions handled by chain A (HF-RPA & HF-RRPA) ...
+! Dispatcher of the &run actions handled by chain A (TDA, RPA, HF_ScRPA, TDA_/RPA_transition_*, LEGACY HF_RPA* / HF_RRPA*)
+    ! ... stub of a build without chain A (no action handled) ...
 module nj_dispatch_rpa
     use nj_input, only : run_input_t
     implicit none

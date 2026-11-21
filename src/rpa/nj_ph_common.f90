@@ -9,7 +9,7 @@ module nj_ph_common
     use nj_types
     use nj_params
     use nj_utils
-    use nj_linalg, only : mm, mtm
+    use nj_linalg, only : mm, mtm, spurious_ortho
     use nj_wigner, only : f6j
     use nj_o2b, only : O2b_pp, O2b_pn, O2b_nn, O2b_temp, O2b_temp_initialize
     use nj_tr1b, only : tr1b_t
@@ -17,7 +17,7 @@ module nj_ph_common
     implicit none
     private
 
-    public :: ph_occ, ph_metric, ph_spurious_ini, ph_spurious_ortho, ph_spurious_basis
+    public :: ph_occ, ph_metric, ph_spurious_ini, ph_spurious_basis
     public :: ph_allocate, ph_allocate_tbcf, ph_rB, ph_transitions_export
     public :: ph_operators, ph_summary_header, ph_dimensions_block, ph_plot_spectrum, lstr, pm_str, JP_of
 
@@ -139,50 +139,10 @@ contains
         Spur = Spur / norm2(Spur)
     end function ph_spurious_ini
 
-    ! Orthonormal basis U of the 1p-1h space with U(:,Spur_ind) = Spur ... closed-form Gram-Schmidt of the unit vectors
-        ! with Spur projected out ... counterpart of RPA_spurious_ortho! == TDA_spurious_ortho! ...
-    subroutine ph_spurious_ortho(U,Spur,Spur_ind)
-        real(dp), intent(out) :: U(:,:)
-        real(dp), intent(in) :: Spur(:)
-        integer, intent(out) :: Spur_ind
-        integer :: N_ph, a, b
-        real(dp) :: N_a, N_next, c_a, u2_a, v2_a, norm_a
+    ! The closed-form Gram-Schmidt TDA_spurious_ortho! == RPA_spurious_ortho! is nj_linalg::spurious_ortho (core, stage 5:
+        ! shared with the EMPM) ...
 
-        N_ph = size(Spur)
-        Spur_ind = 0
-        U = 0.0_dp
-        N_a = 0.0_dp
-        do a = N_ph, 1, -1
-            N_next = N_a
-            N_a = N_a + Spur(a)**2
-            c_a = 0.0_dp
-            u2_a = 1.0_dp
-            if (N_a > 0.0_dp) then
-                c_a = Spur(a) / N_a
-                u2_a = N_next / N_a
-            end if
-            v2_a = 1.0_dp - Spur(a)**2
-            if (Spur_ind == 0) then
-                if (v2_a <= 0.0_dp) then
-                    Spur_ind = a
-                    cycle
-                else if (sqrt(u2_a / v2_a) < 1.0e-4_dp) then
-                    Spur_ind = a
-                    cycle
-                end if
-            end if
-            norm_a = 1.0_dp / sqrt(u2_a)
-            do b = a + 1, N_ph
-                U(b,a) = -norm_a * c_a * Spur(b)
-            end do
-            U(a,a) = sqrt(u2_a)
-        end do
-        ! Spur_ind = 0 cannot occur for a normalized Spur (the last non-zero component is always dependent) ...
-        if (Spur_ind == 0) call fatal('ph_spurious_ortho: no linearly dependent direction found (Spur not normalized?)')
-        U(:,Spur_ind) = Spur
-    end subroutine ph_spurious_ortho
-
-    ! U from ph_spurious_ortho with the spurious column removed ... U_sub = U(:,1:N_ph-1) (dev shifts the columns
+    ! U from spurious_ortho with the spurious column removed ... U_sub = U(:,1:N_ph-1) (dev shifts the columns
         ! Spur_ind+1..N_ph one to the left) ...
     function ph_spurious_basis(Spur) result(U_sub)
         real(dp), intent(in) :: Spur(:)
@@ -190,7 +150,7 @@ contains
         integer :: N_ph, Spur_ind, a
         N_ph = size(Spur)
         allocate(U(N_ph,N_ph))
-        call ph_spurious_ortho(U,Spur,Spur_ind)
+        call spurious_ortho(U,Spur,Spur_ind)
         do a = Spur_ind + 1, N_ph
             U(:,a-1) = U(:,a)
         end do

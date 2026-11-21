@@ -37,6 +37,7 @@ tests/dev_port/
 | `rpa_options` | bundled | TDA/RPA options (stage 3): `io/O16` 16O HF → TDA, RPA `Ortho = false` (`TDA-noOrtho`, `RPA-noOrtho`), RPA `TBCF`, `RPA_Orb`, `Transitions = 'Exact'` (`RPA-TBCF`: RPA_sigma with fix F2, density energy, natural-orbital export); `io/O16_MBPT` HF + MBPT(Export, TBCF, ScH) → RPA `Reference = 'HF-MBPT'`, `Reference_TBCF`, `TBCF`, `'Exact'` (`RPA-dress`: Sigma_AB dressing energy), RPA `Reference_TBCF`, `DEV = true` (`RPA-DEV-TBCF`: RPA_allocate_SE, stage 3 part 2); part 2 additions: externals on `TDA-noOrtho`/`RPA-noOrtho` (2- analysis `Cut = 0.05`, 2+ densities `File_Name = 'D2'`, 0+/3- operator densities, 2+ currents `M = 1` on 20 x 30, both `*_transitions_recalculate`), `RPA-Exact` + 1- densities/analysis/currents/recalculation, `io/O16_MBPT` `RPA-DEV-dress` (`Reference_TBCF`, `TBCF`, `DEV`, `'Exact'`: SE in A and in the dressing energy) + all RPA externals, `TDA-MBPT` + operator densities/analysis/recalculation, `RPA-DEV-frac` (`DEV`, `Tol_par = 0.9`, `Tol_hol = 0.02`: overlapping particle/hole sets) |
 | `qp_options` | bundled | quasiparticle-chain options (stage 3): `io/Ne22_HFB` 22Ne HFB (open p & n shells) → QTDA `Ortho = false` → pnQTDA (QRPA stops in both codes: complex eigenvectors); `io/O20_LN` 20O HFB `LNT`, `LNRes` → QRPA; `io/O20_MCA` HFB `Pairing = 'MCA'` → QTDA; `io/O20_HBCS` HFB `Pairing = 'BCS'` → pnQTDA; `io/O20_ScBCS` BCS `ScBCS`, `A0 = 16`, `Z0 = 8` → QTDA, pnQTDA, QRPA `Ortho = false` (`Reference = 'BCS'`) |
 | `scrpa_options` | bundled | HF-ScRPA options (stage 4): `io/He4` (sample tolerances of `bundled`) `ScH = false` (`ScRPA-noScH`: oscillates, non-convergence summary after Imax = 100), `ScH = false` + `TBCF`, `TBCF_alpha = 0.5`, `TBCF_beta = 3` (`ScRPA-noScH-TBCF`), `TBCF`, `TBCF_alpha = 1`, `TBCF_beta = 2`, `OBDM_alpha = 0.8`, `RPA_Orb`, `'Exact'` (`ScRPA-ramp`), `TBCF`, `DEV` (`ScRPA-DEV`), `TBCF`, `Imax = 3` (`ScRPA-noconv`: termination summary), `HF-ScRPA` + RPA externals on the ScRPA folder (1- densities, 2+ operator densities, 1- analysis `Cut = 0.05`, 1- currents `M = 0`, recalculation); `io/O16_MBPT` HF + MBPT(Export, TBCF, ScH) → HF_ScRPA `Reference = 'HF-MBPT'` (default tolerances, `ScRPA-MBPT`); `io/O20` HF `ESH = false` → HF_ScRPA `Tol_par = 0.9`, `Tol_hol = 0.5`, `Imax = 30` (`ScRPA-frac`) |
+| `empm_ncsm` | bundled (4He, 16O), DN2LOGO394 hw 12 (40Ca) | stage 5, **no Julia counterpart**: EMPM / NCSM on the dev HF reference vs a legacy baseline of the frozen stage-4 binary (section "Stage-5 EMPM / NCSM checks"): `io/He4c` 4He 3 shells, complete chain EMPM_TDA → 2PH → 3PH → 4PH → FULL (`Full_N = 4`, `Full_Diag = 'both'`, `CM_Exact`, `CM_Variants`, `CM_Beta`), `Ortho = false`, + dev TDA (`Ortho = false`); `io/He4t` 3 shells: TDA, 2PH, FULL (`Full_N = 2`), EMPM_TRANS, EMPM_SF (`'full'`/`'iv'`, `'ind'`/`'is'`), NCSM (`EMPM`/HF npnh with transitions, `EMPM`/HO with `Beta_CM`, `NN`); `io/He4o` 3 shells `Ortho = true`: TDA (+ dev TDA), 2PH, 3PH (`E3max`), FULL (`CM_Keep`, `Full_Svd`), TRANS; `io/O16` 4 shells: full-space EMPM_TDA (+ dev TDA), 2PH (`E2max`, 0+ 1- 2+), NCSM ≤ 1p1h; `io/O16w` window, action `EMPM` (`Full_H`) in one `&run` with `HF`, NCSM `Window`; `io/Ca40` 4 shells: EMPM_TDA (+ dev TDA), 2PH; error paths (fractional occupations, no `H2b.bin`, HF-MBPT reference, missing reference, no EMPM_TDA, bad `Reference`; NCSM: fractional reference with Basis HO and with `Window`, HF-MBPT reference with Hamiltonian `EMPM`) |
 
 The parameters of every step are in the driver scripts; the Fortran namelist inputs must reproduce them
 (`Path` and `Name` give the output directories).
@@ -135,3 +136,47 @@ Iteration histories (outer `HF-ScRPA iteration` lines, inner `OBDM iteration` li
 lines of `run.log` of both codes. SIGN files of the ScRPA folders: `RPA_X/Y.bin` (eigenvector columns) and
 `sigma.bin` / `H1b.bin` (NAT basis = HF basis x C_HF_NAT, so the HF proton-column signs propagate):
 `python3 -I gauge_check.py <julia>/<Name>/bin <fortran>/<Name>/bin NMAX N2MAX sigma.bin rho.bin`.
+
+## Stage-5 EMPM / NCSM checks (no Julia counterpart)
+
+EMPM and NCSM are Fortran-only. Their reference is a **legacy baseline** of the frozen stage-4 binary
+(`/scratch/local.ssd/knapp/job_25503048.pbs-m1/nujuliet-snap-d753f29/nujuliet`, commit d753f29: legacy HF writing
+`io/<Path>/Bin/{C_HF,h_HF,V2B_HF,Rho_HF}.bin`, EMPM/NCSM reading them), against which the dev-form chain (dev HF writing
+`io/<Path>/HF/bin/{orb,C,rho,H1b,H2b}.bin`, EMPM reading `&empm Reference`, default `'HF'`) is compared.
+
+```sh
+cd tests/dev_port
+./run_empm_ncsm.sh baseline 16      # fortran/empm_ncsm_legacy/*.nml with the frozen binary -> work/empm_baseline (~45 s)
+./run_empm_ncsm.sh dev 16           # fortran/empm_ncsm/*.nml with ./nujuliet (NUJULIET=...), then fortran/empm_ncsm/errors/*.nml
+./run_empm_ncsm.sh compare 16       # python3 -I empm_compare.py work/empm_baseline/io work/empm_dev_t16/io
+python3 -I empm_compare.py --tda work/empm_dev_t16/io     # full-space EMPM_TDA vs the dev TDA action (Reference 'HF')
+```
+
+* Each namelist file runs in its own invocation (wall time per file in `work/.../times.txt`). The legacy inputs use
+  `HF_LEGACY` explicitly (in the frozen binary a lone `HF` is the dev HF). Regenerate the baseline only with the frozen
+  binary (`NUJULIET_LEGACY` overrides it); `TAG=<suffix>` writes a dev run to `work/empm_dev<suffix>_t<N>`.
+* Error cases `fortran/empm_ncsm/errors/*.nml` run alone in a fresh `io/`; the first line `! EXPECT: <text>` must appear
+  in the log (fatal errors exit 1, "Error! ..." + skip exits 0 as the dev TDA); `! MKDIR: io/...` lines create stale
+  directories first (`e10`, `e11`: a left-over `io/O16/EMPM/bin` without the reference).
+* `empm_compare.py` maps the legacy names (`Bin/EMPM_*` → `EMPM/bin/EMPM_*`, `EMPM/Spectra|Transitions` →
+  `EMPM/spectra|transitions`, `TDA_Summary.dat` → `TDA_summary.dat`, `Bin/{C_HF,h_HF,V2B_HF,Rho_HF}.bin` →
+  `HF/bin/{C,H1b,H2b,rho}.bin`, `HF_Summary.dat` → `HF_summary.dat` (E_HF only)) and prints the max deviation per file:
+  `d` (signed) and `d_abs` (|.|), relative to max(1,|a|,|b|). Eigenvector files (`EMPM_2PH_*_C`, `EMPM_FULL*_Z*`, the
+  state files `EMPM_S<n>_*`) are compared per column up to a sign and by projectors within degenerate clusters (state
+  files: int32 header/index arrays exactly, R by singular values). Status `GAUGE`: the independent rows chosen by the
+  pivoted Cholesky among (nearly) dependent rows differ (`Ind` of `Basis_*.dat`, `Kc` of the state files), so C on those
+  rows is not comparable; energies (the matching `_E.bin`, signed) and X are compared and must agree, else DIFF.
+  Text files: every number is compared beyond its own printed unit (one unit of the last printed digit; integers
+  exactly), and the printed `d`/`d_abs` are that measure. `SIGN` (equal only in |.|) is allowed **only** for files
+  that carry a sign gauge: `HF/bin/{C,H1b,H2b}.bin`, `EMPM_TDA_X.bin`, `EMPM_F.bin`, `TDA_Structure.dat` (components
+  with equal printed |X| are sorted before comparing) and the `M_p`, `M_n` columns of the NCSM `_E<L>.dat` tables (one
+  sign per row); in every other file (energies, `Ncm`, spectra, B values, NCSM energy tables, rho) a sign-only change
+  is DIFF. `ok*`/`SIGN*`: equal once the spurious E(1) of EMPM_TDA is excluded (legacy 0, dev <spur|A|spur>,
+  consumers.md 3.2.3; `SIGN*` only for `TDA_Structure.dat`). Exit status 1 on DIFF/SIZE/MISSING, so with the known
+  He4o / O16w amplitude-basis DIFFs (45 + 2 files, see `docs/dev_port/STATUS.md`) the baseline comparison exits 1.
+  `--tda`: a missing spectra / bin / `TDA_E<L>.dat` (L = 0..3) file of either side is MISSING (exit 1); the deviation
+  printed per file is the one used for pass/fail.
+* NCSM steps (stage 5 part 2): `06`-`08` (He4t), `13` (O16), `16` (O16w `Window`, after `14_O16w_HF_EMPM`) read the
+  dev reference of `&empm Reference`. Expected: He4t NCSM files byte-identical to the baseline (same HF files);
+  O16 / O16w energies equal, the `M_p`, `M_n` columns of `_E<L>.dat` may flip sign (`SIGN`, eigenvector phase; the
+  16O dev HF differs from the legacy HF at 1e-15) and the residual column carries roundoff.

@@ -1,0 +1,21 @@
+! EXPECT: EMPM/NCSM need integer occupations: closed (sub)shell nucleus or &hf ESH=.true.
+! empm_ncsm error path (dev form, run alone in a fresh io/ by ../../../run_empm_ncsm.sh dev): 20O fractional occupations (dev HF ESH = false) -> NCSM in the EMPM window (Window, through EMPM_space_make) fatal
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 20, Z = 8, hw = 16.0, Nmax = 2, N2max = 4, N3max = 6
+  CMS = 'CMS1+2B'
+  Path = 'O20'
+/
+&empm
+  pHole = 1, 3, pPart = 4, 6, nHole = 1, 4, nPart = 5, 6
+/
+&ncsm
+  Hamiltonian = 'EMPM', Basis = 'HF', Trunc = 'npnh', Window = .true., Nmax_List = 1, M2 = 0, Parity = 0, N_Eig = 1
+/
+&run
+  Solvers = 'HF', 'NCSM'
+/

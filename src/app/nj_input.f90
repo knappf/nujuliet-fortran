@@ -464,6 +464,7 @@ contains
 
         subroutine read_empm(P)
             type(empm_params_t), intent(inout) :: P
+            character(len=64) :: Reference
             integer :: pHole(2), pPart(2), nHole(2), nPart(2)
             logical :: Ortho
             real(dp) :: E2max, Mem_GB, E1max, Cache_GB, E3max, E4max
@@ -482,8 +483,9 @@ contains
             logical :: SF_Reorth, SF_Qrows
             integer :: Ios
             character(len=512) :: Msg
-            namelist /empm/ pHole, pPart, nHole, nPart, Ortho, E2max, JP2, Mem_GB, E1max, Legacy_Order, Dry_Run, Spur_Rows, Legacy_Spur, Full_H, D_Spectrum, Cache_GB, &
+            namelist /empm/ Reference, pHole, pPart, nHole, nPart, Ortho, E2max, JP2, Mem_GB, E1max, Legacy_Order, Dry_Run, Spur_Rows, Legacy_Spur, Full_H, D_Spectrum, Cache_GB, &
                            E3max, JP3, E4max, JP4, Full_N, JPF, Save_X, Ind_First, States_Dir, CM_Exact, CM_Tol, CM_Dump, Ind_Greedy, CM_Variants, CM_Keep, Full_Diag, Full_Svd, CM_Ncm, CM_Beta, D_Disk_GB, Dens_Share, SF_Steps, SF_Op, SF_Reorth, SF_Mode, SF_Qrows
+            Reference = P%Reference
             pHole = P%pHole
             pPart = P%pPart
             nHole = P%nHole
@@ -529,8 +531,51 @@ contains
             rewind(u)
             read(u, nml=empm, iostat=Ios, iomsg=Msg)
             call check(Ios,Msg,'empm')
-            P = empm_params_t(pHole,pPart,nHole,nPart,Ortho,E2max,JP2,Mem_GB,E1max,Legacy_Order,Dry_Run,Spur_Rows,Legacy_Spur,Full_H,D_Spectrum,Cache_GB, &
-                                                    E3max,JP3,E4max,JP4,Full_N,JPF,Save_X,Ind_First,States_Dir,CM_Exact,CM_Tol,CM_Dump,Ind_Greedy,CM_Variants,CM_Keep,Full_Diag,Full_Svd,CM_Ncm,CM_Beta,D_Disk_GB,Dens_Share,SF_Steps,SF_Op,SF_Reorth,SF_Mode,SF_Qrows)
+            ! component-wise (a positional structure constructor breaks silently when a field is inserted) ...
+            P%Reference = Reference
+            P%pHole = pHole
+            P%pPart = pPart
+            P%nHole = nHole
+            P%nPart = nPart
+            P%Ortho = Ortho
+            P%E2max = E2max
+            P%JP2 = JP2
+            P%Mem_GB = Mem_GB
+            P%E1max = E1max
+            P%Legacy_Order = Legacy_Order
+            P%Dry_Run = Dry_Run
+            P%Spur_Rows = Spur_Rows
+            P%Legacy_Spur = Legacy_Spur
+            P%Full_H = Full_H
+            P%D_Spectrum = D_Spectrum
+            P%Cache_GB = Cache_GB
+            P%E3max = E3max
+            P%JP3 = JP3
+            P%E4max = E4max
+            P%JP4 = JP4
+            P%Full_N = Full_N
+            P%JPF = JPF
+            P%Save_X = Save_X
+            P%Ind_First = Ind_First
+            P%States_Dir = States_Dir
+            P%CM_Exact = CM_Exact
+            P%CM_Tol = CM_Tol
+            P%CM_Dump = CM_Dump
+            P%Ind_Greedy = Ind_Greedy
+            P%CM_Variants = CM_Variants
+            P%CM_Keep = CM_Keep
+            P%Full_Diag = Full_Diag
+            P%Full_Svd = Full_Svd
+            P%CM_Ncm = CM_Ncm
+            P%CM_Beta = CM_Beta
+            P%D_Disk_GB = D_Disk_GB
+            P%Dens_Share = Dens_Share
+            P%SF_Steps = SF_Steps
+            P%SF_Op = SF_Op
+            P%SF_Reorth = SF_Reorth
+            P%SF_Mode = SF_Mode
+            P%SF_Qrows = SF_Qrows
+            call check_folder_name(P%Reference,'empm','Reference')
         end subroutine read_empm
 
         subroutine read_ncsm(P)
