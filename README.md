@@ -23,20 +23,26 @@ output files); EMPM and NCSM are Fortran-only extensions that read the dev HF ou
 | `EMPM_TRANS`                       | — EMPM: B(E1; 0+_gs -> 1-) of the `EMPM_FULL` states (Full_N <= 2) |
 | `EMPM_SF`                          | — EMPM: E1 strength function with up to 3 phonons by Lanczos, no 3-phonon eigenproblem |
 | `NCSM`                             | — no-core shell model (HO Nmax or npnh in the HF basis), optional transitions |
-| `HF_LEGACY`, `HF_RPA*`, `HF_RRPA*` | LEGACY base-version solvers (`io/<Path>/Bin/*`), kept until the cleanup stage; `HF` in a `&run` with `HF_RPA*` / `HF_RRPA*` runs `HF_LEGACY` |
+
+The base-version actions `HF_RPA`, `HF_RPA_transition_*`, `HF_RRPA`, `HF_RRPA_transition_*` (removed upstream) and the
+port's interim `HF_LEGACY` are gone; they stop the run with a hint (see "Removed actions and input" below).
 
 > **Earlier test runs (until 2026-11-06)** are in `backup_2026-11-06/`. It holds `runs/` (inputs, logs, results and
 > plots; the `runs/...` paths quoted below refer to it), `tests/` (the Python cross-checks), `doc/` (the notes), `bin/` (the old binaries
 > and builds), `snapshot/` (src, Makefile, README and doc as of that date) and `runs_cmtop/` (the validation runs of
 > the top-level <N_cm> completion, `4He_NN4sh_cmtop`, `4He_NN5sh_cmtop`, moved there on the same day). `runs/` starts empty.
-> Runs and inputs before stage 5 (2026-11-21) use the base-version layout (`IO/<Path>/Bin/...`, `HF_RPA`).
+> Runs and inputs before stage 5 (2026-11-21) use the base-version layout (`IO/<Path>/Bin/...`, `HF_RPA`); to rerun them
+> use a binary built from commit ec14d69 or earlier (the last one with the base-version solvers).
 
 ## Building
 
-Requirements: a Fortran 2008 compiler with OpenMP (tested with gfortran 9.4) and LAPACK/BLAS.
+Requirements: a Fortran 2008 compiler with OpenMP and LAPACK/BLAS. Default toolchain ifx + MKL (`COMPILER=intel`);
+fallback `make COMPILER=gnu` (gfortran 14.2 + reference LAPACK/BLAS, single-threaded BLAS; the 64-bit integer LAPACK calls
+of EMPM go through `src/core/nj_lapack64_ref.f90`, limited to the default integer range).
 
 ```sh
 make                      # optimized build -> ./nujuliet
+make COMPILER=gnu         # gfortran build
 make LAPACK="-lopenblas"  # use another LAPACK/BLAS
 make debug                # runtime-checked build -> ./nujuliet_debug
 ```
@@ -73,7 +79,7 @@ values take the defaults of the dev parameter structs (`src/import_structures.jl
 &transition_densities           JP='1-', nu_list=5,6,7, File_Name='Phonon_Densities' /
 &transition_operator_densities  JP='1-', nu_list=5,6,7, File_Name='Phonon_Transition_Operator_Densities' /
 &transition_analysis            JP='1-', nu_list=5,6,7, File_Name='Phonon_Transtion_Analysis', Cut=0.1 /   ! [sic] dev name
-&transition_currents            JP='1-', M=0, nu_list=5,6,7, File_Name='Phonon_Currents', xN_grid=40, zN_grid=40 /
+&transition_currents            JP='1-', M=-1, nu_list=5,6,7, File_Name='Phonon_Currents', xN_grid=40, zN_grid=40 /
 &parse        N_max_Out=..., N_2max_Out=..., N_3max_Out=..., NN_Out_File='io/NN_parsed.bin', NNN_Out_File='io/NNN_parsed.bin' /
 &run          Solvers='HF', 'TDA', 'RPA' /
 ```
@@ -82,12 +88,29 @@ values take the defaults of the dev parameter structs (`src/import_structures.jl
   (different `Name`/`Reference`) need two files, run in one `nujuliet a.nml b.nml` call. Only the first file should
   contain `HF`: HF wipes `io/<Path>`. `Name` and `Reference` are folder names (non-empty, no `/`); `Name = Reference`
   is refused.
-* `M` of `&transition_currents`: dev's default -1 means 0; the port keeps the default 0 (same result).
-* LEGACY groups `&hf_efa`, `&rrpa` and the HFB `Broy_Qmax`, `Broy_Bmax` are still accepted (base-version solvers, ignored
-  by the dev solvers) until the cleanup stage.
+* `M` of `&transition_currents`: default -1 as in dev (means the projection 0).
 * The dev sample `scripts/sample_script_run.jl` (with `io/NN.bin`, `io/NNN.bin`, the bundled ΔN²LO_GO(394) files) is
   mirrored by the `bundled` case of `tests/dev_port` (namelists in `tests/dev_port/fortran/bundled/`). The `inputs/`
   directory quoted in older notes is not part of the repository.
+
+### Removed actions and input (migration from the base version)
+
+NuJuliet dev removed HF-EFA, HF-RPA and HF-RRPA; the port followed (stage 6, 2026-11-21). All input files of a call are read
+and checked before any action runs, so a removed action in a later file stops the run before anything is computed:
+
+| old | now | what happens |
+|---|---|---|
+| `HF` (output `IO/<Path>/Bin/*`), `HF_LEGACY` | `HF` (output `io/<Path>/HF/bin/*`) | `HF_LEGACY` is fatal |
+| `HF_RPA` (HF-TDA + HF-RPA) | `TDA`, `RPA` (`&tda`, `&rpa`, `Reference = 'HF'`) | fatal: `'HF_RPA' was removed upstream, use 'TDA', 'RPA'` |
+| `HF_RPA_transition_densities`, `_currents` | `TDA_transition_*`, `RPA_transition_*` | fatal with the replacement |
+| `HF_RRPA` | `HF_ScRPA` (`&rpa`: `Tol`, `Imax`, `OBDM_*`, `ScH`, `TBCF`, ...) | fatal: `'HF_RRPA' was removed upstream, use 'HF_ScRPA'` |
+| `HF_RRPA_transition_densities`, `_currents` | `HF_ScRPA`, then `RPA_transition_*` with its `&rpa Name` | fatal with the replacement |
+| `&rrpa`, `&hf_efa` | `&rpa`; `&hf ESH` (HF_orbitals_make replaces HF-EFA) | WARNING, the group is ignored |
+| `&hfb Broy_Qmax`, `Broy_Bmax` | `Broy_m`, `Broy_Amax`, `Broy_Tmax` | fatal (delete the two items) |
+
+The base-version outputs `IO/<Path>/Bin/{C_HF,h_HF,V2B_HF,Rho_HF}.bin`, `IO/<Path>/{RPA,RRPA}/...` and the HRF text tables
+(`V2B_HF.dat`, `Orbitals_*.dat`) are no longer written or read; EMPM and NCSM read the dev reference
+`io/<Path>/<&empm Reference>/bin/*`.
 
 ## Output layout
 
@@ -459,8 +482,9 @@ Complete 4He (3 shells): with 4 phonons the whole 4-nucleon space, all 6040 eige
 independent M-scheme FCI of the same normal-ordered H to 6e-10 MeV in every J^P channel (the 1e-10 rounding of `V2B_HF.dat`):
 `tests/empm_fci_check.py HRF_DIR EMPM_DIR` (HF energies from `Bin/h_HF.bin`, `V2B_HF.dat` & `Orbitals_HF.dat` of an HF run with
 `&hf HRF = .true.`, e.g. `runs/4He/He4_HF_HRF.nml`, J from <J^2>, ~2 min), FCI spectrum in `HRF_DIR/FCI_Spectrum.dat`.
-These text files come from the HRF output of the base-version HF (`HF_LEGACY` with `HRF = .true.`); the dev HF writes no
-HRF tables (`HRF` is a dead input), so the check needs `HF_LEGACY` until it is ported to `HF/bin/*.bin`.
+These text files come from the HRF output of the base-version HF (`HF_LEGACY` with `HRF = .true.`, removed in stage 6); the
+dev HF writes no HRF tables (`HRF` is a dead input), so the check needs those tables from a binary of commit ec14d69 or
+earlier until it is ported to `HF/bin/*.bin`.
 The pn blocks of `V2B_HF.dat` & of the full N x N pn matrices of `Bin/V2B_*.bin` were written with the packed index of the
 lower triangle also for Ket > Bra (wrong upper triangle) until Nov 2026; the solvers were not affected, the import now reads
 the lower triangle only, so older files remain valid.
@@ -624,4 +648,5 @@ the full <= 3p3h to 0.05 MeV & 0.03 % in B; SF Lanczos = dense.
 port (`run_fortran.sh`, namelists in `tests/dev_port/fortran/<case>/`) and `compare.py JULIA_IO FORTRAN_IO [--tol 1e-8]`
 (walks the lowercase `io/<Path>/...` trees: binary files element-wise and modulo column signs, text files token-wise with
 a numeric tolerance; `gauge_check.py` for eigenvector gauges). EMPM / NCSM: `run_empm_ncsm.sh baseline|dev|compare`
-against a legacy baseline of the frozen stage-4 binary (`empm_compare.py`).
+against a legacy baseline of the frozen stage-4 binary (`empm_compare.py`; the baseline inputs use the removed `HF_LEGACY`
+and need that frozen binary).

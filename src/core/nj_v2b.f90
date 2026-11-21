@@ -385,14 +385,14 @@ contains
 
         V_NN_res = V_NN
 
-        if (Verbose) write(*,'(/,a,/)') 'Starting calculation of residual NN interaction ...'
-        if (Verbose) write(*,'(/,a)') 'Making density dependent residual 2-body interaction...'
+        write(*,'(/,a,/)') 'Starting calculation of residual NN interaction ...'
+        write(*,'(/,a)') 'Making density dependent residual 2-body interaction...'
         do J = 0, J_max
             do P = 1, 2
                 if (P == 1) then
-                    if (Verbose) write(*,'(a)') TAB // 'Calculating   ...   J = ' // istr(J) // '/' // istr(Params%Calc%N2max+1) // TAB // 'P = +'
+                    write(*,'(a)') TAB // 'Calculating   ...   J = ' // istr(J) // '/' // istr(Params%Calc%N2max+1) // TAB // 'P = +'
                 else
-                    if (Verbose) write(*,'(a)') TAB // 'Calculating   ...   J = ' // istr(J) // '/' // istr(Params%Calc%N2max+1) // TAB // 'P = -'
+                    write(*,'(a)') TAB // 'Calculating   ...   J = ' // istr(J) // '/' // istr(Params%Calc%N2max+1) // TAB // 'P = -'
                 end if
                 N_T0 = Orb_NN%N(1,P,J)
                 N_T1 = Orb_NN%N(2,P,J)
@@ -563,7 +563,8 @@ contains
         Failed = .false.
         !$omp parallel default(shared) private(u_in,u_out,Buffer_In,Buffer_Out,q,a,b,c,d,d_max,i_J,N_J,J_min,J_max, &
         !$omp NN_a,NN_b,NN_c,NN_d,NN_ab,NN_cd,Chunk_i,Buffer_0,Buffer_N,Out_i,Out_N,N_In,N_Out,Pos_Out)
-        open(newunit=u_in, file=In_File, access='stream', form='unformatted', status='old', action='read')
+        ! (Params%Int%NN_File, not the deferred-length In_File: gfortran passes a garbage name in the parallel region) ...
+        open(newunit=u_in, file=trim(Params%Int%NN_File), access='stream', form='unformatted', status='old', action='read')
         open(newunit=u_out, file=trim(Out_File), access='stream', form='unformatted', status='old', action='readwrite')
         allocate(Buffer_In(Buffer_size), Buffer_Out(Buffer_size))
         !$omp do schedule(dynamic,1)

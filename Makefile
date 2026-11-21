@@ -30,8 +30,9 @@ LAPACK  ?= -llapack -lblas
 FFLAGS  ?= -O2 -fopenmp
 DBGFLAGS = -O0 -g -fopenmp -fcheck=all -fbacktrace -Wall -Wno-unused-dummy-argument -Wno-maybe-uninitialized
 COMMON   = -ffree-line-length-none -J $(BUILD) -I $(BUILD)
-# reference BLAS is single-threaded ... no-op thread control ...
-BLASTHR_SRC = src/core/nj_blas_threads_ref.f90
+# reference BLAS is single-threaded ... no-op thread control ... + the 64-bit integer LAPACK/BLAS entry points of MKL
+# (dsygvd_64, ...) as wrappers of the default-integer routines ...
+BLASTHR_SRC = src/core/nj_blas_threads_ref.f90 src/core/nj_lapack64_ref.f90
 endif
 
 # Sources in dependency order ... chain fragments define SRC_RPA (chain A), SRC_QP (chain B) & SRC_EMPM (chain C) ...
@@ -59,16 +60,12 @@ SRC_CORE = src/core/nj_kinds.f90 \
            src/core/nj_obdm.f90 \
            src/core/nj_tr1b.f90
 
-# dev HF (nj_hf, nj_hf_mbpt, nj_hf_driver) & the LEGACY base-version HF chain (action HF_LEGACY; removed in cleanup stage) ...
+# HF & HF-MBPT (NuJuliet dev) ...
 SRC_HF = src/hf/nj_hf.f90 \
          src/hf/nj_hf_mbpt_common.f90 \
          src/hf/nj_hf_mbpt_tbcf.f90 \
          src/hf/nj_hf_mbpt.f90 \
-         src/hf/nj_hf_driver.f90 \
-         src/hf/nj_hf_legacy.f90 \
-         src/hf/nj_hf_mbpt_legacy.f90 \
-         src/hf/nj_hf_efa.f90 \
-         src/hf/nj_hf_legacy_driver.f90
+         src/hf/nj_hf_driver.f90
 
 SRC_NCSM = src/ncsm/nj_ncsm.f90
 

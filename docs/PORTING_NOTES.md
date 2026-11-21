@@ -4,7 +4,8 @@ These notes record the conventions of the port and every intentional deviation
 from the Julia original (https://github.com/folpradek/NuJuliet, commit 2595e82).
 The port is being brought to parity with NuJuliet dev (commit f3f7a33, branch `dev-port`); the
 section "NuJuliet dev port" at the end lists the changes and deviations of that work. Items of the
-older sections that dev makes obsolete are marked **(obsolete in dev)**.
+older sections that dev makes obsolete are marked **(obsolete in dev)**; items about code removed in the cleanup stage 6
+(2026-11-21: base-version HF, HF-EFA, HF-RPA, HF-RRPA and their helpers) are marked **(removed in stage 6)**.
 
 ## Translation conventions
 
@@ -42,12 +43,11 @@ keep working. Dev `HF_orbitals_make` ends with `Orb .= Orb_new`: `HF_solve` upda
 `Orb` in place, and everything after it in `HF_solver` (HF energy, kinetic energy, radii, SPS table, `orb.bin`,
 `O1b_export` blocks, HF-MBPT particle/hole split) uses the final HF occupations; the port's `HF_solve` has `Orb`
 `intent(inout)` for this. (`V2b_residual_no2b` is non-mutating in dev and in the port since group common B:
-it returns `V_NN_res`; the legacy solvers move it back into their `V_NN` with `O2b_move`.)
+it returns `V_NN_res`; BCS and HFB move it back into their `V_NN` with `O2b_move`.)
 
 ## Intentional deviations from the original
 
-1. **(obsolete in dev: the HRF `orbitals_export(Params,Orb)` has no caller in dev; the Fortran
-   version is LEGACY and goes away in the cleanup stage)** `orbitals_export` (HRF output) read
+1. **(obsolete in dev, removed in stage 6: the HRF `orbitals_export(Params,Orb)` has no caller in dev)** `orbitals_export` (HRF output) read
    `Bin/pE_HF.bin`/`Bin/nE_HF.bin`, which no solver writes; the port reads the diagonal of
    `Bin/h_HF.bin` instead.
 2. `V2b_read`, `CMS = "CMS2B"`: the original indexes the `O1B` struct as `T[a,c]`
@@ -57,26 +57,28 @@ it returns `V_NN_res`; the legacy solvers move it back into their `V_NN` with `O
 4. Single-particle summary tables size their `(l, 2j)` counters by `2*Nmax+1`.
 5. `HF_allocate` parallelizes over the outer (a,d) loop instead of the inner (b,e) loop.
 
-6. `HF_RPA_OBDM` (and the RRPA counterpart): the original updates the diagonal density
+6. **(removed in stage 6, with HF_RPA / HF_RRPA)** `HF_RPA_OBDM` (and the RRPA counterpart): the original updates the diagonal density
    matrix from several threads without synchronization (`Threads.@threads` over `ph`, writing
    `pRho[a_h,a_h]`), which loses updates nondeterministically. The port accumulates serially.
    Verified: Julia run with `-t 1` agrees with the port to 1e-13 in `RPA_Radial_Densities.dat`,
    the RPA radii and the E1 compression/toroidal strengths (which depend on the RPA charge
    radius); multithreaded Julia output differs by up to 2e-3 there.
 
-7. `HF_RRPA_solve` with `ScV3N = false` tests `Params.Calc.RRPA.OBDM == "Full"`, a field that
+7. **(removed in stage 6)** `HF_RRPA_solve` with `ScV3N = false` tests `Params.Calc.RRPA.OBDM == "Full"`, a field that
    does not exist in `RRPA_Parameters` (a runtime error in Julia); the port performs the
    intended basis transformation of the residual interaction.
-8. Routines that the original silences by redirecting stdout to `/dev/null` inside the RRPA
-   iteration are silenced through the `Verbose` switch of `nj_utils`. (RRPA is removed in dev; the
-   dev `H2b`/`H1b_H2b` have a `Report` keyword, ported as an optional argument.)
-9. `HF_RPA_OBDM` keeps phonons with `norm(Y)^2 < 0.5`, which is meant to drop the spurious 1- state.
+8. **(removed in stage 6: the `Verbose` switch of `nj_utils` went with HF-RRPA, its only user)** Routines that the
+   original silences by redirecting stdout to `/dev/null` inside the RRPA iteration were silenced through the `Verbose`
+   switch. (The dev `H2b`/`H1b_H2b`/`O2b_transformation` have a `Report` keyword, ported as an optional argument.)
+9. **(removed in stage 6)** `HF_RPA_OBDM` keeps phonons with `norm(Y)^2 < 0.5`, which is meant to drop the spurious 1- state.
    That state is built as `Y = -Spur_State/sqrt(2)`, so its norm is 1/2 up to rounding and the
    original includes or excludes it depending on the last bit (O16, Nmax = 12, DN2LOGO394:
    Julia 0.4999999999999999 → included, r_p = 2.987 fm instead of 2.805 fm). The port cuts at
    `0.5 - 1e-8`, so the spurious state is always excluded (physical states have norms ≲ 1e-2).
 
 ## Original behaviour kept on purpose (possible bugs worth a look upstream)
+
+The HF_RRPA / HF_RPA items of this list are **(removed in stage 6)** with those solvers (dev removed them too).
 
 * `HF_RRPA_OBDM`, neutron-hole branch (`Type == 4`): the mirrored term uses `Y[pg,mu]` where
   the proton-hole branch uses `Y[ph,mu]`.
@@ -155,7 +157,8 @@ port must stop with `fatal()` in the same case (never triggered in the test case
 ## NuJuliet dev port (f3f7a33) ... group "common A" (core types, parameters, orbitals, operators)
 
 Spec: `docs/dev_port/common_a.md`. Stage policy: additive; the old APIs that the not-yet-ported
-solvers use stay until the cleanup stage and are marked `! LEGACY (removed in cleanup stage)`.
+solvers use stay until the cleanup stage and are marked `! LEGACY (removed in cleanup stage)`. **(Stage 6 removed all of
+them; see the stage-6 section at the end.)**
 
 Changes (follow dev):
 
@@ -176,9 +179,9 @@ Changes (follow dev):
   `O1b_zeroes`, `O1b_ones`, `O1b_unit_matrix`.
 * `nj_o2b`: `O2b_temp(a,b,c,d,J,P,T,O,Orb_NN_t)` (T = -1 pp, 0 pn, +1 nn), `O2b_Pandya_initialize`,
   accessors `O2b_Pandya_pp/pnpn/pnnp/nn`, `O2b_Pandya_transformation(...,F_NN,Orb_NN_t)` with
-  `type(o2b_pandya_t)` (the 5-argument `o2b_temp_t` form, whose `pn` = dev `pnnp`, is LEGACY for the
-  qp chain), optional `Report` of `O2b_transformation` (combined with the global `Verbose`).
-* `nj_obdm`: `OBDM_*` renamed `rho_*` (the old names stay as generic aliases until cleanup);
+  `type(o2b_pandya_t)` (the 5-argument `o2b_temp_t` form, whose `pn` = dev `pnnp`, was LEGACY, removed in stage 6),
+  optional `Report` of `O2b_transformation` (the global `Verbose` it was combined with is gone since stage 6).
+* `nj_obdm`: `OBDM_*` renamed `rho_*` (the old names were generic aliases until stage 6);
   radii "normalized by 1/A^1/3" are `sqrt(R2)/A^(1/3)` (dev fix; was `sqrt(R2/A^(1/3))`).
 * `nj_functions`: `J1b_convective` dev fixes (the `Y_{l,l+1}` terms are outside the `l > 0` blocks
   with factor `sqrt(l+1)`; was `sqrt(l-1)` inside), new `phonon_weights` (real & complex).
@@ -206,8 +209,8 @@ Deviations from dev:
    `RPA_external.jl:123`), and empty Name/Reference or ones containing `/`.
 5. `hungarian` handles square cost matrices only (dev's in-house version also takes rectangular /
    non-finite ones; every dev caller passes a square finite matrix) and stops otherwise.
-6. The legacy groups `&hf_efa`, `&rrpa` and the `&hfb` items `Broy_Qmax`, `Broy_Bmax` are still
-   accepted (with a warning) until the cleanup stage, where HF-EFA and HF-RRPA are removed.
+6. **(superseded in stage 6)** The legacy groups `&hf_efa`, `&rrpa` and the `&hfb` items `Broy_Qmax`, `Broy_Bmax`
+   were accepted (with a warning) until the cleanup stage; see the stage-6 section for the current handling.
 7. `O2b_temp` and the Pandya accessors do not check that the pairs exist (dev throws a KeyError);
    `orb2b_1p1h_index`/`orb2b_2qp_index` return 0 for any absent or out-of-range pair.
 
@@ -291,7 +294,7 @@ Layout: `src/hf/nj_hf.f90` (dev `HF_solve`, `HF_allocate`, `HF_density_operator`
 `io/<Path>/HF/HF_summary.dat`, `HF/densities/{HF_radial_densities,HF_radial_potential}.dat`,
 `HF/bin/{orb,C,rho,H1b,H2b}.bin`.
 
-LEGACY (removed in the cleanup stage): the base-version HF is kept unchanged as `nj_hf_legacy`,
+**(Removed in stage 6.)** LEGACY (removed in the cleanup stage): the base-version HF is kept unchanged as `nj_hf_legacy`,
 `nj_hf_mbpt_legacy`, `nj_hf_efa` and `nj_hf_legacy_driver` (`&run` action `HF_LEGACY`, output `io/<Path>/Bin/*`,
 `HF/HF_Summary.dat`, HF-EFA, HRF export, base MBPT(2)); BCS, HFB and the legacy HF_RPA export use `nj_hf_legacy`.
 Action `HF` runs `HF_LEGACY` (with a NOTICE) when the same `&run` list contains a legacy consumer of
@@ -313,7 +316,7 @@ Deviations:
    justification (fallback to `cfmt_e` for 3-digit exponents); the text equals Julia's `@printf` except that a
    value within an ulp of a rounding tie may print a different last digit (8 of 263169 rows for 16O; compare.py
    accepts one unit of the last digit).
-5. Removed from the dev HF only: HF-EFA (`&hf_efa`, `hf_efa_params_t`, `nj_hf_efa`) and the HRF export stay
+5. **(removed in stage 6)** Removed from the dev HF only: HF-EFA (`&hf_efa`, `hf_efa_params_t`, `nj_hf_efa`) and the HRF export stay
    with the LEGACY HF until the cleanup stage (`HF.HRF` is accepted and ignored by the dev HF, as in dev).
 
 Not ported (dead in dev): the commented-out old `HF_energy` loop of `HF_energy.jl`.
@@ -344,7 +347,7 @@ Deviations:
    threads over the same list) with `reduction(+)`; the OBDM loops reduce into private copies of dRho (dev threads over
    the outer orbital and writes only elements owned by it). Summation order differs from Julia at the 1e-15 level
    only (1 vs 8 threads agree to 1e-13 in every output file).
-4. The base OBDM loops of `nj_hf_mbpt_legacy` are reused unchanged (dev formulas, filters and index orders are
+4. The base OBDM loops of `nj_hf_mbpt_legacy` (file removed in stage 6; the loops live on in `nj_hf_mbpt`) are reused unchanged (dev formulas, filters and index orders are
    identical to base, spec 8.4); the dev tail (natural orbitals via `OBDM_natural_orbitals` with Hungarian ordering,
    F5) replaces the base `HF_MBPT_OBDM_correction`/`HF_MBPT_reorder`.
 
@@ -431,9 +434,9 @@ Deviations:
 6. Stage 3 part 2 items: `RPA DEV = .true.` together with `Reference_TBCF` (the only path reaching `RPA_allocate_SE`)
    stops with "not ported yet"; `DEV = .true.` without a reference Sigma is identical to dev (the DEV switch is then
    inert, as in dev). The pf/nf contact terms of `RPA_allocate_TBCF` are already ported (`ph_allocate_tbcf(DEV)`).
-7. Port notes 6 (OBDM race) and 9 (spurious state in the OBDM) apply to the LEGACY `HF_RPA` only; the dev RPA follows
+7. Port notes 6 (OBDM race) and 9 (spurious state in the OBDM) applied to the LEGACY `HF_RPA` only (removed in stage 6); the dev RPA follows
    dev exactly (spurious 1- state with a real `E_s` enters OBDM, energy and Sigma; only the E1 moments skip it).
-8. The LEGACY actions `HF_RPA`, `HF_RPA_transition_densities/currents`, `HF_RRPA*` and their files stay unchanged
+8. **(removed in stage 6)** The LEGACY actions `HF_RPA`, `HF_RPA_transition_densities/currents`, `HF_RRPA*` and their files stay unchanged
    (`nj_hf_rpa*.f90` is needed by EMPM until stage 5, `HF_RRPA` until HF_ScRPA in stage 4).
 
 Not ported (dead in dev): the Sigma variant of `RPA_spurious_ini` (`RPA_spurious.jl:40-130`), `RPA_OBDM_sigma`, the
@@ -526,7 +529,7 @@ New `src/rpa/nj_scrpa.f90` (`HF_ScRPA`, `HF_ScRPA_solver`, `scrpa_beta`, `ScRPA_
 `HF_ScRPA` (`nj_dispatch_rpa`), `files.mk` entry after `nj_tda_rpa_driver` (whose `print_header`, `print_threads`,
 `make_output_dirs` are now public and shared). The ScRPA fields of `&rpa` (`Tol`, `Imax`, `OBDM_diagonal`, `OBDM_alpha`,
 `ScH`, `TBCF`, `TBCF_alpha`, `TBCF_beta`, `DEV`, `RPA_Orb`, ...) existed since stage 3 (dev `RPA_Parameters`). The
-legacy `HF_RRPA` action, `&rrpa` and `nj_hf_rrpa*` are untouched (decision 2; removed in the cleanup stage).
+legacy `HF_RRPA` action, `&rrpa` and `nj_hf_rrpa*` are untouched (decision 2; removed in stage 6).
 
 1. B2 (decision 5): `Name == Reference` is refused by the `&rpa` reader (since stage 3) and again in `HF_ScRPA` with
    `fatal` (dev deletes the reference folder before reading it).
@@ -572,7 +575,7 @@ EMPM has no Julia counterpart; the items below are Fortran-side conventions (own
    `orbitals_ph_make` (holes pO >= 1 - 1e-8, particles pO <= 1e-8; any other occupation stops with "EMPM/NCSM need integer
    occupations: closed (sub)shell nucleus or &hf ESH=.true."). The diagonal check runs first, so an HF-MBPT reference is
    reported as non-diagonal. The LEGACY specific (exact 0/1 tests, `Bin/h_HF.bin`) is unchanged for HF_RPA/HF_RRPA and
-   the legacy HF-MBPT until the cleanup stage. `EMPM_space_make(...,H1b_File)` takes the H1b path (default: the EMPM
+   the legacy HF-MBPT until the cleanup stage (removed in stage 6; `orbitals_ph_make` is now this reference form only). `EMPM_space_make(...,H1b_File)` takes the H1b path (default: the EMPM
    reference).
 3. Layout (decision 3a): `io/<Path>/EMPM/bin/` holds every EMPM binary (`EMPM_F`, `EMPM_TDA_{E,X}`, `EMPM_2PH_*`,
    `EMPM_FULL*`, `EMPM_CMB_*`, `EMPM_CMH_*`, default state files `EMPM_S<n>_*`, SF scratch); `EMPM/spectra/TDA.dat`,
@@ -598,7 +601,7 @@ EMPM has no Julia counterpart; the items below are Fortran-side conventions (own
    binary bit for bit (O16, Ca40: 47 files, max deviation 0).
 6. Chain-A independence (decision 7): local `EMPM_phonon_count` (verbatim copy of `HF_RPA_phonon_count`), local summary
    helpers; `nj_empm_*` no longer use `nj_hf_rpa` / `nj_hf_rpa_export`. `nj_hf_rpa::Spur_Ortho` stays for the legacy
-   HF_RPA until the cleanup stage. `'HF'` in a `&run` with `EMPM_*` actions runs the dev HF (only `HF_RPA*`, `HF_RRPA*`
+   HF_RPA until the cleanup stage (removed in stage 6). `'HF'` in a `&run` with `EMPM_*` actions runs the dev HF (only `HF_RPA*`, `HF_RRPA*`
    and, until stage 5 part 2, `NCSM` still route `'HF'` to `HF_LEGACY`).
 7. Observation, not a deviation: the pivoted Cholesky of the EMPM metric chooses the independent rows among (nearly)
    linearly dependent ones (the spurious |cm, lambda> rows); input differences at the 1e-16 level (dev HF vs legacy HF:
@@ -634,17 +637,54 @@ NCSM has no Julia counterpart; the items below are Fortran-side conventions (own
 4. Routing: `NCSM` no longer routes `'HF'` to `HF_LEGACY` (`legacy_hf_consumer` = `HF_RPA*`, `HF_RRPA*` only).
 5. App layer (consumers.md 5): usage text names `io/`; dispatcher comments updated (chain A/B/C action lists, stubs).
    Not done by owner decision (stage 6): the removed-action fatals for `HF_RPA*`/`HF_RRPA*` (still working legacy
-   actions), the removal of `&hf_efa`, `&rrpa`, `Broy_Qmax`, `Broy_Bmax`. Deviation: `&transition_currents M` keeps the
-   default 0 instead of dev's -1 (dev maps -1 to 0, so the dev result is identical); a default of -1 would change the
-   LEGACY `HF_RPA_transition_currents`, where -1 is a real projection. `&parse` with `V2b_parse`, `V3b_no2b_parse`
+   actions), the removal of `&hf_efa`, `&rrpa`, `Broy_Qmax`, `Broy_Bmax` **(done in stage 6)**. Deviation **(resolved in
+   stage 6: default -1 as in dev)**: `&transition_currents M` keeps the default 0 instead of dev's -1 (dev maps -1 to 0,
+   so the dev result is identical); a default of -1 would change the LEGACY `HF_RPA_transition_currents`, where -1 is a
+   real projection. `&parse` with `V2b_parse`, `V3b_no2b_parse`
    (and the Fortran `PARSE` = both) existed since stage 1.
 6. README (consumers.md 7): actions table, namelists, output layout, EMPM (reference, integer occupations, EMPM/bin,
    spectra, transitions, TDA_summary.dat, "equals TDA with Reference='HF'", spurious E(1)), NCSM, compatibility,
    verification rewritten. The `tests/empm_fci_check.py` paragraph still needs the HRF text tables of `HF_LEGACY`
-   (dev's HF has no HRF output); noted there.
+   (dev's HF has no HRF output); noted there (since stage 6: from a binary of commit ec14d69 or earlier).
 7. Review follow-up (Fortran-side robustness, no effect on results): `EMPM_2PH`, `EMPM_3PH`, `EMPM_4PH`, `EMPM_FULL`,
    `EMPM_TRANS`, `EMPM_SF` call `EMPM_reference_check` before the `EMPM/bin` check, so a stale `EMPM/bin` of an
    earlier run is not used when the reference is missing ("Error! ... No precomputed reference ..." + skip, exit 0,
    instead of the fatal of `EMPM_reference_orbitals`). `EMPM_TDA(Params,Ok)` returns a success flag; the combined
    `'EMPM'` action stops after a skipped EMPM_TDA ("Error! ... EMPM_TDA did not run, the 2-phonon step of EMPM is
    skipped ..."). Error cases `e10_stale_empm_no_reference`, `e11_empm_after_failed_tda`.
+
+## NuJuliet dev port (f3f7a33) ... stage 6, cleanup (removal of the LEGACY code)
+
+Dev removed HF-EFA, the base-version HF output (`IO/<Path>/Bin`, HRF tables), HF-RPA and HF-RRPA; the port kept them as
+LEGACY until the dev solvers and consumers were complete (stages 1-5). Stage 6 removes them (owner approval):
+
+1. Files: `src/hf/nj_hf_legacy.f90`, `nj_hf_legacy_driver.f90`, `nj_hf_mbpt_legacy.f90`, `nj_hf_efa.f90`,
+   `src/rpa/nj_hf_rpa.f90`, `nj_hf_rpa_driver.f90`, `nj_hf_rpa_export.f90`, `nj_hf_rpa_external.f90`, `nj_hf_rrpa.f90`,
+   `nj_hf_rrpa_driver.f90`, `nj_hf_rrpa_export.f90` (Makefile `SRC_HF`, `src/rpa/files.mk`).
+2. Types / parameters: `hf_efa_params_t` (`HF%EFA`), `rrpa_params_t` (`Calc%RRPA`), `obdm_iteration_pairs_t`,
+   `pnarray4_t`; readers `&hf_efa`, `&rrpa`; the `&hfb` dummies `Broy_Qmax`, `Broy_Bmax`.
+3. Routines only the legacy code used (where dev still has them, e.g. `orbitals_ph_list`, `orbitals_one_phonon_make`,
+   the HRF `orbitals_export`, `pnArray`, they are dead code there: no caller, "Old remove soon"): `nj_orbitals` `orbitals_ph_make` LEGACY specific (the generic is now the reference
+   form `orbitals_ph_make(Params,Orb,H1b_File,...)`), `orbitals_ph_list`, `orbitals_one_phonon_make`, `read_h_HF_diag`,
+   HRF `orbitals_export(Params,Orb)` (the generic is now the binary `orbitals_export(Params,Orb,Path)`); `nj_o2b`
+   3-block `O2b_Pandya_transformation(...,o2b_temp_t)` (the generic is now the dev 4-block form), `O2b_export_HRF`;
+   `nj_obdm` `OBDM_*` aliases; `nj_linalg` `eig_general_complex`, `isposdef`, `isposdef_c`, `zmhm` (+ the LAPACK
+   interfaces `dpotrf`, `zpotrf`, `zheevr`, `zgeevx`); `nj_utils` `Verbose` (always true without HF-RRPA; the prints it
+   guarded are unconditional, `O2b_transformation` `Report` alone decides). `Use_Int = .true.` is left only in the
+   interaction readers (dev keyword `Int = true`).
+4. App layer: the auto-routing of `HF` to `HF_LEGACY` is gone. Removed actions stop with a fatal error **before any action
+   of the input file runs** (checked after reading the file): `HF_RPA` ("'HF_RPA' was removed upstream, use 'TDA', 'RPA'
+   ..."), `HF_RPA_transition_{densities,currents}` (-> `TDA_/RPA_transition_*`), `HF_RRPA` ("... removed upstream, use
+   'HF_ScRPA' (&rpa)"; consumers.md 5.2 said "no replacement", the owner's wording names HF_ScRPA),
+   `HF_RRPA_transition_*` (-> `HF_ScRPA`, then `RPA_transition_*`), `HF_LEGACY` (-> `HF`).
+5. Removed input (decision: what is cleanest with the namelist reader): the reader scans the file text once (comments
+   after `!` outside strings ignored, case-insensitive). `&rrpa` / `&hf_efa`: WARNING "namelist &rrpa in <file> was
+   removed upstream ... group ignored" (a namelist read of another group skips them anyway, and without `HF_RRPA`/HF-EFA
+   their values have no effect, so old input files still run). `Broy_Qmax` / `Broy_Bmax`: fatal with the hint to delete
+   them (without the dummies the `&hfb` read would stop with a bare "unknown item" namelist error).
+6. `&transition_currents M` default -1 as in dev (was 0 only because of the LEGACY `HF_RPA_transition_currents`); dev and
+   the port map -1 to the projection 0, so results are unchanged.
+7. Not changed: `HF%HRF`, `BCS%HRF`, `HFB%HRF` stay as accepted dead inputs (as in dev); Fortran-only extensions (EMPM,
+   NCSM, `CM_Lawson`, `PARSE`) stay. Old inputs and runs that use the removed actions (e.g.
+   `tests/dev_port/fortran/empm_ncsm_legacy/`, `runs/test_Ca40_9sh/`, `runs/Pb208_13sh_hw12*`) need a binary of commit
+   ec14d69 or earlier.

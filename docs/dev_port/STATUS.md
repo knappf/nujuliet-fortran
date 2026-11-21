@@ -704,3 +704,72 @@ Open: `tests/empm_fci_check.py` still needs the HRF tables of `HF_LEGACY`; NCSM 
   O16w 2: the known amplitude-basis files), GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12, 0 MISSING (classes
   per file identical to before); `--tda` worst 1.5e-14, 0 MISSING; error cases e1..e11 ok; bundled vs `julia_t8`
   (1e-8): 411 ok + 36 SIGN, 0 DIFF.
+
+## 2026-11-21 — stage 6, cleanup: removal of the LEGACY code (owner approved; details in `docs/PORTING_NOTES.md`, stage-6 section)
+
+Removed (as dev did upstream):
+- Files (11, 5809 lines): `src/hf/nj_hf_legacy.f90`, `nj_hf_legacy_driver.f90`, `nj_hf_mbpt_legacy.f90`, `nj_hf_efa.f90`,
+  `src/rpa/nj_hf_rpa.f90`, `nj_hf_rpa_driver.f90`, `nj_hf_rpa_export.f90`, `nj_hf_rpa_external.f90`, `nj_hf_rrpa.f90`,
+  `nj_hf_rrpa_driver.f90`, `nj_hf_rrpa_export.f90`; Makefile `SRC_HF`, `src/rpa/files.mk`.
+- Actions `HF_LEGACY`, `HF_RPA`, `HF_RPA_transition_{densities,currents}`, `HF_RRPA`, `HF_RRPA_transition_{densities,currents}`
+  and the auto-routing of `HF` to `HF_LEGACY`: now fatal with a hint, checked for the whole `&run` before any action of
+  the file runs (`'HF_RPA' was removed upstream, use 'TDA', 'RPA'`; `'HF_RRPA' was removed upstream, use 'HF_ScRPA'`; ...).
+- Parameters/namelists: `hf_efa_params_t`/`&hf_efa`, `rrpa_params_t`/`&rrpa` (now: WARNING, group ignored), the `&hfb`
+  dummies `Broy_Qmax`/`Broy_Bmax` (now: fatal with the hint to delete them); text pre-scan of the input file in `nj_input`.
+- Types/routines/aliases used only by the legacy code: `obdm_iteration_pairs_t`, `pnarray4_t`; `nj_orbitals` LEGACY
+  `orbitals_ph_make` specific, `orbitals_ph_list`, `orbitals_one_phonon_make`, `read_h_HF_diag`, HRF `orbitals_export`
+  (generics reduced to the dev/reference forms); `nj_o2b` 3-block Pandya form, `O2b_export_HRF`; `nj_obdm` `OBDM_*`
+  aliases; `nj_linalg` `eig_general_complex`, `isposdef`, `isposdef_c`, `zmhm` (+4 LAPACK interfaces); `nj_utils`
+  `Verbose` (only HF-RRPA switched it off). All `LEGACY` markers / stale comments in `src` updated.
+- `&transition_currents M` default -1 as in dev (the 0 was kept only for the LEGACY `HF_RPA_transition_currents`).
+- Line count: `src` 41539 -> 35257 (-6282 net; 130 insertions, 6423 deletions incl. Makefile / files.mk).
+- Kept: Fortran-only EMPM, NCSM, `CM_Lawson`, `PARSE`; `HRF` dead inputs (as dev); `Use_Int` of the interaction readers
+  (dev `Int = true`).
+- Docs: README (actions table, "Removed actions and input" migration table, no legacy namelists, `empm_fci_check.py`
+  note), CLAUDE.md ("Runs", "Original Julia code", "Comparing with Julia"), PORTING_NOTES (obsolete items marked
+  "(removed in stage 6)", new stage-6 section), `tests/dev_port/README.md` (legacy baseline inputs need the frozen binary,
+  stage-6 regression recipe). New error cases `fortran/empm_ncsm/errors/e12_removed_hf_rpa`, `e13_removed_broy`.
+  `fortran/empm_ncsm_legacy/` stays unchanged (uses `HF_LEGACY`: frozen binary only).
+
+Verification (frozen binary `nujuliet-snap-ec14d69/nujuliet` vs the final `./nujuliet`, clean `make`, 0 warnings):
+- All dev_port cases, 8 threads (`work/s6_frozen_t8`, `work/s6_final_t8`): `diff -rq` of the io trees **byte-identical**
+  (1433 files; only `run.log`/`time.log` differ: timing lines and the last printed digit of 42-44 full-precision energy
+  log lines, the same kind as frozen vs frozen run twice, `work/s6_frozen2_t8`: OpenMP reduction order).
+- `empm_ncsm` (`run_empm_ncsm.sh dev 16`, TAG `_s6frozen`, `_s6frozen2`, `_s6final`): io trees byte-identical apart from the
+  seconds column of `EMPM/{3,4}Phonon/Summary.dat` (also differs frozen vs frozen); logs differ in timings, RSS, the
+  free-memory limit of the NCSM stored H and last-digit E_HF prints (noise floor identical). No MKL-thread differences at
+  equal thread count in these runs. All 13 error cases (e1..e13) give their EXPECT text. `compare` vs `work/empm_baseline`:
+  DIFF 47, GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12 (as stage 5).
+- vs `work/julia_t8` (compare.py 1e-8): bundled 411+36 SIGN, ca40_5sh 92+8, o16_open 106+7, hf_options 14, mbpt_options
+  23+6, rpa_options 308+29, qp_options 150+14+3 DIFF (the known O20_HBCS files), scrpa_options 197+22; 0 SIZE/MISSING/EXTRA.
+- Removed actions / input: all 7 removed actions give their hint (exit 1, nothing written); `&rrpa`/`&hf_efa` warn,
+  `Broy_Qmax` fatal; text in comments ignored. Default `M` (-1) of `TDA_/RPA_transition_currents`: 16 files identical
+  to the `M = 0` run.
+- Builds: intel clean (0 warnings), stub chain-A build (`SRC_RPA=src/rpa/stub/...`) ok. `make COMPILER=gnu` fails in
+  `nj_ph_external.f90` (local `hc, m_n, m_p` parameters clash with `nj_kinds`; gfortran rejects, ifx accepts) — already
+  broken at ec14d69 (stage 3 file, unchanged here). gfortran `-Wall` on the edited core/app modules: no new warnings.
+
+Open: `tests/empm_fci_check.py` still needs the HRF tables of a pre-stage-6
+binary; `runs/test_Ca40_9sh` legacy regression and `fortran/empm_ncsm_legacy/` baseline only with frozen binaries.
+
+Independent verification, 2026-11-21 (fresh work dirs, clean serial `make`, final tree):
+- Build: intel 0 warnings; no references to the removed modules/types/actions/namelists in `src`, Makefile, `files.mk`
+  outside the hint code. **gfortran build fixed**: `nj_ph_external.f90` uses `m_n`, `m_p` of `nj_kinds` (same values,
+  `hc = HbarC`); the link then failed on the MKL-only `dsygvd_64`/`dsyevd_64`/`dgemm_64`/`dgemv_64` of `nj_empm_eqm2`
+  (stage 5): new `src/core/nj_lapack64_ref.f90` (wrappers of the default-integer routines, gnu only, Makefile
+  `BLASTHR_SRC`); `V2b_parse`/`V3b_no2b_parse` opened the input inside the parallel region through a deferred-length
+  `In_File` that gfortran passes as garbage (stage 1): now `Params%Int%NN_File`/`NNN_File`. `make COMPILER=gnu` 0 warnings;
+  gnu vs Julia (1e-8), all 8 cases: 0 DIFF/SIZE/MISSING/EXTRA apart from the 3 known O20_HBCS files (SIGN counts differ
+  from intel: LAPACK gauge). README "Building" updated.
+- Intel `./nujuliet` vs frozen ec14d69, 8 threads, 8 dev_port cases: io trees byte-identical (1433 files). vs Julia: bundled
+  411/36/0, ca40_5sh 92/8/0, o16_open 106/7/0, hf_options 14/0/0, mbpt_options 23/6/0, rpa_options 308/29/0, qp_options
+  150/14/3 (O20_HBCS), scrpa_options 197/22/0.
+- `empm_ncsm` (dev 16, both binaries): 1830 io files, identical apart from the seconds column of 4 `Summary.dat`; all 13
+  error cases ok (frozen fails e12 as expected); compare vs baseline DIFF 47, GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614,
+  ok* 12. Removed actions (7): hint, exit 1, nothing written; `&rrpa`/`&hf_efa` warn, io identical to the plain run;
+  `Broy_Bmax` fatal, `Broy_Qmax` in a comment ignored; copy of `runs/test_Ca40_9sh/Ca40.nml`: `&rrpa` warning + HF_RPA
+  hint, HF not run.
+- Review follow-ups (coordinator): the removed-namelist scan blanks quoted strings (a value like 'out/broy_qmax' no longer
+  matches); all input files of a call are read and checked before any action runs (a removed action in b.nml stops
+  `nujuliet a.nml b.nml` before a.nml computes anything; tested); README `&transition_currents` sample M=-1.
+  bundled 411/36/0 and scrpa_options 197/22/0 vs Julia after the change.

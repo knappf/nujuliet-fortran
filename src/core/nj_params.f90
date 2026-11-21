@@ -21,13 +21,6 @@ module nj_params
         real(dp) :: nG2N = 0.0_dp
     end type interaction_params_t
 
-    ! LEGACY (removed in cleanup stage) ... HF-EFA is gone in NuJuliet dev (HF_orbitals_make & HF.ESH replace it) ...
-    type, public :: hf_efa_params_t
-        integer :: A = 0
-        integer :: Z = 0
-        logical :: BMF = .true.
-    end type hf_efa_params_t
-
     ! Julia HF_MBPT_Parameters ... Export (correlated reference io/<Path>/HF-MBPT/bin/*), TBCF (2-body correlation
         ! function), ScH (polarised Hamiltonian) ...
     type, public :: hf_mbpt_params_t
@@ -46,7 +39,6 @@ module nj_params
         logical :: HRF = .false.
         logical :: ESH = .false.
         type(hf_mbpt_params_t) :: MBPT
-        type(hf_efa_params_t) :: EFA            ! LEGACY (removed in cleanup stage)
     end type hf_params_t
 
     ! Julia TDA_Parameters ... output folder io/<Path>/<Name>, reference io/<Path>/<Reference> ...
@@ -79,16 +71,6 @@ module nj_params
         real(dp) :: TBCF_beta = 5.0_dp
         logical :: DEV = .false.
     end type rpa_params_t
-
-    ! LEGACY (removed in cleanup stage) ... HF-RRPA is gone in NuJuliet dev (HF_ScRPA replaces it) ...
-    type, public :: rrpa_params_t
-        logical :: Ortho = .true.
-        real(dp) :: Tol = 1.0e-7_dp
-        integer :: Imax = 150
-        logical :: ScV3N = .true.
-        logical :: ScOBH = .true.
-        logical :: dOBDM = .false.
-    end type rrpa_params_t
 
     type, public :: bcs_params_t
         logical :: ScBCS = .false.
@@ -152,7 +134,7 @@ module nj_params
         ! 3-phonon step (EMPM_3PH) ... truncated rows E_a + E_lambda <= E3max (a 2-phonon, lambda 1-phonon state), the J^P
         ! channels JP3 (none = all) ... 4-phonon step (EMPM_4PH) ... rows E_c + E_lambda <= E4max, channels JP4 ...
         ! full Hamiltonian with up to Full_N phonons (EMPM_FULL), channels JPF ... Save_X: EMPM_2PH writes the 2-phonon states
-        ! (basis, E, C & X) to Bin/EMPM_S2_<JP>.bin for EMPM_3PH (large for big spaces, off by default) ...
+        ! (basis, E, C & X) to EMPM/bin/EMPM_S2_<JP>.bin for EMPM_3PH (large for big spaces, off by default) ...
         ! Ind_First ... 3- & 4-phonon steps: D of the truncated rows first, its pivoted Cholesky selects the independent rows,
         ! A & H = A D^T then only on them (same results, H & A D^T check on the independent block) ... .false. = H on all rows ...
         ! States_Dir ... folder of the n-phonon state files EMPM_S<n>_<JP>.bin (default Bin of the output folder), a leading
@@ -163,11 +145,11 @@ module nj_params
         ! only, never the whole N_tr x N_tr block ...
         ! CM_Exact ... EMPM_FULL keeps only the states with b_cm psi = 0 (exact CM condition, null space of the matrix of
         ! b_cm = HO lowering part of the CM coordinate between all EMPM states, requires Ortho = .false.): eigenvalues of
-        ! N_cm = b+_cm b_cm below CM_Tol ... CM_Dump writes the b_cm blocks to Bin/EMPM_CMB_<JP>_<J'P'>.bin ...
+        ! N_cm = b+_cm b_cm below CM_Tol ... CM_Dump writes the b_cm blocks to EMPM/bin/EMPM_CMB_<JP>_<J'P'>.bin ...
         ! CM_Variants ... with CM_Exact also the weaker conditions, per truncation n: 'space' P_n b_cm psi = 0 (no component
         ! of b_cm psi in the <= n phonon space) & 'proj' P_(n-1) b_cm psi = 0 (physical = complement of the spurious space
         ! P_n b+_cm (<= n-1 phonon space), the generalization of the SVD treatment with the full operator) ... spectra &
-        ! exact <N_cm> of their states in Bin/EMPM_FULL<n>_<JP>_E_<variant>.bin & _Ncm_<variant>.bin ...
+        ! exact <N_cm> of their states in EMPM/bin/EMPM_FULL<n>_<JP>_E_<variant>.bin & _Ncm_<variant>.bin ...
     type, public :: empm_params_t
         ! Reference (Fortran-only, stage 5) ... the HF-like reference io/<Path>/<Reference>/bin/{orb,C,H1b,H2b}.bin read by the
             ! EMPM (and the NCSM 'EMPM' Hamiltonian), as TDA_Parameters.Reference ... H1b must be diagonal & the occupations
@@ -213,7 +195,7 @@ module nj_params
             ! 'proj'   only the CM projection P_(n-1) b_cm psi = 0 (orthogonal to the spurious space P_n b+_cm (<= n-1 phonons),
             !          formerly 'range'; complete sets: Ortho = .false. or Ortho + CM_Keep) -> Full_proj_<JP>.dat
             ! 'both'   both ... all variants have the same file structure: i, E (MeV, relative to E_HF), exact <N_cm> (-1 if not
-            !          computed), phys = <N_cm> < 0.5, 0- .. 4-phonon weights; binaries Bin/EMPM_FULL<n>_<JP>_E_<lab>.bin,
+            !          computed), phys = <N_cm> < 0.5, 0- .. 4-phonon weights; binaries EMPM/bin/EMPM_FULL<n>_<JP>_E_<lab>.bin,
             !          _Ncm_<lab>.bin (& _Z_<lab>.bin for unproj / proj), lowest states in Summary_<lab>.dat ...
         ! CM_Ncm ... exact <N_cm> of all states (complete N_cm matrix incl. the top-level completion, Full_N <= 3), computed
             ! whenever the sets are complete; .false. skips it (proj alone needs no b_cm within the top level, much cheaper);
@@ -313,7 +295,6 @@ module nj_params
         type(hf_params_t) :: HF
         type(tda_params_t) :: TDA
         type(rpa_params_t) :: RPA
-        type(rrpa_params_t) :: RRPA              ! LEGACY (removed in cleanup stage)
         type(bcs_params_t) :: BCS
         type(hfb_params_t) :: HFB
         type(qtda_params_t) :: QTDA

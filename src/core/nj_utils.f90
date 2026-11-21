@@ -17,10 +17,6 @@ module nj_utils
         module procedure istr_i4, istr_i8
     end interface istr
 
-    ! Terminal output switch ... used to silence routines called repeatedly inside iterations,
-        ! as the original does by redirecting stdout to /dev/null ...
-    logical, public :: Verbose = .true.
-
 contains
 
     pure integer function kronecker_delta(a,b)
@@ -441,7 +437,6 @@ contains
         character(len=*), intent(in), optional :: Label
         integer(i8) :: t1, Rate
         call system_clock(t1,Rate)
-        if (.not. Verbose) return
         if (present(Label)) then
             write(*,'(a)') '  ' // cfmt_f(real(t1 - t0,dp) / real(Rate,dp),0,6) // ' seconds ... ' // Label
         else

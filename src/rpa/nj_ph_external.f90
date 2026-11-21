@@ -36,7 +36,7 @@ module nj_ph_external
     public :: RPA_transition_densities, RPA_transition_operator_densities, RPA_transition_analysis, RPA_transition_currents
     public :: RPA_transitions_recalculate
 
-    real(dp), parameter :: hc = 197.326980_dp, m_n = 939.565346_dp, m_p = 938.272013_dp
+    real(dp), parameter :: hc = HbarC     ! m_n, m_p from nj_kinds (same values)
     real(dp), parameter :: g_n = -3.82608545_dp, g_p = 5.585694713_dp
 
     ! Imported TDA or RPA data ... (Kind = 'TDA' or 'RPA') ...

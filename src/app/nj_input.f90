@@ -14,7 +14,7 @@ module nj_input
     ! Extra arguments of the phonon density & current exports ...
     type, public :: export_request_t
         character(len=16) :: JP = '1-'
-        integer :: M = 0
+        integer :: M = -1         ! &transition_currents ... dev default -1 = projection 0 (M_proj = merge(0,M,M == -1))
         integer :: N_nu = 0
         integer :: nu_list(256) = 0
         character(len=Str_Len) :: File_Name = ''
@@ -52,14 +52,13 @@ contains
         open(newunit=u, file=File, status='old', action='read', iostat=Ios, iomsg=Msg)
         if (Ios /= 0) call fatal('Cannot open input file ' // trim(File) // ' ... ' // trim(Msg))
 
+        call removed_input_check()
         call read_interaction(Inp%Params%Int)
         call read_calculation(Inp%Params%Calc)
         call read_hf(Inp%Params%Calc%HF)
         call read_hf_mbpt(Inp%Params%Calc%HF%MBPT)
-        call read_hf_efa(Inp%Params%Calc%HF%EFA)
         call read_tda(Inp%Params%Calc%TDA)
         call read_rpa(Inp%Params%Calc%RPA)
-        call read_rrpa(Inp%Params%Calc%RRPA)
         call read_bcs(Inp%Params%Calc%BCS)
         call read_hfb(Inp%Params%Calc%HFB)
         call read_qtda(Inp%Params%Calc%QTDA)
@@ -85,6 +84,75 @@ contains
             if (Ios == 0 .or. is_iostat_end(Ios)) return
             call fatal('Error in namelist &' // Group // ' of ' // trim(File) // ' ... ' // trim(Msg))
         end subroutine check
+
+        ! Input items of the base version that NuJuliet dev removed ... the groups &rrpa (HF-RRPA, now HF_ScRPA with &rpa) &
+            ! &hf_efa (HF-EFA, now HF_orbitals_make with &hf ESH) are no longer read: WARNING, the group is ignored; the
+            ! &hfb items Broy_Qmax & Broy_Bmax would stop the &hfb read with a bare namelist error: fatal with the hint ...
+        subroutine removed_input_check()
+            character(len=1024) :: Line
+            integer :: Ios, i
+            logical :: In_Str
+            character :: Quote
+            rewind(u)
+            do
+                read(u,'(a)',iostat=Ios) Line
+                if (Ios /= 0) exit
+                ! drop a '!' comment (outside of quoted strings), blank strings, lower case ...
+                In_Str = .false.
+                Quote = ' '
+                do i = 1, len_trim(Line)
+                    if (In_Str) then
+                        ! string contents are blanked, so a value like 'out/broy_qmax' cannot match ...
+                        if (Line(i:i) == Quote) then
+                            In_Str = .false.
+                        else
+                            Line(i:i) = ' '
+                        end if
+                    else if (Line(i:i) == '"' .or. Line(i:i) == "'") then
+                        In_Str = .true.
+                        Quote = Line(i:i)
+                    else if (Line(i:i) == '!') then
+                        Line(i:) = ''
+                        exit
+                    else if (Line(i:i) >= 'A' .and. Line(i:i) <= 'Z') then
+                        Line(i:i) = achar(iachar(Line(i:i)) + 32)
+                    end if
+                end do
+                if (has_token(Line,'&rrpa')) write(*,'(a)') 'WARNING: namelist &rrpa in ' // trim(File) // &
+                    ' was removed upstream (HF_RRPA -> HF_ScRPA, parameters in &rpa) ... group ignored'
+                if (has_token(Line,'&hf_efa')) write(*,'(a)') 'WARNING: namelist &hf_efa in ' // trim(File) // &
+                    ' was removed upstream (HF-EFA -> HF with &hf ESH) ... group ignored'
+                if (has_token(Line,'broy_qmax') .or. has_token(Line,'broy_bmax')) call fatal('&hfb Broy_Qmax & Broy_Bmax' // &
+                    ' were removed upstream (Broyden mixing uses Broy_m, Broy_Amax, Broy_Tmax), delete them from ' // trim(File))
+            end do
+        end subroutine removed_input_check
+
+        ! Token (lower case) in Line, not preceded or followed by a name character ...
+        logical function has_token(Line,Token)
+            character(len=*), intent(in) :: Line, Token
+            integer :: i, k
+            has_token = .false.
+            k = 0
+            do
+                i = index(Line(k+1:),Token)
+                if (i == 0) return
+                i = i + k
+                k = i
+                if (i > 1) then
+                    if (name_char(Line(i-1:i-1))) cycle
+                end if
+                if (i + len(Token) <= len(Line)) then
+                    if (name_char(Line(i+len(Token):i+len(Token)))) cycle
+                end if
+                has_token = .true.
+                return
+            end do
+        end function has_token
+
+        logical function name_char(c)
+            character, intent(in) :: c
+            name_char = (c >= 'a' .and. c <= 'z') .or. (c >= '0' .and. c <= '9') .or. c == '_' .or. c == '&'
+        end function name_char
 
         ! Name & Reference are folder names below io/<Path>/ ... non-empty, no '/' ...
         subroutine check_folder_name(Name,Group,Item)
@@ -204,25 +272,6 @@ contains
             P%ScH = ScH
         end subroutine read_hf_mbpt
 
-        ! LEGACY (removed in cleanup stage) ... &hf_efa is gone in NuJuliet dev ...
-        subroutine read_hf_efa(P)
-            type(hf_efa_params_t), intent(inout) :: P
-            integer :: A, Z, Ios
-            logical :: BMF
-            character(len=512) :: Msg
-            namelist /hf_efa/ A, Z, BMF
-            A = P%A
-            Z = P%Z
-            BMF = P%BMF
-            rewind(u)
-            read(u, nml=hf_efa, iostat=Ios, iomsg=Msg)
-            call check(Ios,Msg,'hf_efa')
-            if (Ios == 0) write(*,'(a)') 'WARNING: &hf_efa is a legacy group (HF-EFA is removed in NuJuliet dev) ...'
-            P%A = A
-            P%Z = Z
-            P%BMF = BMF
-        end subroutine read_hf_efa
-
         subroutine read_tda(P)
             type(tda_params_t), intent(inout) :: P
             character(len=64) :: Name, Reference
@@ -307,32 +356,6 @@ contains
             call check_folder_name(P%Reference,'rpa','Reference')
         end subroutine read_rpa
 
-        ! LEGACY (removed in cleanup stage) ... &rrpa is gone in NuJuliet dev ...
-        subroutine read_rrpa(P)
-            type(rrpa_params_t), intent(inout) :: P
-            logical :: Ortho, ScV3N, ScOBH, dOBDM
-            real(dp) :: Tol
-            integer :: Imax, Ios
-            character(len=512) :: Msg
-            namelist /rrpa/ Ortho, Tol, Imax, ScV3N, ScOBH, dOBDM
-            Ortho = P%Ortho
-            Tol = P%Tol
-            Imax = P%Imax
-            ScV3N = P%ScV3N
-            ScOBH = P%ScOBH
-            dOBDM = P%dOBDM
-            rewind(u)
-            read(u, nml=rrpa, iostat=Ios, iomsg=Msg)
-            call check(Ios,Msg,'rrpa')
-            if (Ios == 0) write(*,'(a)') 'WARNING: &rrpa is a legacy group (HF-RRPA is removed in NuJuliet dev) ...'
-            P%Ortho = Ortho
-            P%Tol = Tol
-            P%Imax = Imax
-            P%ScV3N = ScV3N
-            P%ScOBH = ScOBH
-            P%dOBDM = dOBDM
-        end subroutine read_rrpa
-
         subroutine read_bcs(P)
             type(bcs_params_t), intent(inout) :: P
             logical :: ScBCS, BMF, HRF
@@ -365,16 +388,14 @@ contains
             P%HRF = HRF
         end subroutine read_bcs
 
-        ! Broy_Qmax & Broy_Bmax (removed in dev) are still accepted (LEGACY, removed in cleanup stage) & ignored ...
         subroutine read_hfb(P)
             type(hfb_params_t), intent(inout) :: P
-            real(dp) :: Tol, dLmax, pL0, nL0, pa0, na0, Broy_Amax, Broy_Bmax, Broy_Tmax
-            integer :: Imax, Broy_m, Broy_Qmax, Ios
+            real(dp) :: Tol, dLmax, pL0, nL0, pa0, na0, Broy_Amax, Broy_Tmax
+            integer :: Imax, Broy_m, Ios
             character(len=32) :: Pairing
             logical :: LNT, LNRes, BMF, HRF
             character(len=512) :: Msg
-            namelist /hfb/ Tol, Imax, Pairing, dLmax, pL0, nL0, pa0, na0, Broy_m, Broy_Qmax, Broy_Amax, Broy_Bmax, &
-                           Broy_Tmax, LNT, LNRes, BMF, HRF
+            namelist /hfb/ Tol, Imax, Pairing, dLmax, pL0, nL0, pa0, na0, Broy_m, Broy_Amax, Broy_Tmax, LNT, LNRes, BMF, HRF
             Tol = P%Tol
             Imax = P%Imax
             Pairing = P%Pairing
@@ -384,9 +405,7 @@ contains
             pa0 = P%pa0
             na0 = P%na0
             Broy_m = P%Broy_m
-            Broy_Qmax = -huge(1)
             Broy_Amax = P%Broy_Amax
-            Broy_Bmax = -huge(1.0_dp)
             Broy_Tmax = P%Broy_Tmax
             LNT = P%LNT
             LNRes = P%LNRes
@@ -395,8 +414,6 @@ contains
             rewind(u)
             read(u, nml=hfb, iostat=Ios, iomsg=Msg)
             call check(Ios,Msg,'hfb')
-            if (Broy_Qmax /= -huge(1) .or. Broy_Bmax /= -huge(1.0_dp)) &
-                write(*,'(a)') 'WARNING: &hfb Broy_Qmax & Broy_Bmax are removed in NuJuliet dev ... ignored ...'
             P%Tol = Tol
             P%Imax = Imax
             P%Pairing = Pairing

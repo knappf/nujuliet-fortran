@@ -5,8 +5,8 @@ module nj_linalg
     implicit none
     private
 
-    public :: eig_sym, eig_general, eig_general_complex, isposdef, mm, mtm, mmt, mtmm, identity, diagm, diag
-    public :: zmm, zmhm, isposdef_c, hungarian
+    public :: eig_sym, eig_general, mm, mtm, mmt, mtmm, identity, diagm, diag
+    public :: zmm, hungarian
     public :: eig_sym_gen        ! stage 3 (TDA): generalized symmetric-definite problem ...
     public :: spurious_ortho     ! stage 5: spurious 1- orthonormal complement shared by the dev TDA/RPA & EMPM ...
 
@@ -48,34 +48,6 @@ module nj_linalg
             integer :: m, n, k, Lda, Ldb, Ldc
             complex(dp) :: Alpha, Beta, A(Lda,*), B(Ldb,*), C(Ldc,*)
         end subroutine zgemm
-        subroutine dpotrf(Uplo,n,A,Lda,Info)
-            import :: dp
-            character :: Uplo
-            integer :: n, Lda, Info
-            real(dp) :: A(Lda,*)
-        end subroutine dpotrf
-        subroutine zpotrf(Uplo,n,A,Lda,Info)
-            import :: dp
-            character :: Uplo
-            integer :: n, Lda, Info
-            complex(dp) :: A(Lda,*)
-        end subroutine zpotrf
-        subroutine zheevr(Jobz,Range,Uplo,n,A,Lda,Vl,Vu,Il,Iu,Abstol,m,w,z,Ldz,Isuppz,Work,Lwork,Rwork,Lrwork,Iwork,Liwork,Info)
-            import :: dp
-            character :: Jobz, Range, Uplo
-            integer :: n, Lda, Il, Iu, m, Ldz, Lwork, Lrwork, Liwork, Info
-            integer :: Isuppz(*), Iwork(*)
-            real(dp) :: Vl, Vu, Abstol, w(*), Rwork(*)
-            complex(dp) :: A(Lda,*), z(Ldz,*), Work(*)
-        end subroutine zheevr
-        subroutine zgeevx(Balanc,Jobvl,Jobvr,Sense,n,A,Lda,W,Vl,Ldvl,Vr,Ldvr,Ilo,Ihi,Scale,Abnrm,Rconde,Rcondv, &
-                          Work,Lwork,Rwork,Info)
-            import :: dp
-            character :: Balanc, Jobvl, Jobvr, Sense
-            integer :: n, Lda, Ldvl, Ldvr, Ilo, Ihi, Lwork, Info
-            real(dp) :: Scale(*), Abnrm, Rconde(*), Rcondv(*), Rwork(*)
-            complex(dp) :: A(Lda,*), W(*), Vl(Ldvl,*), Vr(Ldvr,*), Work(*)
-        end subroutine zgeevx
     end interface
 
 contains
@@ -203,42 +175,6 @@ contains
         V = Vt
     end subroutine eig_general
 
-    ! Julia isposdef(A::Matrix{Float64}) ... exact symmetry (ishermitian) & a successful Cholesky factorization ...
-    logical function isposdef(A)
-        real(dp), intent(in) :: A(:,:)
-        real(dp), allocatable :: B(:,:)
-        integer :: n, Info
-        n = size(A,1)
-        isposdef = .false.
-        if (size(A,2) /= n) return
-        if (.not. all(A == transpose(A))) return
-        if (n == 0) then
-            isposdef = .true.
-            return
-        end if
-        B = A
-        call dpotrf('U',n,B,n,Info)
-        isposdef = (Info == 0)
-    end function isposdef
-
-    ! Julia isposdef(A::Matrix{ComplexF64}) ... exact Hermiticity & a successful Cholesky factorization ...
-    logical function isposdef_c(A)
-        complex(dp), intent(in) :: A(:,:)
-        complex(dp), allocatable :: B(:,:)
-        integer :: n, Info
-        n = size(A,1)
-        isposdef_c = .false.
-        if (size(A,2) /= n) return
-        if (.not. all(A == conjg(transpose(A)))) return
-        if (n == 0) then
-            isposdef_c = .true.
-            return
-        end if
-        B = A
-        call zpotrf('U',n,B,n,Info)
-        isposdef_c = (Info == 0)
-    end function isposdef_c
-
     ! Optimal assignment minimizing sum(Cost(i,Assign(i))) ... Hungarian algorithm (potentials, O(n^3)) ...
         ! Counterpart of hungarian() of Hungarian.jl ... Assign(i) is the column assigned to row i ...
     subroutine hungarian(Cost,Assign)
@@ -305,50 +241,6 @@ contains
         end do
     end subroutine hungarian
 
-    ! Julia eigen(A::Matrix{ComplexF64}) ... Hermitian matrices dispatch to zheevr, otherwise zgeevx('B','N','V','N') ...
-        ! Eigenpairs are sorted by (real, imag) ...
-    subroutine eig_general_complex(A,W,V)
-        complex(dp), intent(in) :: A(:,:)
-        complex(dp), intent(out) :: W(:)
-        complex(dp), intent(out) :: V(:,:)
-        complex(dp), allocatable :: B(:,:), Work(:), Vl(:,:), Wt(:), Vt(:,:)
-        real(dp), allocatable :: w_r(:), Rwork(:), Scale(:), Rconde(:), Rcondv(:)
-        integer, allocatable :: Iwork(:), Isuppz(:), Perm(:)
-        complex(dp) :: Work_q(1)
-        real(dp) :: Rwork_q(1), Abnrm
-        integer :: n, m, Info, Lwork, Lrwork, Liwork, Iwork_q(1), Ilo, Ihi
-
-        n = size(A,1)
-        if (n == 0) return
-        B = A
-        if (all(A == conjg(transpose(A)))) then
-            allocate(w_r(n), Isuppz(2*n))
-            call zheevr('V','A','U',n,B,n,0.0_dp,0.0_dp,0,0,-1.0_dp,m,w_r,V,n,Isuppz,Work_q,-1,Rwork_q,-1,Iwork_q,-1,Info)
-            Lwork = int(real(Work_q(1)))
-            Lrwork = int(Rwork_q(1))
-            Liwork = Iwork_q(1)
-            allocate(Work(Lwork), Rwork(Lrwork), Iwork(Liwork))
-            call zheevr('V','A','U',n,B,n,0.0_dp,0.0_dp,0,0,-1.0_dp,m,w_r,V,n,Isuppz,Work,Lwork,Rwork,Lrwork,Iwork,Liwork,Info)
-            if (Info /= 0) call fatal('zheevr failed')
-            W = cmplx(w_r, 0.0_dp, kind=dp)
-            return
-        end if
-
-        allocate(Vl(1,1), Scale(n), Rconde(n), Rcondv(n), Rwork(2*n))
-        call zgeevx('B','N','V','N',n,B,n,W,Vl,1,V,n,Ilo,Ihi,Scale,Abnrm,Rconde,Rcondv,Work_q,-1,Rwork,Info)
-        Lwork = int(real(Work_q(1)))
-        allocate(Work(Lwork))
-        call zgeevx('B','N','V','N',n,B,n,W,Vl,1,V,n,Ilo,Ihi,Scale,Abnrm,Rconde,Rcondv,Work,Lwork,Rwork,Info)
-        if (Info /= 0) call fatal('zgeevx failed')
-
-        allocate(Perm(n), Wt(n), Vt(n,n))
-        call sortperm_complex(W,Perm)
-        Wt = W(Perm)
-        Vt = V(:,Perm)
-        W = Wt
-        V = Vt
-    end subroutine eig_general_complex
-
     ! C = A * B for complex matrices ...
     function zmm(A,B) result(C)
         complex(dp), intent(in) :: A(:,:), B(:,:)
@@ -361,19 +253,6 @@ contains
         end if
         call zgemm('N','N',size(A,1),size(B,2),size(A,2),(1.0_dp,0.0_dp),A,size(A,1),B,size(B,1),(0.0_dp,0.0_dp),C,size(C,1))
     end function zmm
-
-    ! C = A^H * B for complex matrices ... Julia A' * B ...
-    function zmhm(A,B) result(C)
-        complex(dp), intent(in) :: A(:,:), B(:,:)
-        complex(dp), allocatable :: C(:,:)
-        allocate(C(size(A,2),size(B,2)))
-        if (size(C) == 0) return
-        if (size(A,1) == 0) then
-            C = (0.0_dp, 0.0_dp)
-            return
-        end if
-        call zgemm('C','N',size(A,2),size(B,2),size(A,1),(1.0_dp,0.0_dp),A,size(A,1),B,size(B,1),(0.0_dp,0.0_dp),C,size(C,1))
-    end function zmhm
 
     ! Stable lexicographic (real, imag) sortperm ... insertion sort, sizes are moderate ...
     subroutine sortperm_complex(W,Perm)

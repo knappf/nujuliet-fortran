@@ -10,16 +10,10 @@ module nj_o2b
     implicit none
     private
 
-    public :: O2b_initialize, O2b_index, O2b_pp, O2b_pn, O2b_nn, O2b_export, O2b_export_HRF, O2b_import
+    public :: O2b_initialize, O2b_index, O2b_pp, O2b_pn, O2b_nn, O2b_export, O2b_import
     public :: O2b_temp_initialize, O2b_temp_index, O2b_transformation, O2b_Pandya_transformation
     public :: packed_index, Orb_PreComp, O2b_move
     public :: O2b_temp, O2b_Pandya_initialize, O2b_Pandya_pp, O2b_Pandya_pnpn, O2b_Pandya_pnnp, O2b_Pandya_nn
-
-    ! O2b_Pandya_transformation(Params,Orb,Orb_NN,O_NN,F_NN,Orb_NN_t) with type(o2b_pandya_t) :: F_NN (dev, 4 blocks) ...
-        ! the 5-argument form with type(o2b_temp_t) :: F_NN is LEGACY (removed in cleanup stage) ...
-    interface O2b_Pandya_transformation
-        module procedure O2b_Pandya_transformation_temp, O2b_Pandya_transformation_4
-    end interface O2b_Pandya_transformation
 
 contains
 
@@ -253,69 +247,6 @@ contains
         close(u)
         write(*,'(/,a)') "Given 2-body NN operator succesfully exported in the binary format ... ''" // Export_Path // "''"
     end subroutine O2b_export
-
-    subroutine O2b_export_HRF(Params,Orb_NN,O_NN,Export_Path)
-        type(params_t), intent(in) :: Params
-        type(orb2b_t), intent(in) :: Orb_NN
-        type(o2b_t), intent(in) :: O_NN
-        character(len=*), intent(in) :: Export_Path
-        integer :: u, J, P, Bra, Ket, N, a, b, c, d
-
-        write(*,'(/,a)') 'Exporting given 2-body operator in the Human-Readable-Format ...'
-        open(newunit=u, file=Export_Path, status='replace', action='write')
-        write(u,'(a)') 't' // TAB // 'a' // TAB // 'b' // TAB // 'c' // TAB // 'd' // TAB // 'J' // TAB // 'V'
-        do J = 0, export_J_max(Params,Orb_NN)
-            do P = 1, 2
-                N = Orb_NN%N(2,P,J)
-                do Bra = 1, N
-                    a = 2*Orb_NN%Ind(2,P,J)%v(1,Bra) - 1
-                    b = 2*Orb_NN%Ind(2,P,J)%v(2,Bra) - 1
-                    do Ket = 1, Bra
-                        c = 2*Orb_NN%Ind(2,P,J)%v(1,Ket) - 1
-                        d = 2*Orb_NN%Ind(2,P,J)%v(2,Ket) - 1
-                        call row('-1', O_NN%pp(P,J)%v(packed_index(Bra,Ket,N)))
-                    end do
-                end do
-            end do
-        end do
-        do J = 0, export_J_max(Params,Orb_NN)
-            do P = 1, 2
-                N = Orb_NN%N(1,P,J)
-                do Bra = 1, N
-                    a = 2*Orb_NN%Ind(1,P,J)%v(1,Bra) - 1
-                    b = 2*Orb_NN%Ind(1,P,J)%v(2,Bra)
-                    do Ket = 1, N
-                        c = 2*Orb_NN%Ind(1,P,J)%v(1,Ket) - 1
-                        d = 2*Orb_NN%Ind(1,P,J)%v(2,Ket)
-                        call row('0', O_NN%pn(P,J)%v(packed_index(max(Bra,Ket),min(Bra,Ket),N)))
-                    end do
-                end do
-            end do
-        end do
-        do J = 0, export_J_max(Params,Orb_NN)
-            do P = 1, 2
-                N = Orb_NN%N(2,P,J)
-                do Bra = 1, N
-                    a = 2*Orb_NN%Ind(2,P,J)%v(1,Bra)
-                    b = 2*Orb_NN%Ind(2,P,J)%v(2,Bra)
-                    do Ket = 1, Bra
-                        c = 2*Orb_NN%Ind(2,P,J)%v(1,Ket)
-                        d = 2*Orb_NN%Ind(2,P,J)%v(2,Ket)
-                        call row('1', O_NN%nn(P,J)%v(packed_index(Bra,Ket,N)))
-                    end do
-                end do
-            end do
-        end do
-        close(u)
-        write(*,'(/,a)') "Given 2-body NN operator succesfully exported in the Human-Readable-Format ... ''" // Export_Path // "''"
-    contains
-        subroutine row(t,ME)
-            character(len=*), intent(in) :: t
-            real(dp), intent(in) :: ME
-            write(u,'(a)') t // TAB // istr(a) // TAB // istr(b) // TAB // istr(c) // TAB // istr(d) // TAB // istr(J) // &
-                           TAB // jstr(anint(ME * 1.0e10_dp) / 1.0e10_dp)
-        end subroutine row
-    end subroutine O2b_export_HRF
 
     subroutine O2b_import(Params,Orb,Import_Path,O_NN,Orb_NN)
         type(params_t), intent(in) :: Params
@@ -571,8 +502,8 @@ contains
         real(dp) :: OppSum, OpnSum, OnnSum
         integer(i8) :: t0
 
-        Rep = Verbose
-        if (present(Report)) Rep = Rep .and. Report
+        Rep = .true.
+        if (present(Report)) Rep = Report
         if (Rep) write(*,'(/,a)') 'Performing the Transformation of 2-body operator O_NN into the target basis due to C ...'
         a_max = (Params%Calc%Nmax + 1)*(Params%Calc%Nmax + 2)/2
         J_max = Params%Calc%N2max + 1
@@ -733,43 +664,9 @@ contains
         if (Rep) write(*,'(/,a,/)') 'Given 2-body operator O_NN transformed ...'
     end subroutine O2b_transformation
 
-    ! LEGACY (removed in cleanup stage) ... Pandya transformation into the 3-block o2b_temp_t (pn = dev pnnp) of the
-        ! not-yet-ported qp chain ...
-    subroutine O2b_Pandya_transformation_temp(Params,Orb,Orb_NN,O_NN,F_NN)
-        type(params_t), intent(in) :: Params
-        type(orb1b_t), intent(in) :: Orb(:)
-        type(orb2b_t), intent(in) :: Orb_NN
-        type(o2b_t), intent(in) :: O_NN
-        type(o2b_temp_t), intent(out) :: F_NN
-        type(orb2b_temp_t) :: Orb_NN_t
-        integer :: J_max, J, P, N, Bra, Ket, a, b, c, d
-
-        J_max = Params%Calc%N2max + 1
-        call O2b_temp_initialize(Params,Orb,F_NN,Orb_NN_t)
-        write(*,'(/,a)') 'Performing the Pandya transformation of the given 2-body operator ..'
-        do J = 0, J_max
-            do P = 1, 2
-                N = Orb_NN_t%N(P,J)
-                !$omp parallel do schedule(dynamic) private(a,b,Ket,c,d)
-                do Bra = 1, N
-                    a = Orb_NN_t%Ind(P,J)%v(1,Bra)
-                    b = Orb_NN_t%Ind(P,J)%v(2,Bra)
-                    do Ket = 1, N
-                        c = Orb_NN_t%Ind(P,J)%v(1,Ket)
-                        d = Orb_NN_t%Ind(P,J)%v(2,Ket)
-                        F_NN%pp(P,J)%v(Bra,Ket) = pandya_me(1,a,b,c,d,J,Orb,Orb_NN,O_NN)
-                        F_NN%pn(P,J)%v(Bra,Ket) = pandya_me(0,a,b,c,d,J,Orb,Orb_NN,O_NN)
-                        F_NN%nn(P,J)%v(Bra,Ket) = pandya_me(2,a,b,c,d,J,Orb,Orb_NN,O_NN)
-                    end do
-                end do
-                !$omp end parallel do
-            end do
-        end do
-    end subroutine O2b_Pandya_transformation_temp
-
     ! Pandya (particle-hole) transformation of a 2-body operator into full matrices ... counterpart of
         ! O2b_Pandya_transformation (O2b.jl:1036) with the four blocks pp, pnnp, pnpn & nn ... J outer, P inner ...
-    subroutine O2b_Pandya_transformation_4(Params,Orb,Orb_NN,O_NN,F_NN,Orb_NN_t)
+    subroutine O2b_Pandya_transformation(Params,Orb,Orb_NN,O_NN,F_NN,Orb_NN_t)
         type(params_t), intent(in) :: Params
         type(orb1b_t), intent(in) :: Orb(:)
         type(orb2b_t), intent(in) :: Orb_NN
@@ -800,7 +697,7 @@ contains
                 !$omp end parallel do
             end do
         end do
-    end subroutine O2b_Pandya_transformation_4
+    end subroutine O2b_Pandya_transformation
 
     ! One Pandya-transformed element ... Kind = 1 (pp), 0 (pnnp, the former pn), 2 (nn), 3 (pnpn: phase(1) = -1 & the
         ! exchanged ket (c,b) of O2b_pn) ... the factors multiply left to right as in dev (phase * hat * w6j * O) ...

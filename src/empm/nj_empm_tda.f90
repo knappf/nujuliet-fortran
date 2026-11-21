@@ -56,8 +56,8 @@ contains
 
     end subroutine EMPM_TDA_phonons
 
-    ! Phonons of each (J,P) channel, J = 0 .. 2 Nmax + 1 ... local copy of the LEGACY HF_RPA_phonon_count (nj_hf_rpa,
-        ! removed in the cleanup stage), so that the EMPM depends on core modules only ...
+    ! Phonons of each (J,P) channel, J = 0 .. 2 Nmax + 1 ... counterpart of HF_RPA_phonon_count of the base-version
+        ! HF-RPA (removed), the EMPM depends on core modules only ...
     subroutine EMPM_phonon_count(Params,N_Phonon,Phonon,N_nu,Orb_Phonon)
         type(params_t), intent(in) :: Params
         integer, intent(in) :: N_Phonon

@@ -1,0 +1,21 @@
+! EXPECT: &hfb Broy_Qmax & Broy_Bmax were removed upstream
+! stage-6 error path: the removed &hfb items Broy_Qmax / Broy_Bmax are fatal with a hint (the removed groups &rrpa / &hf_efa only warn)
+&interaction
+  NN_File  = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NN.bin'
+  NNN_File = '/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref/io/NNN.bin'
+  hw = 16.0, Nmax = 3, N2max = 6, N3max = 9
+/
+&calculation
+  A = 16, Z = 8, hw = 16.0, Nmax = 2, N2max = 4, N3max = 6
+  CMS = 'CMS1+2B'
+  Path = 'O16'
+/
+&rrpa
+  Tol = 1e-6
+/
+&hfb
+  Broy_m = 8, Broy_Qmax = 10, Broy_Bmax = 0.5
+/
+&run
+  Solvers = 'HF'
+/

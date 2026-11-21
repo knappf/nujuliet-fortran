@@ -5,7 +5,6 @@ program nujuliet
     use nj_utils
     use nj_input
     use nj_hf_driver, only : HF
-    use nj_hf_legacy_driver, only : HF_LEGACY      ! LEGACY (removed in cleanup stage)
     use nj_dispatch_rpa, only : dispatch_rpa
     use nj_dispatch_qp, only : dispatch_qp
     use nj_dispatch_empm, only : dispatch_empm
@@ -14,9 +13,10 @@ program nujuliet
     use nj_v3b, only : V3b_no2b_parse
     implicit none
     type(run_input_t) :: Run
+    type(run_input_t), allocatable :: Runs(:)
     character(len=1024) :: Arg
     integer :: i_arg, k
-    logical :: Handled, Legacy_HF
+    logical :: Handled
 
     if (command_argument_count() < 1) then
         write(*,'(a)') 'Usage: nujuliet input1.nml [input2.nml ...]   (run from the directory containing io/; the input ' // &
@@ -24,27 +24,25 @@ program nujuliet
         stop
     end if
 
+    ! all input files are read & checked first: actions removed upstream are refused before anything runs (no partial
+        ! run of an earlier file) ...
+    allocate(Runs(command_argument_count()))
     do i_arg = 1, command_argument_count()
         call get_command_argument(i_arg, Arg)
-        call read_input(trim(Arg), Run)
-        write(*,'(/,a)') '=== NuJuliet input file: ' // trim(Arg) // ' ... output folder io/' // trim(Run%Params%Calc%Path)
-        ! LEGACY (removed in cleanup stage) ... HF_RPA* & HF_RRPA* read the base-version HF output io/<Path>/Bin/*, so 'HF'
-        ! runs the legacy HF when one of them is in the same &run (EMPM_*, EMPM & NCSM read the dev reference) ...
-        Legacy_HF = .false.
-        do k = 1, Run%N_Actions
-            if (legacy_hf_consumer(trim(Run%Actions(k)))) Legacy_HF = .true.
+        call read_input(trim(Arg), Runs(i_arg))
+        do k = 1, Runs(i_arg)%N_Actions
+            call removed_action_check(trim(Runs(i_arg)%Actions(k)))
         end do
+    end do
+
+    do i_arg = 1, command_argument_count()
+        call get_command_argument(i_arg, Arg)
+        Run = Runs(i_arg)
+        write(*,'(/,a)') '=== NuJuliet input file: ' // trim(Arg) // ' ... output folder io/' // trim(Run%Params%Calc%Path)
         do k = 1, Run%N_Actions
             select case (trim(Run%Actions(k)))
             case ('HF')
-                if (Legacy_HF) then
-                    write(*,'(/,a)') "NOTICE: &run contains a legacy solver that reads io/<Path>/Bin/* ... 'HF' runs HF_LEGACY ..."
-                    call HF_LEGACY(Run%Params)
-                else
-                    call HF(Run%Params)
-                end if
-            case ('HF_LEGACY')       ! LEGACY (removed in cleanup stage)
-                call HF_LEGACY(Run%Params)
+                call HF(Run%Params)
             ! NCSM (Fortran-only) ... Hamiltonian 'EMPM' / Basis 'HF' read the dev reference of &empm Reference ...
             case ('NCSM')
                 call NCSM(Run%Params)
@@ -56,7 +54,7 @@ program nujuliet
             case ('PARSE')
                 call parse_nn()
                 if (len_trim(Run%Params%Int%NNN_File) > 0) call parse_nnn()
-            ! chain A (TDA, RPA, HF_ScRPA, TDA_/RPA_transition_*, LEGACY HF_RPA* / HF_RRPA*), chain B (BCS, HFB, QTDA, QRPA,
+            ! chain A (TDA, RPA, HF_ScRPA, TDA_/RPA_transition_*), chain B (BCS, HFB, QTDA, QRPA,
                 ! pnQTDA), chain C (EMPM_TDA .. EMPM_SF, EMPM) ...
             case default
                 call dispatch_rpa(trim(Run%Actions(k)),Run,Handled)
@@ -69,12 +67,24 @@ program nujuliet
 
 contains
 
-    ! LEGACY (removed in cleanup stage) ... solvers that read the base-version HF output (io/<Path>/Bin/*) ... the EMPM & the
-        ! NCSM read the dev reference io/<Path>/<&empm Reference>/bin/* since stage 5 (no longer routed) ...
-    logical function legacy_hf_consumer(Action)
+    ! Actions of the base version that NuJuliet dev removed (and the Fortran-only HF_LEGACY of the port) ... fatal with the
+        ! replacement ...
+    subroutine removed_action_check(Action)
         character(len=*), intent(in) :: Action
-        legacy_hf_consumer = (index(Action,'HF_RPA') == 1 .or. index(Action,'HF_RRPA') == 1)
-    end function legacy_hf_consumer
+        select case (Action)
+        case ('HF_RPA')
+            call fatal("'HF_RPA' was removed upstream, use 'TDA', 'RPA' (one &tda / &rpa per input file, see README)")
+        case ('HF_RPA_transition_densities', 'HF_RPA_transition_currents')
+            call fatal("'" // Action // "' was removed upstream, use 'TDA_" // Action(8:) // "' or 'RPA_" // Action(8:) // "'")
+        case ('HF_RRPA')
+            call fatal("'HF_RRPA' was removed upstream, use 'HF_ScRPA' (&rpa)")
+        case ('HF_RRPA_transition_densities', 'HF_RRPA_transition_currents')
+            call fatal("'" // Action // "' was removed upstream, use 'HF_ScRPA' and then 'RPA_" // Action(9:) // &
+                       "' (&rpa Name of the HF_ScRPA run)")
+        case ('HF_LEGACY')
+            call fatal("'HF_LEGACY' (base-version HF writing io/<Path>/Bin) was removed, use 'HF' (io/<Path>/HF/bin)")
+        end select
+    end subroutine removed_action_check
 
     subroutine parse_nn()
         if (min(Run%Parse%N_max_Out,Run%Parse%N_2max_Out) < 0) &

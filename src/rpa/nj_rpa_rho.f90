@@ -1,7 +1,7 @@
 ! Renormalized-RPA one-body density matrix of HF-ScRPA (NuJuliet dev, stage 4) ... counterpart of src/RPA/RPA_rho.jl
     ! (RPA_OBDM_oY4, HF_ScRPA_OBDM_solve, RPA_OBDM_transform_amplitudes) & src/RPA/RPA_orbitals.jl (Orb1B_RPA_OBDM,
-    ! RPA_OBDM_orbitals_make) ... RPA_OBDM_oY2 is the plain-RPA routine of nj_rpa ... replaces the LEGACY
-    ! HF_RRPA_OBDM_iteration of nj_hf_rrpa ...
+    ! RPA_OBDM_orbitals_make) ... RPA_OBDM_oY2 is the plain-RPA routine of nj_rpa ... replaces the
+    ! HF_RRPA_OBDM_iteration of the base-version HF-RRPA (removed) ...
     ! Amplitude layout as RPA_diagonalize: X(P,J)%v(N_ph,N_ph) over the fixed Orb_1p1h list, metric normalization
     ! X^+ N X - Y^+ N Y = 1 with N = diag(n_h - n_p) ...
     ! Deviations (no change of results beyond rounding, docs/PORTING_NOTES.md "stage 4"):

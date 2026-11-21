@@ -571,7 +571,8 @@ contains
         !$omp parallel default(shared) private(u_in,u_out,Buffer_In,Buffer_Out,q,ab_o,ab_i,a,b,c,d,e,f,f_i,k,J_min,J_max,i_J, &
         !$omp N_J,NN_a,NN_b,NN_c,NN_d,NN_e,NN_f,NN_ab,NN_ac,NN_bc,NN_abc,NN_de,NN_df,NN_ef,NN_def,P_abc,P_def, &
         !$omp Chunk_i,Buffer_0,Buffer_N,Out_i,Out_N,N_In,N_Out,Pos_Out)
-        open(newunit=u_in, file=In_File, access='stream', form='unformatted', status='old', action='read')
+        ! (Params%Int%NNN_File, not the deferred-length In_File: gfortran passes a garbage name in the parallel region) ...
+        open(newunit=u_in, file=trim(Params%Int%NNN_File), access='stream', form='unformatted', status='old', action='read')
         open(newunit=u_out, file=trim(Out_File), access='stream', form='unformatted', status='old', action='readwrite')
         allocate(Buffer_In(Buffer_size), Buffer_Out(Buffer_size))
         !$omp do schedule(dynamic,1)

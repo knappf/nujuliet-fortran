@@ -15,24 +15,6 @@ module nj_obdm
     public :: rho_export, rho_radial_cms, rho_radial_density_grid, rho_rN, rho_chR2
     public :: rho_radial_chdensity_grid, rho_radial_radii, rho_radial_density_export, rho_radial_summary
     public :: radial_grid       ! also the grid of HF_radial_potential (every 16th point) ...
-    ! LEGACY (removed in cleanup stage) ... the former OBDM_* names, still used by the not-yet-ported solvers ...
-    public :: OBDM_export, OBDM_radial_cms, OBDM_radial_density_grid, OBDM_rN, OBDM_chR2
-
-    interface OBDM_export
-        module procedure rho_export
-    end interface OBDM_export
-    interface OBDM_radial_cms
-        module procedure rho_radial_cms
-    end interface OBDM_radial_cms
-    interface OBDM_radial_density_grid
-        module procedure rho_radial_density_grid
-    end interface OBDM_radial_density_grid
-    interface OBDM_rN
-        module procedure rho_rN
-    end interface OBDM_rN
-    interface OBDM_chR2
-        module procedure rho_chR2
-    end interface OBDM_chR2
 
     integer, parameter :: N_Sampling = 2**13 + 1
 

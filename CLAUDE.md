@@ -41,8 +41,10 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   the cwd (default Path e.g. `A208_Z82_hw12.0_Nmax12_N2max24_N3max24_CMS1+2B`; runs made before stage 5 used `IO/`).
 - Solver mapping (dev): MBPT is part of `HF` (enabled by `&hf BMF=.true.`, the default; `&hf_mbpt Export` writes the
   HF-MBPT reference); `TDA`, `RPA` and `HF_ScRPA` are separate actions (one input file per `Name`/`Reference`); EMPM and
-  NCSM read the HF reference of `&empm Reference` (default `io/<Path>/HF/bin`). The LEGACY `HF_RPA` (HF-TDA & HF-RPA)
-  and `HF_RRPA` stay reachable until the cleanup stage (with them in the `&run`, `HF` runs `HF_LEGACY`).
+  NCSM read the HF reference of `&empm Reference` (default `io/<Path>/HF/bin`). The base-version `HF_RPA*`, `HF_RRPA*`
+  and the interim `HF_LEGACY` were removed in stage 6 (fatal with a hint; README "Removed actions and input"); old
+  inputs/runs with them (e.g. `runs/Pb208_13sh_hw12*`, `tests/dev_port/fortran/empm_ncsm_legacy/`) need a frozen binary
+  of commit ec14d69 or earlier (`../nujuliet-snap-ec14d69/nujuliet`, `../nujuliet-snap-d753f29/nujuliet`).
 - Run script pattern (see `runs/Pb208_13sh_hw12/run.sh`): set `OMP_NUM_THREADS`/`MKL_NUM_THREADS`,
   `OMP_STACKSIZE=512M`, `ulimit -s unlimited`, wrap in `/usr/bin/time -v`, and log to `logs/`. The user starts
   production runs manually, so prepare the scripts and do not launch them.
@@ -56,8 +58,8 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   Run from the directory that holds `io/` (dev writes `io/<Path>/...` and needs `io/` to exist).
 - Reference for the comparisons: the patched worktree `../NuJuliet_dev_ref` (branch `port-ref` = f3f7a33 + the Julia
   bug fixes F1-F5, never pushed), driven by `tests/dev_port/run_julia.sh` (see `tests/dev_port/README.md`). The base
-  version `../NuJuliet` (c450842, `include("Source/Import_NuJuliet_Module.jl")`, `IO/`) is only needed for the legacy
-  chain (its `runs/Pb208_13sh_hw12/` has the base-version 208Pb benchmark setup).
+  version `../NuJuliet` (c450842, `include("Source/Import_NuJuliet_Module.jl")`, `IO/`) only matters for old runs of the
+  removed base-version chain (its `runs/Pb208_13sh_hw12/` has the base-version 208Pb benchmark setup).
 - Julia via juliaup: `~/.julia/juliaup/julia-1.10.11+0.x64.linux.gnu/bin/julia --project=@v1.10` (the env already
   has CGcoefficient, Hungarian, etc.). Uses OpenBLAS (not MKL), so set `OPENBLAS_NUM_THREADS` along with `-t N`.
 - Parameter defaults match the Fortran namelist defaults (dev structs, `src/import_structures.jl`).
@@ -65,17 +67,16 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
 
 ## Comparing with Julia
 
-- `runs/test_Ca40_9sh/` has a complete comparison setup: `run_test.sh` runs Fortran and Julia, and
-  `compare_outputs.py REF NEW --tol` compares the output folders (copied from the old port's `tests/`).
+- `tests/dev_port/` is the comparison setup (see its `README.md`): `run_julia.sh <case>` (reference in
+  `tests/dev_port/work/julia_t<N>/`), `run_fortran.sh <case> [NT]`, `compare.py JULIA_IO FORTRAN_IO --tol 1e-8`.
+  `runs/test_Ca40_9sh/` holds the older base-version comparison (`IO/`, `HF_RPA`, `HF_RRPA`, frozen binaries only).
 - Expected differences that are not bugs:
-  - `Bin/C_HF.bin`: the columns can differ in sign.
-  - `Bin/V2B_HF.bin`, pn block: Julia writes the full N x N square with the packed lower-triangle index, so its
-    upper triangle holds aliased entries. The port writes the true symmetric matrix. Each code reads its own file
-    back correctly, and the port can read Julia files, but **Julia cannot read a pn block written by the port**.
-  - RPA densities and radii, and the E1 operators that use the RPA charge radius: Julia includes the spurious 1-
-    phonon when norm(Y)^2 rounds below 0.5 (porting note 9). With the port's cut `< 0.5 - 1e-8` patched into
-    `HF_RPA_OBDM.jl`, Julia with `-t 1` agrees with the port to 1e-8 in every file. Julia with more than one
-    thread differs by a further ~1e-4 because of the data race in `HF_RPA_OBDM` (porting note 6).
+  - `HF/bin/C.bin` (and the gauge-dependent `H2b.bin`, amplitudes): the columns can differ in sign.
+  - pn block of two-body files (`H2b.bin`, `sigma.bin`): Julia writes the full N x N square with the packed
+    lower-triangle index, so its upper triangle holds aliased entries. The port writes the true symmetric matrix. Each
+    code reads its own file back correctly, and the port can read Julia files, but **Julia cannot read a pn block
+    written by the port**.
+  - The three known O20_HBCS HFB files of `qp_options` (docs/dev_port/STATUS.md).
 - The Julia NNN reader keeps the whole file resident: 187 GB RSS for 40Ca at 9 shells, against 0.9 GB for the port.
 
 ## Session log
@@ -106,3 +107,9 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   (TDA, RPA on the same HF). Estimate: HF ~2 h, ScRPA 15-25 min. The user launches it: `./run.sh [NTHREADS]` (default 64).
 - 2026-11-21: dev-port stage 5: EMPM and NCSM read the dev HF reference (`&empm Reference`, default 'HF'), EMPM outputs in
   `io/<Path>/EMPM/{bin,spectra,transitions}`. Checked against a legacy baseline (`tests/dev_port/run_empm_ncsm.sh`).
+- 2026-11-21: the user ran `runs/Pb208_13sh_hw12_scrpa/` (64 threads): whole chain 6:14, peak 34 GB. HF-ScRPA converged in 10
+  outer iterations, E_QBA = -845.029752 MeV (E_HF = -752.626164, plain RPA E_QBA = -1133.811798, both equal to the v2 run).
+- 2026-11-21: dev-port stage 6 (cleanup): legacy HF/HF-EFA/HF-RPA/HF-RRPA chain removed (~6300 lines); the removed actions
+  stop with a hint. Old inputs (`runs/Pb208_13sh_hw12*`, `runs/test_Ca40_9sh/Ca40.nml`) need the frozen binaries
+  (`nujuliet_78c3588`, `../nujuliet-snap-d753f29`, `../nujuliet-snap-ec14d69`). `make COMPILER=gnu` works again.
+
