@@ -142,7 +142,7 @@ contains
 
     ! Cross-coupled (Pandya) matrix element ... dev HF_MBPT3_V2b_Pandya (87-152):
         ! V = - sum_I (2I+1) {j_a j_b I; j_c j_d J} X_I with X_I the pp/nn/pn element <ab|V|cd>_I (pn with the exchange
-        ! phases of the (+1,-1) orderings) ... for |t_a + t_b| = 2 t_c, t_d are not checked (callers conserve charge) ...
+        ! phases of the (+1,-1) orderings: -(-1)^(j_a+j_b-I) for one swapped pair since dev a69ecf0, (-1)^(...) for two) ... for |t_a + t_b| = 2 t_c, t_d are not checked (callers conserve charge) ...
     pure real(dp) function HF_MBPT3_V2b_Pandya(sa,sb,sc,sd,J,Orb,Orb_NN,V_NN) result(V)
         type(ispstate_t), intent(in) :: sa, sb, sc, sd
         integer, intent(in) :: J
@@ -186,7 +186,7 @@ contains
             if (sa%t == -1 .and. sb%t == 1 .and. sc%t == 1 .and. sd%t == -1) then
                 do I = I_min, I_max
                     ME = real(2*I + 1,dp) * f6j(sa%j,sb%j,2*I,sc%j,sd%j,2*J) * O2b_pn(sa%a,sb%a,sd%a,sc%a,I,P_ab,V_NN,Orb_NN) * &
-                         phase((sc%j + sd%j)/2 - I)
+                         (-phase((sc%j + sd%j)/2 - I))
                     V = V - ME
                 end do
                 return
@@ -194,7 +194,7 @@ contains
             if (sa%t == 1 .and. sb%t == -1 .and. sc%t == -1 .and. sd%t == 1) then
                 do I = I_min, I_max
                     ME = real(2*I + 1,dp) * f6j(sa%j,sb%j,2*I,sc%j,sd%j,2*J) * O2b_pn(sb%a,sa%a,sc%a,sd%a,I,P_ab,V_NN,Orb_NN) * &
-                         phase((sa%j + sb%j)/2 - I)
+                         (-phase((sa%j + sb%j)/2 - I))
                     V = V - ME
                 end do
                 return

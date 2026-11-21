@@ -1,7 +1,7 @@
 # NuJuliet — Fortran port
 
 Fortran (2008) port of [NuJuliet](https://github.com/folpradek/NuJuliet), a spherical nuclear
-many-body solver originally written in Julia. The port follows NuJuliet **dev f3f7a33** (solvers, file formats and
+many-body solver originally written in Julia. The port follows NuJuliet **dev a69ecf0** (solvers, file formats and
 output files); EMPM and NCSM are Fortran-only extensions that read the dev HF output.
 
 | Action (`&run`)                    | Julia call (dev)                    |
@@ -629,7 +629,7 @@ the full <= 3p3h to 0.05 MeV & 0.03 % in B; SF Lanczos = dense.
 
 ## Compatibility with the Julia code
 
-* Byte-compatible with NuJuliet dev f3f7a33: binary files (`io/*/HF/bin/*.bin`, `io/*/HF-MBPT/bin/*.bin`,
+* Byte-compatible with NuJuliet dev a69ecf0: binary files (`io/*/HF/bin/*.bin`, `io/*/HF-MBPT/bin/*.bin`,
   `io/*/<Name>/bin/*.bin`, NuHamil interaction files) are raw little-endian streams, `orb.bin` with the int64 labels
   `a, n, l, 2j` and the float64 occupations per orbital. The port reads Julia files, so Julia and Fortran stages can be
   mixed, with one exception: the pn block of a two-body file (`H2b.bin`, `sigma.bin`) is written by Julia as the full

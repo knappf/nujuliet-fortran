@@ -1,7 +1,7 @@
-# Possible upstream bugs (NuJuliet dev f3f7a33) ported faithfully
+# Possible upstream bugs (NuJuliet dev f3f7a33, re-checked for a69ecf0) ported faithfully
 
 Ambiguous behaviour of the Julia dev code that the Fortran port reproduces on purpose (bit parity with the
-patched reference `port-ref`) and only reports here. Clear bugs are fixed instead (F1..F5, see `PORTING_NOTES.md`).
+patched reference `port-ref`) and only reports here. Clear bugs are fixed instead (F1..F5, see `PORTING_NOTES.md`; F1 is upstream since dev a69ecf0).
 
 ## Group common A (core)
 
@@ -35,9 +35,10 @@ patched reference `port-ref`) and only reports here. Clear bugs are fixed instea
 * `HF_MBPT_export` with `ScH = false` (`HF_MBPT.jl:2288-2295`): the comment says "take HF Hamiltonian", but
   `h_N_NAT = H1b(...,Rho_NAT)` is built from the **correlated** (HF-MBPT natural-orbital) density, while `V` is the HF
   residual interaction `V_NN_res` (HF density). Possibly intended: `h = C_NAT^T (C h_N C^T) C_NAT` (HF mean field in the
-  NAT basis). Ported as is (owner decision).
-* `HF_MBPT_energy` summary (`HF_MBPT.jl:744`): the line `E_0^(3) / A ... correction to ground-state energy` lacks
-  "per nucleon" (cosmetic, kept for file parity).
+  NAT basis). Ported as is (owner decision). **Resolved in a69ecf0**: the comment and printout now state the correlated
+  OBDM 1-body Hamiltonian as intended.
+* ~~`HF_MBPT_energy` summary (`HF_MBPT.jl:744`): the line `E_0^(3) / A ... correction to ground-state energy` lacks
+  "per nucleon"~~ (fixed upstream in a69ecf0, ported).
 * `HF_MBPT3_V2b_Pandya` (`HF_MBPT.jl:100-114`): for `t_a + t_b = -2/+2` the isospins of c, d are not checked (all
   callers conserve charge, so no wrong value is produced). Ported as is.
 * MBPT denominators would vanish for an orbital that is both particle and hole (fractional occupation); this is

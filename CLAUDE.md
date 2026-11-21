@@ -54,11 +54,11 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
 
 ## Original Julia code (reference / benchmark)
 
-- The port follows NuJuliet dev: `../NuJuliet_dev` (commit f3f7a33). Entry point: `include("src/import_NuJuliet.jl");
+- The port follows NuJuliet dev: `../NuJuliet_dev` (commit a69ecf0 "HF-MBPT hotfix" = origin/dev; before 2026-11-21: f3f7a33). Entry point: `include("src/import_NuJuliet.jl");
   using .NuJuliet` (the dev sample is `scripts/sample_script_run.jl`, interaction files `io/NN.bin`, `io/NNN.bin`).
   Run from the directory that holds `io/` (dev writes `io/<Path>/...` and needs `io/` to exist).
-- Reference for the comparisons: the patched worktree `../NuJuliet_dev_ref` (branch `port-ref` = f3f7a33 + the Julia
-  bug fixes F1-F5, never pushed), driven by `tests/dev_port/run_julia.sh` (see `tests/dev_port/README.md`). The base
+- Reference for the comparisons: the patched worktree `../NuJuliet_dev_ref` (branch `port-ref` = a69ecf0 + the Julia
+  bug fixes F2-F5, never pushed; F1 is upstream since a69ecf0), driven by `tests/dev_port/run_julia.sh` (see `tests/dev_port/README.md`). The base
   version `../NuJuliet` (c450842, `include("Source/Import_NuJuliet_Module.jl")`, `IO/`) only matters for old runs of the
   removed base-version chain (its `runs/Pb208_13sh_hw12/` has the base-version 208Pb benchmark setup).
 - Julia via juliaup: `~/.julia/juliaup/julia-1.10.11+0.x64.linux.gnu/bin/julia --project=@v1.10` (the env already
@@ -115,4 +115,8 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   (copies `nujuliet_78c3588`, `nujuliet_d753f29` in the Pb208 run dirs). `make COMPILER=gnu` works again. Afterwards the
   snapshot worktrees, `nujuliet.old_dicget`, the old `runs/test_Ca40_9sh/stage*` dirs (except `stage4_scrpa`) and the
   stale `tests/dev_port/work` runs were removed (kept: `julia_t8`, `julia_t1`, `empm_baseline`).
+- 2026-11-21: ported upstream NuJuliet dev a69ecf0 ("HF-MBPT hotfix": Pandya pn exchange sign, TBCF exchange phase, OBDM
+  parity label, summary text); parity target is now a69ecf0, port-ref = a69ecf0 + F2..F5 (F1 is upstream). The hotfix
+  changes no numbers (sign changes cancel; checked against the pre-hotfix binary and old/new Julia): E^(3) values of
+  earlier runs, e.g. Pb208 E^(3) = -37.8366519 MeV, stay valid.
 

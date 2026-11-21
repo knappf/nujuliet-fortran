@@ -608,6 +608,7 @@ Bugs noticed in dev (`f3f7a33`):
    `O_a, O_b = Orb[a].pO, Orb[b].pO; O_c, O_d = Orb[c].pO, Orb[d].pO` (`HF_MBPT.jl:1905-1906, 1995-1996, 2085-2086`);
    only the ph pass uses `nO` (2149). Wrong particle/hole classification of neutron pairs whenever proton and neutron
    occupation patterns differ (N ≠ Z, e.g. 48Ca, 208Pb). Recommend fixing in the port as a documented deviation (owner decision).
+   (Fixed upstream in a69ecf0.)
 2. `HF_orbitals_make` edge cases (§3.4): fallback slot 1 if nothing eligible; spurious ESH throw when a cheaper-than-a_max
    candidate exists but has higher SPE than `a_max`. Unreachable in normal runs; port verbatim or with a `fatal`.
 3. `HF_orbitals_make` ordering failure leaves `Vector{Int}(undef)` indices (as base) – keep the Fortran `fatal` (deviation).
@@ -624,7 +625,7 @@ Bugs noticed in dev (`f3f7a33`):
 7. Divisions by zero in MBPT energies would occur for orbitals that are both particle and hole (fractional occupation); prevented
    by `HF_MBPT_occupation_check`. No action.
 8. `HF.HRF` is accepted but ignored.
-9. Summary text `E_0^(3) / A … correction to ground-state energy` lacks "per nucleon" (cosmetic, keep for parity).
+9. Summary text `E_0^(3) / A … correction to ground-state energy` lacks "per nucleon" (cosmetic, keep for parity; fixed upstream in a69ecf0).
 
 Races: none found in HF/HF-MBPT dev code. `HF_allocate`/`HF_energy` use per-thread accumulators (`:static`), MBPT energy
 likewise; OBDM and TBCF loops write disjoint elements.

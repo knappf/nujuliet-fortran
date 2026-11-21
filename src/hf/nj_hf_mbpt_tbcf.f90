@@ -1,11 +1,10 @@
 ! HF-MBPT 2-body correlation function (cumulant) Sigma ... counterpart of HF_MBPT_TBCF of src/HF/HF_MBPT.jl
-    ! (NuJuliet dev, lines 1540-2181) ...
+    ! (NuJuliet dev, a69ecf0, lines 1540-2175) ...
     ! Sigma_pphh = t_pphh (1st + 2nd order amplitudes: 2nd-order, 3rd-order pp, hh & ph diagrams) built in the HF basis in the
     ! O2B packed storage & transformed to the LHO basis with C^T ... normalisation as RPA_sigma & V2b_correlation_energy
     ! (1/4 V.Sigma = 2 (E2 + E3)) ...
-    ! Fix F1 (documented deviation, mirrored in the patched reference): dev classifies the particles/holes of the nn channel
-    ! (T = +1) of the 2nd-order, 3rd pp & 3rd hh passes with the PROTON occupations pO (HF_MBPT.jl:1905-1906, 1995-1996,
-    ! 2085-2086); the port uses the neutron occupations nO, as dev's own ph pass does ...
+    ! The nn channel (T = +1) classifies particles/holes with the neutron occupations nO in all four passes (former port fix
+    ! F1, upstream since dev a69ecf0) ...
     ! Port: dev runs four passes over all (J,P,Bra,Ket,T) adding each diagram to Sigma (initially 0); the port evaluates the
     ! four diagrams of one element in one sweep & sums them in the same order (s2 + s3pp) + s3hh) + s3ph -> identical values ...
 module nj_hf_mbpt_tbcf
@@ -102,7 +101,7 @@ contains
                 end do
                 !$omp end parallel do
 
-                ! neutron-neutron (T = +1) ... occupations nO in all four diagrams (fix F1) ...
+                ! neutron-neutron (T = +1) ... occupations nO in all four diagrams ...
                 !$omp parallel do schedule(dynamic) private(Ket,i_a,i_b,i_c,i_d,Ind)
                 do Bra = 1, N_T1
                     do Ket = 1, Bra
@@ -317,10 +316,9 @@ contains
             sc = ispstate_t(c,Orb(c)%l,Orb(c)%j,t_c,HF_MBPT_h1b(c,t_c,h_N))
             sd = ispstate_t(d,Orb(d)%l,Orb(d)%j,t_d,HF_MBPT_h1b(d,t_d,h_N))
 
-            Phase_ab = phase((sa%j + sb%j)/2 - J)
-            Phase_cd = phase((sc%j + sd%j)/2 - J)
-            if (t_a == t_b) Phase_ab = -Phase_ab
-            if (t_c == t_d) Phase_cd = -Phase_cd
+            ! antisymmetry exchange phases |ab;J> = -(-1)^(j_a+j_b-J) |ba;J> for all isospins (dev a69ecf0; before: + for pn) ...
+            Phase_ab = -phase((sa%j + sb%j)/2 - J)
+            Phase_cd = -phase((sc%j + sd%j)/2 - J)
 
             sigma = sigma3_ph_direct(sa,sb,sc,sd,J) + &
                     sigma3_ph_direct(sb,sa,sc,sd,J) * Phase_ab + &

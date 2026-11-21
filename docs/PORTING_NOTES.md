@@ -2,7 +2,8 @@
 
 These notes record the conventions of the port and every intentional deviation
 from the Julia original (https://github.com/folpradek/NuJuliet, commit 2595e82).
-The port is being brought to parity with NuJuliet dev (commit f3f7a33, branch `dev-port`); the
+The port is being brought to parity with NuJuliet dev (commit a69ecf0 "HF-MBPT hotfix", before 2026-11-21 f3f7a33;
+branch `dev-port`); the
 section "NuJuliet dev port" at the end lists the changes and deviations of that work. Items of the
 older sections that dev makes obsolete are marked **(obsolete in dev)**; items about code removed in the cleanup stage 6
 (2026-11-21: base-version HF, HF-EFA, HF-RPA, HF-RRPA and their helpers) are marked **(removed in stage 6)**.
@@ -147,8 +148,8 @@ Not ported (unreachable): `HFB_diagonalize_old`, `HFB_canonical_basis_diagonaliz
 token-wise with a numeric tolerance.
 
 Dev port (2026-11-20): the reference is the patched Julia worktree
-`/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref` (branch `port-ref` = dev f3f7a33 + one local commit
-per fix F1..F5, never pushed). `tests/dev_port/` holds the Julia drivers (`julia/<case>.jl`, `run_julia.sh`), the
+`/scratch/local.ssd/knapp/job_25503048.pbs-m1/NuJuliet_dev_ref` (branch `port-ref` = dev a69ecf0 + one local commit
+per fix F2..F5, never pushed; until 2026-11-21 f3f7a33 + F1..F5, F1 is upstream since a69ecf0). `tests/dev_port/` holds the Julia drivers (`julia/<case>.jl`, `run_julia.sh`), the
 comparison script `compare.py` for the dev `io/<Path>/<Name>/` layout (it replaces `compare_outputs.py` for the dev
 layout) and `README.md`. Fix F5 in the reference: `OBDM_natural_orbitals` derives (l,j) of the neutron natural orbital
 from `nC`; since `Orb1B` carries a single (l,j), a proton/neutron mismatch is an `error(...)` there, and the Fortran
@@ -334,7 +335,7 @@ The temporary-file hand-over between `HF_MBPT_OBDM` and `HF_MBPT_export` is kept
 with the (l,j) blocks of `Orb`, so the in-memory values equal dev's exactly).
 
 Deviations:
-1. **F1** (clear bug, fixed, mirrored in the patched reference): dev `HF_MBPT_TBCF` classifies the particles/holes of the
+1. **F1** (clear bug, **upstream since dev a69ecf0**, no longer a deviation; the port-ref commit was dropped): f3f7a33 `HF_MBPT_TBCF` classifies the particles/holes of the
    nn channel (T = +1) in the 2nd-order, 3rd-order pp and 3rd-order hh passes with the **proton** occupations `pO`
    (`HF_MBPT.jl:1905-1906, 1995-1996, 2085-2086`); the port uses `nO` (as dev's own ph pass, line 2149). Matters
    whenever the proton and neutron occupation patterns differ (N != Z); verified with 28O (`mbpt_options` case).
@@ -352,7 +353,20 @@ Deviations:
    F5) replaces the base `HF_MBPT_OBDM_correction`/`HF_MBPT_reorder`.
 
 Kept faithfully (listed in `UPSTREAM_BUGS.md`): `HF_MBPT_export` with `ScH = false` builds H1b from the correlated
-density Rho_NAT; the summary text `E_0^(3) / A ... correction to ground-state energy` lacks "per nucleon".
+density Rho_NAT (a69ecf0 documents this as intended: comment and printout now say "HF-MBPT 1-body Hamiltonian (correlated
+OBDM) & HF residual 2-body interaction").
+
+dev a69ecf0 "HF-MBPT hotfix" (ported 2026-11-21): `HF_MBPT3_V2b_Pandya` pn exchange orderings (-1,+1,+1,-1) and
+(+1,-1,-1,+1) carry `-phase(...)` (antisymmetry |ab;I> = -(-1)^(j_a+j_b-I)|ba;I>; changes E^(3)_ph and the 3rd-order ph
+TBCF diagram); `HF_MBPT_TBCF` exchange phases `Phase_ab/cd = -phase(j+j-J)` for every isospin (before: + for pn);
+nn TBCF blocks with `nO` (= F1); `HF_MBPT_OBDM` pp block `P_hr = mod(l_h + l_r,2)+1` (no numerical effect: the loop runs
+only for l_p == l_h); summary/log text ("HF-MBPT(2+3) energy", "LO HF-MBPT(2) ... per nucleon", "E_0^(3) / A ... per
+nucleon"). Numerically the hotfix is a no-op (Julia old vs new and the Fortran outputs: every binary byte-identical, E^(2),
+E^(3) unchanged): the flipped Pandya elements are exactly those that connect a pi-pi ph pair with a nu-nu ph pair (the
+mixed-isospin orderings (-1,+1,+1,-1), (+1,-1,-1,+1) pair a with d and c with b), i.e. a relative sign of the pi-pi and
+nu-nu ph channels. The E^(3)_ph ring V_pqhg V_hfrq V_fgpr crosses between the two channels an even number of times, and
+in the 3rd-order ph TBCF diagram the flip of V_fbcr V_arfd in the exchange terms of a pn element cancels against the new
+sign of Phase_ab / Phase_cd (pp/nn elements: both factors flip together).
 
 Not ported (dead in dev): `Orb1B_HF_MBPT3` (defined, never used), the unreachable `return 0.0` of `HF_MBPT_h1b`.
 

@@ -773,3 +773,34 @@ Independent verification, 2026-11-21 (fresh work dirs, clean serial `make`, fina
   matches); all input files of a call are read and checked before any action runs (a removed action in b.nml stops
   `nujuliet a.nml b.nml` before a.nml computes anything; tested); README `&transition_currents` sample M=-1.
   bundled 411/36/0 and scrpa_options 197/22/0 vs Julia after the change.
+
+## 2026-11-21 — upstream dev a69ecf0 "HF-MBPT hotfix" ported (new parity target)
+
+Done:
+- Julia: `NuJuliet_dev` moved to origin/dev a69ecf0 (only `src/HF/HF_MBPT.jl` changed vs f3f7a33). `port-ref` rebased onto
+  a69ecf0: F1 dropped (identical upstream change: nn TBCF blocks use `nO`), F2 3d41af6, F3 f3999d2, F4 841b9a6, F5 47f840d
+  (diff vs a69ecf0: 4 files, +11/-5, as before minus F1). Old f3f7a33-based commits: F1 204b5be .. F5 55c5880.
+- Fortran (`src/hf/nj_hf_mbpt_common.f90`, `nj_hf_mbpt_tbcf.f90`, `nj_hf_mbpt.f90`): `HF_MBPT3_V2b_Pandya` pn exchange
+  orderings (-1,+1,+1,-1), (+1,-1,-1,+1) with `-phase(...)`; `HF_MBPT_TBCF` `Phase_ab/cd = -phase(j+j-J)` for every isospin;
+  `HF_MBPT_OBDM` proton pp block `P_hr = mod(l_h + l_r,2)+1`; log "HF-MBPT(2+3) energy  ...   E^(tot)", summary
+  "LO HF-MBPT(2) ... per nucleon" and "E_0^(3) / A ... per nucleon", export print "Constructing HF-MBPT 1-body Hamiltonian
+  (correlated OBDM) & HF residual 2-body interaction in the NAT basis ..."; F1 comments now say "upstream".
+- Numerical effect: none. P_hr: the loop runs only for `l_p == l_h` (the 1p1h block requires equal l, j), so
+  `mod(l_p+l_r,2) == mod(l_h+l_r,2)`. Pandya/TBCF phases: the flipped elements connect pi-pi with nu-nu ph pairs; the
+  E^(3)_ph ring crosses an even number of times and in the TBCF ph diagram the Pandya flip cancels the new Phase_ab/cd of
+  pn elements (PORTING_NOTES). Julia old vs new refs: all binary files byte-identical, only 2 text lines of each MBPT
+  `HF_summary.dat` differ. E^(3) unchanged, e.g. Ca40 (ca40_5sh) E^(3) = -5.29683304 MeV (pp -1.57694752, ph -0.152934047,
+  hh -3.56695147), E^(3)/A = -0.13242083; O16_MBPT E^(3)/A = -0.18169379; O28_TBCF -0.05700789; He4 -0.12404847 (old =
+  new in Julia and in the port).
+- Julia refs regenerated (port-ref 47f840d): `work/julia_t8/{bundled,ca40_5sh,mbpt_options,rpa_options,scrpa_options}`
+  (MBPT summaries changed) and, as a check, `o16_open`, `hf_options` (no MBPT: identical to the old refs); `work/julia_t1/
+  bundled`. `qp_options` (no HF-MBPT) kept. Wall (4 lanes x 8 threads concurrently): bundled 3:30, ca40_5sh 3:06,
+  scrpa_options 2:25, rpa_options 2:09, o16_open 1:26, mbpt_options 0:57, hf_options 0:38, bundled t1 4:46.
+- Tests: intel clean build 0 warnings; `make COMPILER=gnu BUILD=build_gnu EXE=nujuliet_gnu` 0 warnings (deleted). vs new Julia
+  refs (8 threads, 1e-8): bundled 411/36/0, ca40_5sh 92/8/0, o16_open 106/7/0, hf_options 14/0/0, mbpt_options 23/6/0,
+  rpa_options 308/29/0, qp_options 150/14/3 (the known O20_HBCS), scrpa_options 197/22/0 (ok/SIGN/DIFF; 0 SIZE/MISSING/
+  EXTRA). gauge_check (O28_TBCF, O16_ScH, O16_MBPT HF-MBPT/bin, O28_TBCF HF/bin): <= 1.3e-13. bundled Fortran 1 vs 8
+  threads `--strict-sign --tol 1e-12`: 447 ok; Fortran t1 vs Julia t1: 428/19/0. `empm_ncsm` (dev 16): 13 error cases ok;
+  compare vs `work/empm_baseline`: DIFF 47, GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12 (unchanged).
+- Docs: CLAUDE.md, README.md, tests/dev_port/README.md, PORTING_NOTES (target, F1 upstream, hotfix note), UPSTREAM_BUGS
+  ("per nucleon" fixed upstream, ScH=false export documented as intended), hf.md bug list annotated.

@@ -114,7 +114,7 @@ contains
         write(*,'(a)') TAB // TAB // '                           E^(3)_pp = ' // jstr(round_sig(dE3_pp,9)) // ' MeV'
         write(*,'(a)') TAB // TAB // '                           E^(3)_ph = ' // jstr(round_sig(dE3_ph,9)) // ' MeV'
         write(*,'(a)') TAB // TAB // '                           E^(3)_hh = ' // jstr(round_sig(dE3_hh,9)) // ' MeV'
-        write(*,'(a,/)') TAB // 'HF-MBPT(3) energy    ...   E^(tot)  = ' // jstr(round_sig(dE,9)) // ' MeV'
+        write(*,'(a,/)') TAB // 'HF-MBPT(2+3) energy  ...   E^(tot)  = ' // jstr(round_sig(dE,9)) // ' MeV'
 
         ! Summary block (dev 734-750; the Julia text ends without a newline, rho_export continues with an empty line) ...
         A = real(Params%Calc%A,dp)
@@ -127,9 +127,8 @@ contains
         write(u,'(a)') line('E_0^(3)_hh     = ',dE3_hh,'NLO HF-MBPT(3) hh correction to ground-state energy')
         write(u,'(a)') repeat('_',124)
         write(u,'(/,a)') line('E_0^(tot)      = ',dE,'NLO HF-MBPT(2+3) correction to ground-state energy')
-        write(u,'(//,a)') line('E_0^(2) / A    = ',dE2 / A,'NLO HF-MBPT(2) correction to ground-state energy per nucleon')
-        ! (sic) no "per nucleon" in dev ...
-        write(u,'(a)') line('E_0^(3) / A    = ',(dE3_hh + dE3_ph + dE3_pp) / A,'NLO HF-MBPT(3) correction to ground-state energy')
+        write(u,'(//,a)') line('E_0^(2) / A    = ',dE2 / A,'LO HF-MBPT(2) correction to ground-state energy per nucleon')
+        write(u,'(a)') line('E_0^(3) / A    = ',(dE3_hh + dE3_ph + dE3_pp) / A,'NLO HF-MBPT(3) correction to ground-state energy per nucleon')
         write(u,'(a)') line('E_0^(3)_pp / A = ',dE3_pp / A,'NLO HF-MBPT(3) pp correction to ground-state energy per nucleon')
         write(u,'(a)') line('E_0^(3)_ph / A = ',dE3_ph / A,'NLO HF-MBPT(3) ph correction to ground-state energy per nucleon')
         write(u,'(a)') line('E_0^(3)_hh / A = ',dE3_hh / A,'NLO HF-MBPT(3) hh correction to ground-state energy per nucleon')
@@ -372,7 +371,7 @@ contains
                     do r = 1, N_Particle%p
                         sr = Particle%p(r)
                         P_pr = mod(sp%l + sr%l,2) + 1
-                        P_hr = mod(sp%l + sr%l,2) + 1
+                        P_hr = mod(sh%l + sr%l,2) + 1
                         do J = abs(sh%j - sr%j)/2, (sh%j + sr%j)/2
                             do f = 1, N_Hole%p
                                 sf = Hole%p(f)
@@ -923,7 +922,7 @@ contains
         else
             ! "HF Hamiltonian" in the NAT basis ... h from the correlated Rho_NAT as in dev (UPSTREAM_BUGS), V = V_NN_res
                 ! transformed HF -> NAT with C^T C_NAT ...
-            write(*,'(a)') TAB // TAB // TAB // 'Constructing HF Hamiltonian in the NAT basis ...'
+            write(*,'(a)') TAB // TAB // TAB // 'Constructing HF-MBPT 1-body Hamiltonian (correlated OBDM) & HF residual 2-body interaction in the NAT basis ...'
             h_N_NAT = H1b(Params,Orb,Orb_NN,Orb_NNN,T,V_NN,V_NNN,Rho_NAT)
             V_NN_NAT = V_NN_res
             h_N_NAT = O1b_transformation(h_N_NAT,C_NAT)
