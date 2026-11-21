@@ -44,7 +44,8 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   NCSM read the HF reference of `&empm Reference` (default `io/<Path>/HF/bin`). The base-version `HF_RPA*`, `HF_RRPA*`
   and the interim `HF_LEGACY` were removed in stage 6 (fatal with a hint; README "Removed actions and input"); old
   inputs/runs with them (e.g. `runs/Pb208_13sh_hw12*`, `tests/dev_port/fortran/empm_ncsm_legacy/`) need a frozen binary
-  of commit ec14d69 or earlier (`../nujuliet-snap-ec14d69/nujuliet`, `../nujuliet-snap-d753f29/nujuliet`).
+  of commit ec14d69 or earlier: kept copies `runs/Pb208_13sh_hw12_v2/nujuliet_78c3588` and
+  `runs/Pb208_13sh_hw12_scrpa/nujuliet_d753f29`, or rebuild one with `git worktree add ../snap <commit>` and `make` there.
 - Run script pattern (see `runs/Pb208_13sh_hw12/run.sh`): set `OMP_NUM_THREADS`/`MKL_NUM_THREADS`,
   `OMP_STACKSIZE=512M`, `ulimit -s unlimited`, wrap in `/usr/bin/time -v`, and log to `logs/`. The user starts
   production runs manually, so prepare the scripts and do not launch them.
@@ -111,5 +112,7 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   outer iterations, E_QBA = -845.029752 MeV (E_HF = -752.626164, plain RPA E_QBA = -1133.811798, both equal to the v2 run).
 - 2026-11-21: dev-port stage 6 (cleanup): legacy HF/HF-EFA/HF-RPA/HF-RRPA chain removed (~6300 lines); the removed actions
   stop with a hint. Old inputs (`runs/Pb208_13sh_hw12*`, `runs/test_Ca40_9sh/Ca40.nml`) need the frozen binaries
-  (`nujuliet_78c3588`, `../nujuliet-snap-d753f29`, `../nujuliet-snap-ec14d69`). `make COMPILER=gnu` works again.
+  (copies `nujuliet_78c3588`, `nujuliet_d753f29` in the Pb208 run dirs). `make COMPILER=gnu` works again. Afterwards the
+  snapshot worktrees, `nujuliet.old_dicget`, the old `runs/test_Ca40_9sh/stage*` dirs (except `stage4_scrpa`) and the
+  stale `tests/dev_port/work` runs were removed (kept: `julia_t8`, `julia_t1`, `empm_baseline`).
 

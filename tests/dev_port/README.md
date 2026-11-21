@@ -140,7 +140,7 @@ lines of `run.log` of both codes. SIGN files of the ScRPA folders: `RPA_X/Y.bin`
 ## Stage-5 EMPM / NCSM checks (no Julia counterpart)
 
 EMPM and NCSM are Fortran-only. Their reference is a **legacy baseline** of the frozen stage-4 binary
-(`/scratch/local.ssd/knapp/job_25503048.pbs-m1/nujuliet-snap-d753f29/nujuliet`, commit d753f29: legacy HF writing
+(commit d753f29, kept as `runs/Pb208_13sh_hw12_scrpa/nujuliet_d753f29`; the snapshot worktree was removed, rebuild with `git worktree add` if needed; the baseline itself is kept in `work/empm_baseline`: legacy HF writing
 `io/<Path>/Bin/{C_HF,h_HF,V2B_HF,Rho_HF}.bin`, EMPM/NCSM reading them), against which the dev-form chain (dev HF writing
 `io/<Path>/HF/bin/{orb,C,rho,H1b,H2b}.bin`, EMPM reading `&empm Reference`, default `'HF'`) is compared.
 
@@ -187,7 +187,7 @@ python3 -I empm_compare.py --tda work/empm_dev_t16/io     # full-space EMPM_TDA 
 ## Stage-6 regression (cleanup must not change any dev output)
 
 The cleanup (removal of the LEGACY code) was checked against the frozen binary of the last stage-5 commit
-(`/scratch/local.ssd/knapp/job_25503048.pbs-m1/nujuliet-snap-ec14d69/nujuliet`, commit ec14d69): every case with both
+(commit ec14d69; the snapshot worktree was removed after stage 6, rebuild with `git worktree add` if needed): every case with both
 binaries at the same thread count, then `diff -rq` of the work trees (`run_fortran.sh` moves nothing, so rename
 `work/fortran_t8` after each binary; EMPM/NCSM via `TAG=`):
 

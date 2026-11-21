@@ -12,8 +12,8 @@
 #   tests/dev_port/run_empm_ncsm.sh compare [NT=16]    python3 -I empm_compare.py work/empm_baseline/io work/empm_dev_t<NT>/io
 #
 # TAG=<suffix> puts the dev run into work/empm_dev<suffix>_t<NT> (e.g. for a second binary). Every namelist file runs in its own nujuliet invocation (wall time per file in times.txt). Environment: NUJULIET
-# (default ./nujuliet of the repository), NUJULIET_LEGACY (default the frozen binary
-# /scratch/local.ssd/knapp/job_25503048.pbs-m1/nujuliet-snap-d753f29/nujuliet, built from commit d753f29).
+# (default ./nujuliet of the repository), NUJULIET_LEGACY (default the frozen binary of commit d753f29, kept as
+# runs/Pb208_13sh_hw12_scrpa/nujuliet_d753f29; to rebuild: git worktree add ../snap d753f29 && make there).
 set -euo pipefail
 MODE=${1:?usage: run_empm_ncsm.sh baseline|dev|compare [NTHREADS]}
 NT=${2:-16}
@@ -44,7 +44,7 @@ run_dir() {   # binary, input dir, work dir
 
 case $MODE in
 baseline)
-    BIN=${NUJULIET_LEGACY:-/scratch/local.ssd/knapp/job_25503048.pbs-m1/nujuliet-snap-d753f29/nujuliet}
+    BIN=${NUJULIET_LEGACY:-$(cd "$(dirname "$0")/../.." && pwd)/runs/Pb208_13sh_hw12_scrpa/nujuliet_d753f29}
     run_dir "$BIN" "$HERE/fortran/empm_ncsm_legacy" "$HERE/work/empm_baseline"
     ;;
 dev)
