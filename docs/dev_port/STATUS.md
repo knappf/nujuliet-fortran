@@ -804,3 +804,13 @@ Done:
   compare vs `work/empm_baseline`: DIFF 47, GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12 (unchanged).
 - Docs: CLAUDE.md, README.md, tests/dev_port/README.md, PORTING_NOTES (target, F1 upstream, hotfix note), UPSTREAM_BUGS
   ("per nucleon" fixed upstream, ScH=false export documented as intended), hf.md bug list annotated.
+
+## 2026-11-21 — NCSM: missing reference non-fatal (owner decision)
+
+- `NCSM` with `Hamiltonian = 'EMPM'` or `Basis = 'HF'` calls `EMPM_reference_check` first: a missing
+  `io/<Path>/<Reference>/bin` prints "Error! ... No precomputed reference ..." and skips the NCSM (exit 0, no
+  `io/<Path>/NCSM` created), as TDA/RPA/EMPM and dev. A reference without `H2b.bin` stays fatal (as EMPM). NCSM with
+  `NN`/HO needs no reference and is unchanged. Closes the open item of the stage-5 entry.
+- New error case `fortran/empm_ncsm/errors/e14_ncsm_no_reference`. `run_empm_ncsm.sh dev 16`: all 14 error cases give
+  their EXPECT text; `compare` vs `work/empm_baseline`: DIFF 47, GAUGE 20, SIGN 11, SIGN* 4, SKIP 6, ok 1614, ok* 12
+  (unchanged). Builds: intel and `COMPILER=gnu` 0 warnings.

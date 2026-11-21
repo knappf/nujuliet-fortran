@@ -119,4 +119,5 @@ actually used (N shells -> Nmax = N-1; convention used so far: N2max = 2 Nmax, N
   parity label, summary text); parity target is now a69ecf0, port-ref = a69ecf0 + F2..F5 (F1 is upstream). The hotfix
   changes no numbers (sign changes cancel; checked against the pre-hotfix binary and old/new Julia): E^(3) values of
   earlier runs, e.g. Pb208 E^(3) = -37.8366519 MeV, stay valid.
-
+- 2026-11-21: NCSM with a missing reference (`Hamiltonian = 'EMPM'` or `Basis = 'HF'`) now prints the error and skips
+  (exit 0), as TDA/RPA/EMPM (user decision); new error case e14.

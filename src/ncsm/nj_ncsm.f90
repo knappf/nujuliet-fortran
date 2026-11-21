@@ -33,7 +33,8 @@ module nj_ncsm
     use nj_v2b, only : V2b_read
     use nj_linalg, only : eig_sym
     use nj_tr1b, only : tr1b_t, Tr1b_initialize, Tr1b_transformation
-    use nj_empm_space, only : empm_space_t, EMPM_space_make, empm_ref_path, EMPM_reference_orbitals
+    use nj_empm_space, only : empm_space_t, EMPM_space_make, empm_ref_path, EMPM_reference_orbitals, &
+                              EMPM_reference_check
     use omp_lib
     implicit none
     private
@@ -286,6 +287,11 @@ contains
         Z = Params%Calc%Z
         N = A - Z
         if (Z < 1 .or. N < 1) call fatal('NCSM ... needs Z >= 1 & N >= 1')
+        ! the EMPM Hamiltonian & the HF basis need the precomputed reference ... a missing reference prints the error &
+            ! skips the NCSM (exit 0, as the dev TDA/RPA/EMPM), a reference without H2b.bin stays fatal ...
+        if (Ham == 'EMPM' .or. Params%Calc%NCSM%Basis == 'HF') then
+            if (.not. EMPM_reference_check(Params,Ham == 'EMPM')) return
+        end if
         call wigner_init_float(2*Params%Calc%Nmax + 3,'Jmax',6)
         write(*,'(/,a)') 'Starting the NCSM in the m-scheme HO basis ... Hamiltonian ' // trim(Ham) // ' ...'
         if (.not. is_dir(io_path(Params,''))) call make_dir(io_path(Params,''))

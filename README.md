@@ -138,7 +138,8 @@ EMPM codes. `EMPM_TDA` runs on top of a finished `HF` run: it reads the referenc
 HF-like: `H1b.bin` diagonal (off-diagonal elements <= 1e-10, so `'HF-MBPT'` is refused), `H2b.bin` present (`&hf
 BMF = .true.`) and **integer occupations** in `orb.bin` (0 or 1 within 1e-8): a closed (sub)shell nucleus, or `&hf
 ESH = .true.` for an open shell (the dev HF with `ESH = .false.` gives fractional occupations, which are fatal). A
-missing reference prints "Error! ... No precomputed reference ..." and skips the step (as the dev TDA).
+missing reference prints "Error! ... No precomputed reference ..." and skips the step (as the dev TDA); the same holds
+for `NCSM` with `Hamiltonian = 'EMPM'` or `Basis = 'HF'`.
 
 1. restricted s.p. space ... windows `(first, last)` of the HF levels of each isospin ordered by energy
    (1 = deepest level), the numbering of `input_tda_coup.dat`; a zero bound means the full range
